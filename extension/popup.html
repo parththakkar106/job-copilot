@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --fg: #1a1a1a; --muted: #777; --line: #e4e4e7; --bg: #fff;
+    --chip: #f3f4f6; --chip-on: #1a1a1a; --chip-on-fg: #fff;
+    --inq: #b26a00; --filled: #197a2e; --sub: #2563cc; --blk: #b00020;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8e8ea; --muted: #999; --line: #333; --bg: #1c1c1e;
+            --chip: #2a2a2c; --chip-on: #e8e8ea; --chip-on-fg: #1c1c1e; }
+  }
+  * { box-sizing: border-box; }
+  body { font: 13px/1.4 system-ui, sans-serif; width: 440px; margin: 0; padding: 10px 12px;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 13px; margin: 0; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 6px; }
+  .toolbar { justify-content: space-between; margin-bottom: 8px; }
+  button { font: inherit; padding: 4px 9px; cursor: pointer; border: 1px solid var(--line);
+           background: var(--chip); color: var(--fg); border-radius: 6px; }
+  button:hover { border-color: var(--muted); }
+  button:disabled { opacity: .45; cursor: default; }
+  .chips { display: flex; gap: 5px; flex-wrap: wrap; margin: 6px 0 8px; }
+  .chip { padding: 3px 9px; border-radius: 999px; background: var(--chip); border: 1px solid transparent;
+          cursor: pointer; font-size: 12px; user-select: none; }
+  .chip.on { background: var(--chip-on); color: var(--chip-on-fg); }
+  .chip .n { opacity: .6; margin-left: 3px; }
+  #banner { display: none; background: #fde68a; color: #4a3800; padding: 5px 8px;
+            border-radius: 6px; font-size: 12px; margin-bottom: 8px; }
+  #list { max-height: 420px; overflow: auto; }
+  .job { border-top: 1px solid var(--line); padding: 6px 2px; }
+  .job:first-child { border-top: 0; }
+  .job .top { display: flex; align-items: baseline; gap: 6px; }
+  .date { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; min-width: 38px; }
+  .co { font-weight: 600; }
+  .title { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bottom { display: flex; align-items: center; gap: 8px; margin: 3px 0 0 44px; }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--chip); }
+  .b-in_queue .tag { color: var(--inq); } .b-filled .tag { color: var(--filled); }
+  .b-submitted .tag { color: var(--sub); } .b-blocked .tag { color: var(--blk); }
+  a.open { text-decoration: none; color: var(--sub); font-size: 12px; }
+  select.mark { font: inherit; font-size: 11px; padding: 1px 3px; border-radius: 5px;
+                border: 1px solid var(--line); background: var(--bg); color: var(--fg); margin-left: auto; }
+  .empty, .note { color: var(--muted); font-size: 12px; padding: 10px 2px; }
+  .note { padding: 8px 0 0; }
+</style>
+</head>
+<body>
+  <div class="row toolbar">
+    <h1>Job Pipeline</h1>
+    <div class="row">
+      <button id="activate" title="Show the fill panel for this form; if it's embedded, open it standalone in a new tab">⚡ Activate here</button>
+      <button id="console" title="Open the web console in a new tab">🌐 Console</button>
+      <button id="runqueue" title="Work today's whole queue">▶ Run</button>
+      <button id="stopqueue" title="Halt before the next application">⏹</button>
+      <button id="refresh" title="Reload the piles">↻</button>
+    </div>
+  </div>
+  <div id="banner"></div>
+  <div class="chips" id="chips"></div>
+  <div id="list"><p class="empty">Loading…</p></div>
+  <p class="note" id="note"></p>
+  <script src="popup.js"></script>
+</body>
+</html>

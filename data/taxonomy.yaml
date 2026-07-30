@@ -1,0 +1,210 @@
+# Question taxonomy — config-driven, per-company overridable.
+#
+# A form field's question text (label / name / placeholder) is matched
+# case-insensitively (regex) against each bucket's patterns, in `priority` order.
+# First match wins. No match -> field falls through to Tier 1 (Claude field-mapping).
+#
+#   deterministic -> Tier 0: silent autofill from profile.json (value_key)
+#   draftable     -> Tier 2: Claude drafts from answer_bank, user approves (answer_key)
+#   always_ask    -> never auto-filled; always surfaced to the user (phone)
+#
+# always_ask is checked FIRST so a "current salary" field can never be captured by a
+# looser deterministic rule. Per-company overrides (bottom) prepend extra patterns to a
+# bucket for that company only — e.g. force a dream company's "why us" to always_ask.
+
+priority: [always_ask, deterministic, draftable]
+
+buckets:
+
+  # --- Tier 0: deterministic autofill. value_key indexes into profile.json ---
+  deterministic:
+    # MUST be first, and MUST sit above the require-sponsorship rule: inverted/compound
+    # sponsorship phrasing — "able to work WITHOUT sponsorship?" / "authorized to work and
+    # will NOT require sponsorship?" — is the sponsorship question with flipped polarity.
+    # For anyone already authorized without sponsorship the answer is Yes. Without this
+    # rule the require-sponsorship rule below renders "No" = wrong-polarity knockout.
+    - {pattern: '(without|will not|won''?t|do(es)? not|don''?t|\bnot\b).{0,30}(require|need).{0,25}sponsor|(able|authorized|eligible|can you|are you able).{0,60}without.{0,35}sponsor', value_key: work_authorization.authorized_us}
+    # Sponsorship questions often say "...sponsorship to work in the COUNTRY in which the
+    # job is located..." and the generic \bcountry\b address rule below would otherwise
+    # grab it and fill a country name into a Yes/No field. This rule is specific
+    # (require/need + sponsor) so putting it near the top is safe.
+    - {pattern: 'require.*sponsor|need.*sponsor|visa sponsor|sponsorship (now|in the future|required|for)', value_key: work_authorization.require_sponsorship}
+    # Referral source is hoisted here, above the phone/zip/portfolio rules: "How did you
+    # hear about <company>?" must never be captured by a substring hiding in the company
+    # name (Zipline -> zip, T-Mobile -> mobile). The phrasing is ultra-specific, so
+    # placing it this early is safe.
+    - {pattern: 'how (did|do) you (first |initially |originally )?(hear|learn|find out)|how were you referred|(hear|learn) about (us|this|the (role|position|job|company))|referral source|source of application', value_key: preferences.referral_source}
+    - {pattern: '\bfirst name\b',                                   value_key: identity.first_name}
+    # "Preferred name" / "what should we call you" is the applicant's given name (Parth),
+    # NOT a work-location preference — sits above the preferred-city/location rules below,
+    # and won't collide with them (they anchor on city/location, this anchors on name).
+    - {pattern: 'preferred (first )?name|what (name )?(should we call you|do you (go by|prefer))|\bnickname\b|\bgoes by\b', value_key: identity.first_name}
+    - {pattern: '\blast name\b|\bsurname\b|\bfamily name\b',        value_key: identity.last_name}
+    - {pattern: '\bfull name\b|^name$|your name|legal name',        value_key: identity.full_name}
+    - {pattern: 'e-?mail',                                          value_key: identity.email}
+    # mobile/cell word-bounded: bare substrings caught "T-Mobile"/"misCELLaneous" etc.
+    - {pattern: '\bphone\b|\bmobile\b|telephone|\bcell\b',          value_key: identity.phone}
+    - {pattern: 'linkedin',                                         value_key: links.linkedin}
+    - {pattern: 'github|git hub',                                   value_key: links.github}
+    # url word-bounded: bare "url" caught "hoURLy rate" and silently skipped a comp question
+    - {pattern: 'portfolio|personal (web ?site|site)|\bwebsite\b|\burl\b', value_key: links.portfolio}
+    # Twitter/X: Parth has none -> renders "" (intentional blank, skipped silently) like
+    # portfolio, rather than escalating to Telegram on every form that asks for it.
+    - {pattern: '\btwitter\b|\bx handle\b|x \(formerly twitter\)',   value_key: links.twitter}
+    - {pattern: 'street address|address line|mailing address',     value_key: identity.address.line1}
+    # Combined "City, State" / "City and State" fields need the full display string, and
+    # "Preferred City" is a work-location preference, not the home address — both MUST sit
+    # above the bare \bcity\b rule or it captures them and fills just the city name.
+    - {pattern: 'city\s*,\s*state|city\s*/\s*state|city and state', value_key: identity.location_display}
+    - {pattern: 'preferred (city|location)|desired (city|location)', value_key: preferences.locations}
+    - {pattern: '\bcity\b',                                         value_key: identity.address.city}
+    # Anchored: bare \bstate\b caught the VERB "state" ("Please state your reasons...")
+    # and shadowed later rules ("state-owned", EEO labels citing "state and federal law").
+    # Renders the FULL state name (e.g. "Illinois"), not the "IL" abbreviation: state fields are
+    # frequently react-selects whose options are full names, so a 2-letter code never matches the
+    # full-name option (a silent miss on a required field). Full name types fine into plain
+    # text state fields too. Structured address.state stays the 2-letter code for
+    # address-object uses.
+    - {pattern: '^\s*state\s*[?:*]?\s*$|state (of residence|you (live|reside))|which state|what state do|state\s*/\s*province|\bprovince\b|\bregion\b', value_key: identity.address.state_full}
+    # zip word-bounded: bare "zip" caught company names ("How did you hear about Zipline?")
+    - {pattern: '\bzip\b|postal code',                              value_key: identity.address.zip}
+    # "authorized to work in this COUNTRY?" is a Yes/No work-auth question, but the generic
+    # \bcountry\b address rule below would grab it and fill "United States" (no Yes/No match).
+    # So this MUST precede country. Renders "Yes" from work_authorization.authorized_us.
+    - {pattern: 'authorized to work|legally authorized|eligible to work',  value_key: work_authorization.authorized_us}
+    # "Country of citizenship"/"Nationality" is an immigration question, NOT the mailing
+    # address. The two differ for anyone living outside their country of citizenship,
+    # which is every visa and permanent-resident case. MUST precede \bcountry\b, which
+    # would otherwise silently fill the country of RESIDENCE — factually wrong, and wrong
+    # on exactly the forms where the distinction is being checked.
+    - {pattern: 'country of (citizenship|nationality)|citizenship country|\bnationality\b', value_key: work_authorization.citizenship_country}
+    - {pattern: '\bcountry\b',                                      value_key: identity.address.country}
+    # A single free-text "Location" field (common as a Greenhouse React custom question):
+    # no separate city/state boxes, so fill the full display string ("City, State,
+    # Country"). Placed AFTER the granular city/state/zip/country rules so those still
+    # win for structured address fields; won't match "relocation" (\b guards it).
+    # (Combined "City, State" labels are handled by the dedicated rule above \bcity\b.)
+    - {pattern: 'current location|^location(\s*\*)?$|where are you (based|located)|your current location', value_key: identity.location_display}
+    # ORDER-SENSITIVE: "citizen OR permanent resident" -> Yes must precede bare "citizen" -> No,
+    # and the status specifier must precede the yes/no "authorized to work" rule.
+    - {pattern: 'citizen[^?.]{0,25}(\bor\b|/)[^?.]{0,25}(permanent resident|green ?card|national)|(permanent resident|green ?card)[^?.]{0,25}(\bor\b|/)[^?.]{0,25}citizen', value_key: work_authorization.authorized_us}
+    # (Sponsorship rule moved to the very top of this bucket — see note there. It must
+    # precede both the address \bcountry\b rule and the "visa status" rule below.)
+    - {pattern: 'work.?authorization (status|type)|visa (status|type)|immigration status|residency status|what is your (work )?(auth\w*|status)', value_key: work_authorization.status}
+    # Interrogative/bare citizenship-noun labels want the status STRING, not Yes/No —
+    # "What is your citizenship?" as free text was getting "No" typed into it. MUST
+    # precede the \bcitizen(ship)?\b yes/no rule below.
+    - {pattern: 'what is your citizenship|citizenship status|^citizenship\s*[?:*]?\s*$', value_key: work_authorization.status}
+    - {pattern: '\bcitizen(ship)?\b', value_key: work_authorization.us_citizen}
+    - {pattern: 'authorized to work|legally authorized|work authorization|eligible to work', value_key: work_authorization.authorized_us}
+    # Relocation ASSISTANCE (money/support) is a different question from willingness to
+    # relocate — Parth's decision (2026-07-12): answer No. Must sit above the broad
+    # relocation rule below, which would otherwise answer Yes.
+    - {pattern: 'relocation (assistance|package|support|bonus|benefit)|assist\w*.{0,20}relocat', value_key: preferences.relocation_assistance_needed}
+    - {pattern: 'willing to relocate|open to relocation|able to relocate|relocat',           value_key: work_authorization.relocation}
+    # EEO / voluntary self-identification — autofilled from profile.eeo (Parth's chosen answers)
+    - {pattern: '\bgender\b|\bsex\b|gender identity',              value_key: eeo.gender}
+    # The standard US EEO block asks "Are you Hispanic or Latino?" as its own Yes/No
+    # BEFORE race — route it to its own answer so it fills instead of escalating on
+    # every Greenhouse form. The race rule below keeps hispanic|latino as a fallback for
+    # combined race+ethnicity single-question forms.
+    - {pattern: 'are you hispanic|hispanic or latino\??\s*$|of hispanic or latino (origin|descent)', value_key: eeo.hispanic_latino}
+    - {pattern: '\brace\b|ethnic|hispanic|latino',                value_key: eeo.race_ethnicity}
+    - {pattern: 'veteran',                                        value_key: eeo.veteran_status}
+    - {pattern: 'disabilit|disabled',                             value_key: eeo.disability_status}
+    # Extended demographics some ATSs add (e.g. Chime). "I identify as:" is a bare
+    # gender-identity question (no "gender" keyword, so it misses the rule above);
+    # "sexual orientation" dodges \bsex\b. Both route to their own profile.eeo values.
+    - {pattern: 'sexual orientation',                             value_key: eeo.sexual_orientation}
+    - {pattern: 'i identify as\b',                                value_key: eeo.gender_identity}
+    # "Are you a person of transgender experience?" and similar LGBTQ demographic Y/N.
+    - {pattern: 'transgender',                                    value_key: eeo.transgender}
+    # Preferred pronouns (often a radio/checkbox group: He/Him, She/Her, They/Them).
+    - {pattern: 'pronoun',                                       value_key: eeo.pronouns}
+    # Consent to store/process demographic answers (GDPR-style checkbox). Distinct from
+    # the background-check consent below (that one keys on "background"). Renders Yes -> checked.
+    - {pattern: 'consent.*demographic|demographic.*(consent|data survey)', value_key: eeo.demographic_consent}
+    # Privacy-policy / application-terms agreement ("By selecting 'I agree'... processed in
+    # accordance with … Privacy Policy"). Deterministic Yes -> checks the box / picks "I agree"
+    # (canon() maps "I agree" -> yes). Keyed on agreement wording, NOT bare "consent", so it
+    # doesn't collide with the demographic-consent rule above.
+    - {pattern: 'i agree|privacy policy|candidate privacy|processed in accordance|terms (and|&) conditions|by (checking|selecting|clicking|submitting)', value_key: attestations.data_privacy_consent}
+    # Prior / related affiliation disclosures -> all No (see profile.affiliations)
+    # Question-anchored: the old broad previous(ly)+employ/work pattern captured résumé
+    # history fields ("List your previous employers", "Describe your previous work
+    # experience") and typed "No" into them. Every alternative now requires either an
+    # interrogative lead-in or an employed-BY-someone construction.
+    - {pattern: '(have you|were you|ever).{0,30}(employed|worked).{0,25}(here|\bus\b|by us|for us|with us|this company|the company|before)|previously (been )?(employed|worked) (by|at|for|with)|(are|were) you.{0,20}former (employee|staff)|former employee\b|prior employment (with|at|here)|rehire|subsidiar', value_key: affiliations.previously_employed}
+    - {pattern: 'government (official|office|entity|owned|agency|institution|body)|public official|state-owned|politically exposed', value_key: affiliations.government_affiliation}
+    - {pattern: 'external business|outside business|other business (activit|interest)|competing business|conflict of interest|business affiliation|employed by.{0,25}(customer|partner|client|vendor|supplier|competitor)|(work for|employed by).{0,25}(a )?(customer|partner|client)', value_key: affiliations.external_business}
+    - {pattern: 'relative|family member|related to (a |an |any )?(current |former )?employee|know (anyone|someone) (who works|employed)', value_key: affiliations.related_to_employee}
+    # Current employment (from resume). Anchored to bare-noun labels ("Current Employer")
+    # or name-asking phrasings — the old loose patterns matched essay questions ("Why do
+    # you want to leave your current employer?") and typed the employer name into textareas.
+    # The end-anchors deliberately do NOT allow a trailing "?" — that's what excludes
+    # question-sentences while keeping bare-noun labels (which never carry one).
+    - {pattern: '(current|present|most recent) (employer|company)( name)?\s*[:*]?\s*$|name of (your )?(current |present )?employer|(company|employer) (do )?you (currently |presently )?work (for|at)|who is your (current |present )?employer', value_key: employment.current_employer}
+    - {pattern: '(current|present|most recent) (job )?(title|role|position)\s*[:*]?\s*$|your (current |present )?(job )?title\s*[:*]?\s*$|what (is|was) your (current |present )?(job )?(title|role)\b', value_key: employment.current_title}
+    # Education (from resume)
+    - {pattern: 'school|university|college|institution|alma mater', value_key: education.school}
+    # "Degree Type"/"education level" as a PICK-LIST (Bachelors/Masters/PhD/MBA) asks for the
+    # LEVEL, not the credential name — route to degree_level so it matches an option. Must
+    # precede the generic degree rule (which fills the free-text credential "B.E. (Hons)").
+    - {pattern: 'degree type|degree level|level of education|education level|highest level|what.{0,10}(is|was) your (highest )?(level|degree)', value_key: education.degree_level}
+    - {pattern: '(highest )?(degree|qualification)', value_key: education.degree}
+    # Anchored: bare "major"/"discipline" substrings matched "major professional
+    # achievement" and "disciplined by a regulatory authority" (a standard disclosure at
+    # fintech/quant firms) and typed "Computer Science" into them.
+    - {pattern: '(academic )?major\s*[?:*]?\s*$|what (is|was) your.{0,15}major|major (of|in) |field of study|course of study|area of study|\bconcentration\b|academic discipline|\bdiscipline\s*[?:*]?\s*$', value_key: education.major}
+    - {pattern: '\bgpa\b|cgpa|grade point', value_key: education.gpa}
+    - {pattern: 'graduat\w* (date|year|in)|year of graduation|(expected|anticipated) graduation|completion date|when did you graduate', value_key: education.graduation_date}
+    # Preferences (referral source lives at the top of this bucket — see note there)
+    # In-office/hybrid ACKNOWLEDGMENT (a Yes/No commitment) must beat the work_arrangement
+    # rule below, which would otherwise grab it on the word "hybrid" and answer with a
+    # preference string instead of Yes.
+    - {pattern: 'acknowledge.*(office|hybrid|days a week|in person|on-?site)|(required to|will be required).{0,25}(come into|in) the office|(available|able|willing) to (come|work) ?(on-?site|onsite)|come on-?site to work|commit\w*.{0,40}(office|on-?site|in person|anchor day)|(ok|okay|comfortable|fine|good) with.{0,40}(in-?office|on-?site|hybrid)', value_key: attestations.in_office_acknowledgment}
+    # "How many days a week are you available to come into the office?" — a count, not a
+    # Yes/No, so it must NOT hit the acknowledgment rule above (no "acknowledge"/"available
+    # to work onsite" wording) nor the work_arrangement string rule below. Renders full
+    # availability (Parth is open to all arrangements).
+    - {pattern: 'how many days.*(office|on-?site|in person|come in)|days (a|per) week.*(office|on-?site|in person|come in)', value_key: preferences.office_days_available}
+    - {pattern: '\bremote\b|hybrid|on-?site|in-office|work arrangement|willing to work (in|from|on-?site)', value_key: preferences.work_arrangement}
+    - {pattern: 'preferred (location|city|work location)|desired (location|work location)|location preference|locations? (of interest|you.{0,15}(open|interested))|open to (which )?locations|where would you like to work', value_key: preferences.locations}
+    # Attestations (yes/no; booleans render Yes/No)
+    - {pattern: 'at least 18|18 (years )?(of age|or older)|are you (at least |over )?18|over 18|minimum age|of legal (working )?age', value_key: attestations.age_18_or_older}
+    - {pattern: 'background (check|screen|investigation)|consent to.*background', value_key: attestations.background_check_consent}
+    - {pattern: 'security clearance|(hold|have|active|current).{0,15}clearance|clearance level', value_key: attestations.security_clearance}
+    - {pattern: 'non-?compete|noncompete|restrictive covenant|bound by (any )?(agreement|contract)|prior (employment )?agreement', value_key: attestations.non_compete}
+    - {pattern: 'accommodat', value_key: attestations.interview_accommodations_needed}
+    - {pattern: 'convicted|criminal (history|record|background|conviction|offense)|felony|misdemeanor|ever been (arrested|convicted|charged)|plead\w* guilty', value_key: attestations.criminal_history}
+    # Have you interviewed/applied here before? -> No (fresh applications; per-company
+    # override can flip it). "interviewed"/"applied" aren't in the previously_employed rule
+    # above (that keys on employ/work), so no collision.
+    - {pattern: 'ever (interviewed|applied)|previously (interviewed|applied)|interviewed (here|with|at|before)|applied (here|to (us|this)|before|previously)', value_key: attestations.previously_applied_or_interviewed}
+
+  # --- Tier 2: Claude drafts, user approves. answer_key indexes answer_bank.yaml ---
+  draftable:
+    - {pattern: 'why (do you want to |are you interested|would you like ).*?(work|join|company|us|here)|why (this company|our company|us\b)', answer_key: why_company}
+    - {pattern: 'why (this|the) role|why (are you|were you) (interested|drawn).*role|why do you want this (job|position|role)', answer_key: why_role}
+    - {pattern: 'cover letter',                                     answer_key: cover_letter}
+    - {pattern: 'greatest strength|biggest strength|your strength', answer_key: biggest_strength}
+    - {pattern: 'weakness|area.*improv|area.*develop',              answer_key: biggest_weakness}
+    - {pattern: 'tell us about yourself|about you\b|introduce yourself', answer_key: about_you}
+    # Behavioral / "walk us through a..." prompts — proudest achievement, a challenging
+    # project, a time you did X. Draftable so Claude drafts from the bank + Parth approves.
+    - {pattern: 'proudest|greatest (achievement|accomplishment)|most (proud|significant|impressive|challenging).{0,30}(achievement|accomplishment|project|work|problem)|walk us through.{0,30}(achievement|accomplishment|project|time)|describe a (time|project|situation|challenge)|tell (us|me) about a (time|project|challenge|situation)', answer_key: behavioral}
+    - {pattern: 'anything else|additional (info|information|comments)|is there anything', answer_key: anything_else}
+
+  # --- always ask the user; never silently filled ---
+  always_ask:
+    - {pattern: 'salary|compensation expectation|desired (pay|compensation)|expected (pay|salary|compensation)|pay expectation|(hourly|pay) rate|\bwage\b'}
+    - {pattern: 'current (salary|compensation|ctc|pay)'}
+    - {pattern: 'years of (experience|professional)|how many years|minimum.*years'}
+    - {pattern: 'notice period|when can you (start|begin)|start date|availability|available to start|earliest.{0,20}(start|begin|join)|(any )?(deadlines?|timeline)( considerations?)?|when.{0,20}(would you|can you).{0,20}(start|begin|join)'}
+
+# --- Per-company overrides: patterns here are prepended to that bucket for the named
+#     company only. Use to force a dream company's open-ended Qs to manual review, etc.
+overrides:
+  # "Jane Street":
+  #   always_ask:
+  #     - {pattern: 'why (jane street|jane|us)'}

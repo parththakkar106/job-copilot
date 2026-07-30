@@ -1,0 +1,39 @@
+# TEMPLATE. Copy to companies.yaml and edit: `cp data/companies.example.yaml data/companies.yaml`.
+#
+# ats:  greenhouse | lever | ashby   — which job board API to query.
+# slug: the company's identifier on that board, NOT its display name. Find it in the URL of
+#       the company's careers page, e.g. job-boards.greenhouse.io/<slug> or jobs.lever.co/<slug>
+#       or jobs.ashbyhq.com/<slug>.
+# tier: pipeline (eligible for the auto-apply loop) | dream (surfaced in the digest but never
+#       auto-applied — reserved for roles you want to approach manually or via referral).
+#
+# The scraper reads this file every run, so add and remove freely. Every entry below is a real,
+# API-verified slug, so this file works as-is if you just want to see the pipeline run.
+#
+# Verify a slug before trusting it: a wrong-but-existing slug returns somebody else's jobs
+# rather than an error. `python -m core.scraper --selftest` exercises the loader; the quickest
+# manual check is to open the board URL above in a browser and confirm it is the right company.
+companies:
+
+  # ---- GREENHOUSE ------------------------------------------------------------
+  - {name: Airbnb,        ats: greenhouse,  slug: airbnb,      tier: pipeline}
+  - {name: Asana,         ats: greenhouse,  slug: asana,       tier: pipeline}
+  - {name: Cloudflare,    ats: greenhouse,  slug: cloudflare,  tier: pipeline}
+  - {name: Coinbase,      ats: greenhouse,  slug: coinbase,    tier: pipeline}
+
+  # ---- ASHBY -----------------------------------------------------------------
+  - {name: Abridge,       ats: ashby,       slug: abridge,     tier: pipeline}
+  - {name: Anyscale,      ats: ashby,       slug: anyscale,    tier: pipeline}
+  - {name: Confluent,     ats: ashby,       slug: confluent,   tier: pipeline}
+
+  # ---- LEVER -----------------------------------------------------------------
+  - {name: Coupa,         ats: lever,       slug: coupa,       tier: pipeline}
+  - {name: Mistral,       ats: lever,       slug: mistral,     tier: pipeline}
+  - {name: Palantir,      ats: lever,       slug: palantir,    tier: pipeline}
+
+# Companies NOT on one of these three boards (Workday, Taleo, iCIMS, in-house portals, and
+# most large banks and quant funds) can't be scraped by this tool. Keeping them listed here
+# as commented lines is a useful habit — it records that you considered them and why they
+# were skipped, so you don't re-resolve the same dead slug in three months:
+#
+#   # {name: Some Bank,   ats: workday,     slug: somebank,    tier: dream}   # Workday, no API adapter

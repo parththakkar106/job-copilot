@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# Your own data never gets committed.
+#
+# The repo ships data/*.example.* templates. You copy each one to its real name
+# and fill it in, and the copies are ignored below — so a `git add -A` after an
+# afternoon of editing your profile cannot publish your address, phone number,
+# work-authorization status, or your list of target companies.
+#
+# This is the whole reason the templates and the real files have different names.
+# If you fork this and want your filled-in config tracked, make the repo PRIVATE
+# first and understand you can never make it public again without rewriting history.
+# ---------------------------------------------------------------------------
+data/profile.json
+data/companies.yaml
+data/answer_bank.yaml
+
+# scraper outputs / audit dumps
+out/
+raw_*.json
+
+# local application-tracking state (grows over time, may hold personal data)
+applied.json
+
+# per-run fill reports + pre-submit screenshots (audit log, holds personal form answers/PII)
+bridge/logs/
+
+# in-flight batch: open questions + Parth's answers, awaiting approval (PII)
+bridge/pending/
+
+# autonomous daily run: transient sentinel the launcher drops to kick off collection
+bridge/.run_trigger
+
+# web console: transient sentinel the web app drops to request a flush (send approved)
+bridge/.flush_trigger
+
+# runtime toggles Parth flips by hand (e.g. Claude-drafting on/off) — local, per-machine
+bridge/prefs.json
+bridge/.prefs.*.tmp
+
+# secrets — never commit
+.env
+*.key
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# os / editor
+.DS_Store
+Thumbs.db
+
+# Claude Code local scratch (worktrees, session state) — never commit
+.claude/
+
+# local resume byte-cache (personal PDFs, synced from Drive)
+resumes/
+
+# Extension: staged copies of the data layer (source of truth is data/)
+extension/profile.json
+extension/taxonomy.json
+extension/resumes/
+
+# web console: node deps + built SPA bundle (rebuilt with `npm run build`)
+web/frontend/node_modules/
+web/frontend/dist/

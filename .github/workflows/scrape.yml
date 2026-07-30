@@ -1,0 +1,92 @@
+name: scrape-jobs
+on:
+  schedule:
+    # 03:00 UTC = 08:30 IST. Parth's machine is on India Standard Time (UTC+5:30), so IST
+    # is the schedule that matters, not ET. IST has no DST, so this never drifts.
+    # Paired with the local collection run at 09:30 IST (Windows Task Scheduler, see
+    # scripts/install_daily_task.ps1): discovery writes out/queue.json, then the local run
+    # fetches it a full hour later. The hour is deliberate slack — GitHub's cron is
+    # best-effort and can start 5-15+ min late, and a late scrape means the local run
+    # silently reuses YESTERDAY's queue. Keep discovery first if you change either time.
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}     # manual run button
+
+permissions:
+  contents: write           # needed for the commit-queue-back step
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    env:
+      # Email delivery is optional: set repo secrets MAIL_USERNAME (a Gmail address)
+      # and MAIL_PASSWORD (a Gmail App Password, NOT your login password) to enable it.
+      # Leave them unset and the email step is skipped — artifact + commit still happen.
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+      # Where the digest is sent. Optional: unset means it goes to MAIL_USERNAME, i.e. you
+      # email yourself, which is the sane default. Set MAIL_TO only when the destination
+      # differs from the sending account.
+      MAIL_TO: ${{ secrets.MAIL_TO }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install requests pyyaml
+
+      # data/companies.yaml is gitignored so nobody publishes their target list by
+      # accident — which means it does not exist in a fresh Actions checkout either, and
+      # core/paths.py would quietly fall back to companies.example.yaml. The run would go
+      # green every morning while scraping ten example companies instead of yours, and the
+      # only clue would be one stderr line buried in the log. Fail loudly instead.
+      - name: Require a real companies.yaml
+        run: |
+          if [ ! -f data/companies.yaml ]; then
+            echo "::error::data/companies.yaml is missing, so this run would silently scrape"
+            echo "::error::data/companies.example.yaml instead of your own targets."
+            echo "::error::Either commit your own list (make the repo PRIVATE first — it"
+            echo "::error::reveals who you are targeting), or drop the schedule and run the"
+            echo "::error::scraper locally with JOBCOPILOT_DATA pointing at your config."
+            exit 1
+          fi
+
+      - run: python -m core.scraper --verify-liveness --limit 40
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: job-queue
+          path: |
+            out/queue.json
+            out/dream.json
+            out/digest.md
+            out/digest.html
+
+      - name: Email the digest
+        if: ${{ env.MAIL_USERNAME != '' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ env.MAIL_USERNAME }}
+          password: ${{ env.MAIL_PASSWORD }}
+          subject: "Job digest — ${{ github.run_id }}"
+          to: ${{ env.MAIL_TO || env.MAIL_USERNAME }}
+          from: job-bot <${{ env.MAIL_USERNAME }}>
+          html_body: file://out/digest.html
+          body: file://out/digest.md      # plaintext fallback for clients that don't render HTML
+
+      # commit the queue back so apply engine + tracker sync can read it
+      - name: Commit queue
+        run: |
+          git config user.name  "job-bot"
+          git config user.email "job-bot@users.noreply.github.com"
+          # dream.json too: out/ is gitignored, so anything not force-added here never
+          # reaches a local checkout — the console's Dream pile read an absent file and was
+          # permanently empty.
+          git add -f out/queue.json out/dream.json out/digest.md || true
+          git commit -m "queue $(date -u +%F)" || echo "no changes"
+          # rebase in case main moved since checkout; a FAILED push must fail the run
+          # (the old `|| echo "push skipped"` swallowed it and the queue silently
+          # never landed on origin that day)
+          git pull --rebase origin main
+          git push

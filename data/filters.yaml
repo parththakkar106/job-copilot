@@ -1,0 +1,33 @@
+# Everything here is editable. Field keyword lists drive classification AND relevance
+# (a role matching no field is dropped as irrelevant). Priority: quant > ai > ds > tech,
+# so "ML Engineer" -> ai, "Quant Researcher" -> quant even if it also says "engineer".
+freshness_days: 10          # you said "posted within last few days" — 10 gives buffer for weekend gaps
+
+fields:
+  quant:
+    [quant, quantitative]
+  ai:
+    [machine learning, ml engineer, ai engineer, applied scientist, research engineer,
+     deep learning, llm, nlp, "ai/ml", genai, generative ai]
+  ds:
+    [data scientist, data science, decision scientist, analytics engineer, quantitative analyst]
+  tech:
+    [software engineer, software developer, backend engineer, full stack, fullstack,
+     platform engineer, infrastructure engineer, systems engineer]
+
+seniority:
+  # dropped if the title contains any of these as a whole word (you're early-career)
+  exclude:
+    [senior, sr, staff, principal, lead, manager, director, head, vp,
+     vice president, intern, internship, phd, "10 years", "8 years"]
+
+location:
+  us_only: true
+  # dropped if the location string contains any of these (extend as you hit noise)
+  exclude_locations:
+    [india, gurugram, gurgaon, bengaluru, bangalore, hyderabad, pune, noida, chennai, mumbai,
+     london, uk, united kingdom, ireland, dublin, canada, toronto, vancouver, montreal,
+     germany, berlin, munich, france, paris, netherlands, amsterdam, spain, madrid, barcelona,
+     portugal, lisbon, poland, warsaw, romania, bucharest, singapore, tokyo, sydney, melbourne,
+     mexico, brazil, sao paulo, argentina, colombia, latam,
+     remote emea, remote apac, remote europe, remote latam, remote canada, remote india]

@@ -1,0 +1,145 @@
+{
+  "_note": "TEMPLATE. Copy to profile.json and fill it in: `cp data/profile.example.json data/profile.json`, then run `python -m core.profile checkfill` to list everything still unset. Anything left as FILL_ME is treated as MISSING — the extension will not autofill it and will surface the question instead of guessing, which is the intended failure mode. Booleans render as Yes/No via core/profile.py.",
+
+  "identity": {
+    "first_name": "FILL_ME",
+    "last_name": "FILL_ME",
+    "full_name": "FILL_ME",
+    "email": "FILL_ME",
+    "phone": "FILL_ME",
+    "address": {
+      "line1": "FILL_ME",
+      "city": "FILL_ME",
+      "state": "FILL_ME",
+      "state_full": "FILL_ME",
+      "zip": "FILL_ME",
+      "country": "United States"
+    },
+    "_location_display_note": "How a single-box location field should read. Many ATS location pickers search server-side on what is typed, so use the form their dropdown expects, e.g. 'City, State, Country'.",
+    "location_display": "FILL_ME"
+  },
+
+  "links": {
+    "linkedin": "FILL_ME",
+    "github": "FILL_ME",
+    "portfolio": "",
+    "twitter": ""
+  },
+
+  "_work_authorization_note": "REVIEW EVERY VALUE HERE BEFORE YOUR FIRST RUN. These answers are submitted to real employers and a wrong default is worse than no answer. The booleans below are only placeholders to show the shape, not a recommendation.",
+  "work_authorization": {
+    "authorized_us": true,
+    "require_sponsorship": false,
+    "us_citizen": false,
+    "citizenship_country": "FILL_ME",
+    "status": "FILL_ME",
+    "relocation": true
+  },
+
+  "employment": {
+    "current_employer": "FILL_ME",
+    "current_title": "FILL_ME",
+    "current_start": "FILL_ME"
+  },
+
+  "education": {
+    "_school_note": "Use the school's full formal name and avoid parentheticals/acronyms. ATS school pickers run a server-side search on exactly this string, and a bracketed acronym returns zero matches — see the type-to-search notes in extension/fill.js.",
+    "school": "FILL_ME",
+    "degree": "FILL_ME",
+    "degree_level": "FILL_ME",
+    "major": "FILL_ME",
+    "gpa": "FILL_ME",
+    "graduation_date": "FILL_ME"
+  },
+
+  "preferences": {
+    "_target_roles_note": "Free text, used to ground Claude-drafted essay answers (bridge/drafter.py). Say what you are aiming FOR, e.g. 'backend and platform engineering roles in the US'.",
+    "target_roles": "FILL_ME",
+    "referral_source": "Company website",
+    "work_arrangement": "Open to remote, hybrid, or onsite",
+    "office_days_available": "5",
+    "locations": "United States (open to relocation)",
+    "relocation_assistance_needed": false
+  },
+
+  "attestations": {
+    "_note": "Yes/No attestation-style questions. Booleans render Yes/No. Defaults below are the common case, but they are ASSERTIONS ABOUT YOU — read every one.",
+    "age_18_or_older": true,
+    "background_check_consent": true,
+    "security_clearance": false,
+    "non_compete": false,
+    "interview_accommodations_needed": false,
+    "criminal_history": false,
+    "in_office_acknowledgment": true,
+    "previously_applied_or_interviewed": false,
+    "data_privacy_consent": true
+  },
+
+  "eeo": {
+    "_note": "US voluntary self-identification. Left as FILL_ME on purpose: there is no sane default for someone else's demographics, and every field here is optional on the form. Fill in what you want auto-answered and leave the rest — anything unset is simply surfaced for you to answer by hand. Declining is always a valid answer; most forms offer a 'I don't wish to answer' option you can paste in verbatim.",
+    "gender": "FILL_ME",
+    "race_ethnicity": "FILL_ME",
+    "hispanic_latino": "FILL_ME",
+    "veteran_status": "FILL_ME",
+    "disability_status": "FILL_ME",
+    "gender_identity": "FILL_ME",
+    "sexual_orientation": "FILL_ME",
+    "pronouns": "FILL_ME",
+    "demographic_consent": true,
+    "transgender": "FILL_ME"
+  },
+
+  "affiliations": {
+    "_note": "Prior/related-connection disclosure questions. All No assumes you are not applying to a current or former employer, or to a company where you have a relative. If you ever do, add a per-company override in taxonomy.yaml so it gets surfaced instead of auto-answered.",
+    "previously_employed": false,
+    "government_affiliation": false,
+    "external_business": false,
+    "related_to_employee": false
+  },
+
+  "_local_resume_source": {
+    "_note": "Resumes are copied from this LOCAL folder into the gitignored resumes/ cache that the extension reads for its DataTransfer attach. Point base_dir at wherever your PDFs live, then run `python -m core.resumes sync-local`. Each track's local_source is relative to base_dir.",
+    "base_dir": "FILL_ME"
+  },
+
+  "_resume_tracks_note": "One resume per specialisation; the scraper picks a track per role by keyword overlap against the job title and description (title weighted 2x). Keep 1 track if you only have one resume — set its keywords to [] and make it default_resume_tag. The keyword lists below are generic and safe to keep as-is. drive_id is optional and only used by the Google Drive sync path.",
+  "resume_tracks": [
+    {
+      "tag": "quant",
+      "title_prefix": "Resume_quant_",
+      "drive_id": "",
+      "current_file": "FILL_ME",
+      "local_source": "FILL_ME",
+      "local_path": "resumes/quant.pdf",
+      "keywords": ["quant", "quantitative", "trading", "trader", "researcher", "hft", "systematic", "alpha", "derivatives"]
+    },
+    {
+      "tag": "ds",
+      "title_prefix": "Resume_ds_",
+      "drive_id": "",
+      "current_file": "FILL_ME",
+      "local_source": "FILL_ME",
+      "local_path": "resumes/ds.pdf",
+      "keywords": ["data scientist", "data science", "analytics", "statistician", "experimentation", "ml scientist"]
+    },
+    {
+      "tag": "tech",
+      "title_prefix": "Resume_tech_",
+      "drive_id": "",
+      "current_file": "FILL_ME",
+      "local_source": "FILL_ME",
+      "local_path": "resumes/tech.pdf",
+      "keywords": ["software", "engineer", "backend", "full stack", "fullstack", "platform", "infrastructure", "swe", "developer"]
+    },
+    {
+      "tag": "ai",
+      "title_prefix": "Resume_ai_",
+      "drive_id": "",
+      "current_file": "FILL_ME",
+      "local_source": "FILL_ME",
+      "local_path": "resumes/ai.pdf",
+      "keywords": ["machine learning", "ml engineer", "ai", "deep learning", "nlp", "llm", "mlops", "applied scientist", "research engineer"]
+    }
+  ],
+  "default_resume_tag": "ds"
+}

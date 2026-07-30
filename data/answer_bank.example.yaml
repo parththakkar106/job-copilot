@@ -1,0 +1,76 @@
+# TEMPLATE. Copy to answer_bank.yaml and replace the entries:
+#   cp data/answer_bank.example.yaml data/answer_bank.yaml
+#
+# Reusable answers to the essay-style questions that keep recurring across applications.
+# Read at apply time, not just written after the fact. Resolution order is:
+#     company-scoped (status active) -> common (status active) -> ask you
+# Only status: active is ever served, so a half-written answer sitting at status: draft is
+# safe to leave in the file.
+#
+# The bank ALWAYS beats the Claude drafter. An entry here is a hand-written answer you have
+# already approved, so it is served verbatim and costs nothing; drafting only happens on a
+# miss. Filling this file in is the single cheapest way to cut both cost and review time.
+#
+# Fields:
+#   id       unique within the file; only used to address an entry from the CLI.
+#   key      the answer_key that data/taxonomy.yaml maps a question to. This is the join.
+#            Run `python -m core.profile classify "<the question text>"` to see which key
+#            (if any) a given question resolves to.
+#   scope    common (any company) | company (only the company named below).
+#   company  null for common entries; the company name for company-scoped ones.
+#   answer   the text submitted. Written in the first person, as you.
+#   tags     free-form labels, for your own filtering. Not used for matching.
+#   status   active (served) | draft (ignored).
+#
+# Manage entries with `python -m core.bank` rather than editing by hand if you prefer a CLI.
+answers:
+- id: biggest_strength
+  key: biggest_strength
+  scope: common
+  company: null
+  answer: >
+    Replace this with your own answer. What works here is one concrete example with a
+    real number attached, rather than an adjective about yourself. Name the problem you
+    found, the thing you changed, and what measurably got better afterwards. Three or
+    four lines is plenty, and it should sound like you typed it rather than like it was
+    polished for publication.
+  tags:
+  - behavioral
+  status: draft
+  created: 2026-01-01
+  updated: 2026-01-01
+  last_used: null
+  uses: 0
+- id: why_role_default
+  key: why_role
+  scope: common
+  company: null
+  answer: >
+    Replace this with your own answer. A generic common-scope entry is the fallback for
+    every company you have not written a specific answer for, so keep it about the kind
+    of work you want rather than about any one employer. Leave an obvious slot where
+    company specifics belong, then add company-scoped entries over time for the places
+    you care most about.
+  tags:
+  - motivation
+  status: draft
+  created: 2026-01-01
+  updated: 2026-01-01
+  last_used: null
+  uses: 0
+- id: why_company_example_corp
+  key: why_company
+  scope: company
+  company: Example Corp
+  answer: >
+    Replace this with your own answer, and note the scope and company fields above: this
+    entry is served ONLY for Example Corp, and it takes precedence over any common entry
+    with the same key. That is the mechanism for tailoring the handful of companies you
+    actually care about without writing a bespoke answer for all of them.
+  tags:
+  - motivation
+  status: draft
+  created: 2026-01-01
+  updated: 2026-01-01
+  last_used: null
+  uses: 0
