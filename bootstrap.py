@@ -1,0 +1,115 @@
+"""One-command first-time setup.
+
+    python setup.py
+
+Installs the Python dependencies, creates your config files from the shipped templates,
+and launches the console, which walks you through the rest in a browser.
+
+WHY THIS EXISTS
+---------------
+The steps this replaces were never difficult, only numerous, and a numbered list of
+fifteen shell commands reads as harder than it is. Everything here is something you could
+do by hand from the README; nothing is hidden or magic, and each step prints what it did.
+
+What this deliberately does NOT do:
+  - install Python or Node (you already have Python if this is running; Node is only
+    needed to build the console UI, and we say so rather than failing cryptically)
+  - load the Chrome extension. Chrome requires a human for unpacked extensions, by design
+  - talk to Telegram. BotFather is a conversation, and the bot is optional anyway
+  - overwrite any config you already have. Existing files are left strictly alone
+"""
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+DATA = ROOT / "data"
+
+TEMPLATES = [
+    ("profile.example.json", "profile.json", "your details"),
+    ("companies.example.yaml", "companies.yaml", "companies to watch"),
+    ("answer_bank.example.yaml", "answer_bank.yaml", "reusable answers"),
+]
+
+
+def say(step: str, msg: str) -> None:
+    print(f"[{step}] {msg}", flush=True)
+
+
+def deps() -> bool:
+    """Install the Python requirements. Returns False if it failed, so we can carry on and
+    report everything at the end rather than dying on the first problem."""
+    reqs = [ROOT / "bridge" / "requirements.txt", ROOT / "web" / "requirements.txt"]
+    present = [r for r in reqs if r.exists()]
+    if not present:
+        say("deps", "no requirements files found, skipping")
+        return True
+    cmd = [sys.executable, "-m", "pip", "install", "-q"]
+    for r in present:
+        cmd += ["-r", str(r)]
+    say("deps", "installing Python packages (this can take a minute)")
+    try:
+        subprocess.run(cmd, check=True)
+        say("deps", "done")
+        return True
+    except subprocess.CalledProcessError as e:
+        say("deps", f"pip failed ({e.returncode}). Try running this by hand:\n"
+                    f"       {' '.join(cmd)}")
+        return False
+
+
+def config() -> None:
+    """Copy each template to its real name, never clobbering an existing file."""
+    for src_name, dst_name, what in TEMPLATES:
+        src, dst = DATA / src_name, DATA / dst_name
+        if dst.exists():
+            say("config", f"{dst_name} already exists, leaving it alone")
+            continue
+        if not src.exists():
+            say("config", f"template {src_name} is missing, skipping {dst_name}")
+            continue
+        shutil.copy2(src, dst)
+        say("config", f"created {dst_name} ({what}) from the template")
+
+
+def ui() -> None:
+    """Node is optional-ish: without it the console cannot be built, but the scraper and
+    every CLI still work. Say so plainly instead of failing at an npm error."""
+    if shutil.which("npm"):
+        say("ui", "Node found; start.py will build the console UI on first run")
+        return
+    say("ui", "Node/npm not found. The console UI needs it - install Node 18+ from "
+              "nodejs.org, then re-run. The scraper and CLI tools work without it.")
+
+
+def launch() -> None:
+    say("launch", "starting the console; a setup checklist opens in your browser")
+    print()
+    try:
+        subprocess.run([sys.executable, str(ROOT / "start.py")], check=False)
+    except KeyboardInterrupt:
+        pass
+
+
+def main() -> int:
+    print("job copilot - first-time setup\n")
+    ok = deps()
+    config()
+    ui()
+    print()
+    say("next", "The console will show a checklist. Two things it cannot do for you:")
+    say("next", "  1. load the extension at chrome://extensions (Chrome requires a human)")
+    say("next", "  2. create a Telegram bot, if you want phone control (optional)")
+    print()
+    if not ok:
+        say("next", "Dependencies did not install cleanly - fix that first, then: python start.py")
+        return 1
+    launch()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

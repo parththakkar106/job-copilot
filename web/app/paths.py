@@ -32,6 +32,12 @@ from core import paths as core_paths  # noqa: E402
 PROFILE_PATH = core_paths.PROFILE
 ANSWER_BANK_PATH = core_paths.ANSWER_BANK
 COMPANIES_PATH = core_paths.COMPANIES
+# Save targets. On a fresh install the three READ paths above resolve to the shipped
+# .example templates, so writing through them would overwrite a tracked template with the
+# user's real details — see the note in core/paths.py. Persist through these instead.
+PROFILE_WRITE = core_paths.PROFILE_WRITE
+ANSWER_BANK_WRITE = core_paths.ANSWER_BANK_WRITE
+COMPANIES_WRITE = core_paths.COMPANIES_WRITE
 QUEUE_PATH = core_paths.QUEUE
 DREAM_PATH = core_paths.OUT / "dream.json"
 APPLIED_PATH = core_paths.APPLIED
@@ -51,6 +57,7 @@ from core import bank as bank_mod    # noqa: E402  (core/bank.py)
 
 __all__ = [
     "REPO_ROOT", "BRIDGE_DIR", "PROFILE_PATH", "ANSWER_BANK_PATH", "COMPANIES_PATH",
+    "PROFILE_WRITE", "ANSWER_BANK_WRITE", "COMPANIES_WRITE",
     "QUEUE_PATH", "DREAM_PATH", "APPLIED_PATH", "SCRAPER_MODULE", "EXTENSION_BUILD",
     "RUN_TRIGGER", "FLUSH_TRIGGER",
     "pending_mod", "triage_mod", "bank_mod", "drafter_mod",

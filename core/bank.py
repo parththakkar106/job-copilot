@@ -22,7 +22,8 @@ import yaml
 
 from core import paths
 
-BANK = paths.ANSWER_BANK
+BANK = paths.ANSWER_BANK              # read: may be the shipped template on a fresh install
+BANK_WRITE = paths.ANSWER_BANK_WRITE  # write: always the real, gitignored filename
 TODAY = date.today().isoformat()
 
 
@@ -33,8 +34,12 @@ def load() -> list[dict]:
 
 
 def save(rows: list[dict]):
-    BANK.write_text(yaml.safe_dump({"answers": rows}, sort_keys=False, allow_unicode=True, width=100),
-                    encoding="utf-8")
+    # Deliberately NOT BANK — that can point at answer_bank.example.yaml before the user
+    # has their own file, and answers are personal prose that must not land in a tracked
+    # template. The first save promotes the template into the user's own file.
+    BANK_WRITE.parent.mkdir(parents=True, exist_ok=True)
+    BANK_WRITE.write_text(yaml.safe_dump({"answers": rows}, sort_keys=False, allow_unicode=True, width=100),
+                          encoding="utf-8")
 
 
 def slug(*parts) -> str:

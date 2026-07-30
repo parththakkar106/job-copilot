@@ -21,9 +21,11 @@ import yaml
 from .paths import (
     ANSWER_BANK_PATH,
     COMPANIES_PATH,
+    COMPANIES_WRITE,
     DREAM_PATH,
     FLUSH_TRIGGER,
     PROFILE_PATH,
+    PROFILE_WRITE,
     QUEUE_PATH,
     RUN_TRIGGER,
     bank_mod,
@@ -79,7 +81,10 @@ def set_company_tier(name: str, tier: str) -> bool:
             changed = True
             break
     if changed:
-        COMPANIES_PATH.write_text("".join(lines), encoding="utf-8")
+        # Read may have come from companies.example.yaml on a fresh install; the write
+        # always lands on the real, gitignored filename. First tier toggle therefore
+        # promotes the template into the user's own file rather than editing the template.
+        COMPANIES_WRITE.write_text("".join(lines), encoding="utf-8")
     return changed
 
 
@@ -367,8 +372,11 @@ def load_profile() -> dict:
 def save_profile(obj: dict) -> None:
     """Write profile.json back, pretty-printed to match the hand-edited file. Caller has
     already validated it's a JSON object."""
-    PROFILE_PATH.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + "\n",
-                            encoding="utf-8")
+    # PROFILE_WRITE, never PROFILE: on a fresh install the read path is the shipped
+    # template, and saving through it would put real personal details into a tracked file.
+    PROFILE_WRITE.parent.mkdir(parents=True, exist_ok=True)
+    PROFILE_WRITE.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + "\n",
+                             encoding="utf-8")
 
 
 # ── Answer bank ──────────────────────────────────────────────────────────────────────
@@ -449,3 +457,108 @@ def load_dream() -> list[dict]:
         return json.loads(DREAM_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
+
+
+# ── First-run setup ──────────────────────────────────────────────────────────────────
+
+def setup_status() -> dict:
+    """What a new install still needs, as a checklist the Setup page renders.
+
+    Every step reports `done` plus enough detail to act on it. Steps the machine cannot do
+    for the user (loading an unpacked extension, talking to BotFather) are still listed -
+    with `manual: True` - because hiding them is what made the README feel like a wall of
+    instructions in the first place. `blocking` marks the ones without which nothing works;
+    the rest are genuinely optional and say so.
+    """
+    from core import paths as core_paths
+    from core import profile as profile_mod
+
+    steps: list[dict] = []
+
+    # Read through the MODULE-level names, not core_paths directly: test_api rebinds these
+    # onto a temp directory, and reaching past them made this function report on the real
+    # install regardless of isolation - so it passed on a configured machine and failed on
+    # a fresh clone, which is exactly backwards for a first-run check.
+    configured = PROFILE_WRITE.exists()
+    holes: list[str] = []
+    if configured:
+        try:
+            holes = profile_mod.find_fillme(
+                json.loads(PROFILE_WRITE.read_text(encoding="utf-8")))
+        except Exception:
+            holes = []
+    steps.append({
+        "id": "profile", "title": "Your details",
+        "done": bool(configured and not holes),
+        # A leftover FILL_ME is not a broken install - the extension just asks you that
+        # question instead of autofilling it, which is a deliberate design choice. So the
+        # step shows incomplete while the install still counts as usable.
+        "minimum_met": configured,
+        "blocking": True, "manual": False,
+        "detail": ("Not created yet - saving the Profile page once creates it."
+                   if not configured else
+                   (f"{len(holes)} field(s) still unset." if holes else "Complete.")),
+        "unfilled": holes[:40],
+        "link": "/profile",
+    })
+
+    # 2. Companies: usable immediately thanks to the shipped example, so "done" means the
+    # user has their OWN list rather than merely having something to scrape.
+    own_companies = COMPANIES_WRITE.exists()
+    try:
+        n_companies = len(load_companies())
+    except Exception:
+        n_companies = 0
+    steps.append({
+        "id": "companies", "title": "Companies to watch",
+        "done": own_companies, "blocking": False, "manual": False,
+        "detail": (f"Using your own list ({n_companies} companies)." if own_companies
+                   else f"Using the {n_companies} shipped examples - edit any tier to make it yours."),
+        "link": "/companies",
+    })
+
+    # 3. Resumes: only the apply half needs them, and the count is what the extension
+    # will actually be able to attach.
+    n_resumes = len(list(core_paths.RESUMES.glob("*.pdf"))) if core_paths.RESUMES.exists() else 0
+    steps.append({
+        "id": "resumes", "title": "Resume PDFs",
+        "done": n_resumes > 0, "blocking": False, "manual": False,
+        "detail": (f"{n_resumes} cached." if n_resumes else
+                   "None cached. Set _local_resume_source.base_dir in your profile, then "
+                   "run: python -m core.resumes sync-local"),
+        "link": "/profile",
+    })
+
+    # 4/5. The two steps no script can perform. Chrome deliberately requires a human for
+    # unpacked extensions, and BotFather is a conversation.
+    staged = (core_paths.REPO_ROOT / "extension" / "profile.json").exists()
+    steps.append({
+        "id": "extension", "title": "Chrome extension",
+        "done": staged, "blocking": False, "manual": True,
+        "detail": ("Config staged. Load it once at chrome://extensions > Developer mode > "
+                   "Load unpacked > select the extension/ folder."
+                   if staged else
+                   "Not staged yet - use Rebuild extension on the Profile page, then load "
+                   "it at chrome://extensions."),
+        "link": "/profile",
+    })
+    import os
+    tg = bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
+    steps.append({
+        "id": "telegram", "title": "Telegram control (optional)",
+        "done": tg, "blocking": False, "manual": True,
+        "detail": ("Connected." if tg else
+                   "Not configured. Skip it and use this console instead, or see "
+                   "bridge/README.md - python bridge/get_chat_id.py does the fiddly part."),
+        "link": None,
+    })
+
+    blocking_left = [s["id"] for s in steps
+                     if s["blocking"] and not s.get("minimum_met", s["done"])]
+    return {
+        "ready": not blocking_left,
+        "blocking_left": blocking_left,
+        "done_count": sum(1 for s in steps if s["done"]),
+        "total": len(steps),
+        "steps": steps,
+    }

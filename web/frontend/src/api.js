@@ -42,6 +42,7 @@ export const api = {
 
   profile: () => req('GET', '/profile'),
   saveProfile: (profile) => req('PUT', '/profile', { profile }),
+  setupStatus: () => req('GET', '/setup/status'),
 
   companies: () => req('GET', '/companies'),
   setTier: (name, tier) => req('PUT', '/companies/tier', { name, tier }),

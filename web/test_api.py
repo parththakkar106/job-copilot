@@ -58,9 +58,12 @@ def _isolate(tmp: Path) -> None:
     triage_mod.APPLIED_PATH = tmp / "applied.json"
     triage_mod.QUEUE_PATH = tmp / "out" / "queue.json"
     bank_mod.BANK = tmp / "answer_bank.yaml"
+    bank_mod.BANK_WRITE = tmp / "answer_bank.yaml"
     svc.COMPANIES_PATH = tmp / "companies.yaml"
+    svc.COMPANIES_WRITE = tmp / "companies.yaml"
     svc.ANSWER_BANK_PATH = tmp / "answer_bank.yaml"
     svc.PROFILE_PATH = tmp / "profile.json"
+    svc.PROFILE_WRITE = tmp / "profile.json"
     svc.QUEUE_PATH = tmp / "out" / "queue.json"
     svc.DREAM_PATH = tmp / "out" / "dream.json"
 
@@ -192,6 +195,19 @@ def main() -> None:
         on_disk = json.loads((tmp / "profile.json").read_text(encoding="utf-8"))
         assert prof.get("identity") == on_disk.get("identity"), prof.get("identity"); checks += 1
         assert "first_name" in prof.get("identity", {}), prof.get("identity"); checks += 1
+
+        # 8c. Setup checklist reports the five steps and a ready flag.
+        st = c.get("/api/setup/status").json()
+        assert st["total"] == 5 and len(st["steps"]) == 5, st; checks += 1
+        assert {s["id"] for s in st["steps"]} == {
+            "profile", "companies", "resumes", "extension", "telegram"}, st; checks += 1
+        assert isinstance(st["ready"], bool) and "blocking_left" in st, st; checks += 1
+        # profile is the only blocking step, and it exists here, so nothing blocks.
+        assert st["ready"] and st["blocking_left"] == [], st; checks += 1
+        # The two steps no script can do must be flagged, or the page would imply the
+        # install finishes itself.
+        manual = {s["id"] for s in st["steps"] if s["manual"]}
+        assert manual == {"extension", "telegram"}, manual; checks += 1
 
         # 8b. Drafting flag: defaults ON, PUT flips it and persists to the shared prefs.
         assert c.get("/api/prefs/drafts").json()["enabled"] is True; checks += 1

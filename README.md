@@ -34,59 +34,56 @@ If you want a hosted, hands-off job-applier, this is the wrong project.
 ## First-time setup
 
 ```bash
-pip install -r bridge/requirements.txt -r web/requirements.txt   # Python 3.10+, Node for the UI
+python bootstrap.py
 ```
 
-**1. Fill in your profile.** The repo ships templates; copy them and edit:
+That installs the Python dependencies, creates your config files from the shipped
+templates, and opens the console on a setup checklist that walks you through the rest in
+the browser. Requires Python 3.10+, and Node 18+ for the console UI.
+
+The checklist tracks five things, and only the first is required:
+
+| Step | What it means |
+|---|---|
+| **Your details** | Name, contact, work authorization, EEO answers. Edited as a form; `checkfill` counts what's left |
+| **Companies** | Ten real API-verified examples ship, so a scrape works immediately. Edit any tier to make the list yours |
+| **Resumes** | Only needed for the apply half. Point `_local_resume_source.base_dir` at your PDFs, then `python -m core.resumes sync-local` |
+| **Extension** | Rebuild from the Profile page, then load it once at `chrome://extensions` |
+| **Telegram** | Optional. Skip it and use the console instead |
+
+Two of those the setup flow **cannot** do for you, and it says so rather than pretending:
+Chrome deliberately requires a human to load an unpacked extension, and creating a Telegram
+bot is a conversation with BotFather. Both have an "I did this, re-check" button.
+
+Your three config files (`data/profile.json`, `data/companies.yaml`,
+`data/answer_bank.yaml`) are **gitignored**, so filling them in can never commit your
+personal details back to a public fork. The `.example` originals stay tracked as reference,
+and nothing ever writes back to them.
+
+Anything left as `FILL_ME` is treated as missing: the extension surfaces that question for
+you to answer by hand rather than guessing, which is intended behaviour, not a bug. Review
+the work-authorization and EEO blocks especially — those answers go to real employers, and
+a plausible default is still someone else's answer.
+
+<details>
+<summary>Prefer the manual route, or want your data outside the checkout?</summary>
 
 ```bash
-cp data/profile.example.json    data/profile.json
-cp data/companies.example.yaml  data/companies.yaml
+pip install -r bridge/requirements.txt -r web/requirements.txt
+cp data/profile.example.json     data/profile.json
+cp data/companies.example.yaml   data/companies.yaml
 cp data/answer_bank.example.yaml data/answer_bank.yaml
-python -m core.profile checkfill                    # lists everything still unset
+python -m core.profile checkfill      # lists everything still unset
+python -m core.profile --selftest     # resolver checks against your profile
 ```
 
-Those three copies are gitignored on purpose, so filling them in can never commit your
-personal details back to a public fork. The `.example` originals stay tracked as reference.
-
-`checkfill` is the source of truth for what you still owe. Anything left as `FILL_ME` is
-treated as missing: the extension surfaces that question for you to answer by hand rather
-than guessing, which is the intended behaviour, not a bug. Review the work-authorization
-and EEO blocks especially — these answers go to real employers.
-
-Prefer to keep personal data outside the checkout? Point `JOBCOPILOT_DATA` at any directory
-holding those config files and the whole pipeline reads from there instead:
+Point `JOBCOPILOT_DATA` at any directory holding those config files and the whole pipeline
+reads from there instead, keeping personal data out of the repo entirely:
 
 ```bash
 JOBCOPILOT_DATA=~/private/jobcopilot-data python start.py
 ```
-
-**2. Pick your companies.** `data/companies.yaml` maps company names to their board slug on
-Greenhouse, Lever, or Ashby. The shipped example has ten real, API-verified entries so you can
-watch a scrape work before curating your own. Companies on Workday, Taleo, iCIMS, or in-house
-portals cannot be scraped by this tool.
-
-**3. Add your resumes** (needed only for the apply half). Point
-`_local_resume_source.base_dir` in `profile.json` at the folder holding your PDFs, then:
-
-```bash
-python -m core.resumes sync-local
-```
-
-**4. Load the extension.** `python extension/build.py`, then in Chrome open
-`chrome://extensions`, enable Developer mode, and "Load unpacked" the `extension/` directory.
-Rebuild and reload after any change to `data/profile.json` or `data/taxonomy.yaml`.
-
-**5. Telegram (optional).** See [`bridge/README.md`](./bridge/README.md) — it walks through
-BotFather and `python bridge/get_chat_id.py`. Without it the bridge is skipped and the web
-console still works.
-
-Verify the whole thing before pointing it at a real application:
-
-```bash
-python -m core.profile --selftest     # resolver checks against your profile
-python -m core.scraper --selftest     # scraper self-checks
-```
+</details>
 
 ## Run it
 

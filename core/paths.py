@@ -56,11 +56,31 @@ def _config(name: str, example: str) -> Path:
     return real          # neither exists: let the caller raise the normal error
 
 
+# READ paths: may resolve to the shipped template on a fresh install (see _config).
 PROFILE = _config("profile.json", "profile.example.json")
 TAXONOMY = DATA / "taxonomy.yaml"
 COMPANIES = _config("companies.yaml", "companies.example.yaml")
 FILTERS = DATA / "filters.yaml"
 ANSWER_BANK = _config("answer_bank.yaml", "answer_bank.example.yaml")
+
+# WRITE paths: ALWAYS the real filename, never the template — the read paths above may
+# point at a .example on a fresh install, and saving through one would (a) overwrite the
+# shipped template with somebody's real details and (b) put those details in a file
+# .gitignore does NOT cover, since it only lists the real names. That is precisely the
+# leak this project exists to prevent, so anything that persists config must use these.
+PROFILE_WRITE = DATA / "profile.json"
+COMPANIES_WRITE = DATA / "companies.yaml"
+ANSWER_BANK_WRITE = DATA / "answer_bank.yaml"
+
+
+def is_configured() -> bool:
+    """True once the user has their own profile, rather than reading the shipped template.
+
+    The single question a first-run flow needs answered, kept here because paths.py is the
+    only module that knows the template fallback exists.
+    """
+    return PROFILE_WRITE.exists()
+
 
 # Generated / local state (gitignored, or written by the daily Action).
 OUT = REPO_ROOT / "out"

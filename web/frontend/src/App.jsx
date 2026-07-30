@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard.jsx'
 import AnswerBank from './pages/AnswerBank.jsx'
 import Profile from './pages/Profile.jsx'
 import Companies from './pages/Companies.jsx'
+import Setup from './pages/Setup.jsx'
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -12,6 +13,10 @@ const TABS = [
   { id: 'profile', label: 'Profile' },
   { id: 'companies', label: 'Companies' },
 ]
+
+// Setup is not in TABS: once you are set up it is clutter, so it only appears as a tab
+// while it still has something to say. A configured install never sees it.
+const SETUP_TAB = { id: 'setup', label: 'Setup' }
 
 function RunControls({ onChanged }) {
   const notify = useToast()
@@ -57,10 +62,29 @@ function Shell() {
   const [tab, setTab] = useState('dashboard')
   const [status, setStatus] = useState({ bridge_alive: false, counts: {} })
   const [refreshKey, setRefreshKey] = useState(0)
+  // Decided once at mount and never revoked during the session. If it flipped off the
+  // moment the last required step passed, the tab would vanish from under someone standing
+  // on it and render a blank page. It simply does not come back after a reload.
+  const [showSetup, setShowSetup] = useState(false)
   const bump = useCallback(() => setRefreshKey((k) => k + 1), [])
 
   const loadStatus = useCallback(async () => {
     try { setStatus(await api.status()) } catch { /* backend down; ignore */ }
+  }, [])
+
+  // Asked once on mount. A fresh install opens ON the checklist rather than on an empty
+  // dashboard that silently reads the shipped example config.
+  useEffect(() => {
+    let cancelled = false
+    api.setupStatus()
+      .then((d) => {
+        if (cancelled) return
+        const incomplete = !d.ready || d.done_count < d.total
+        setShowSetup(incomplete)
+        if (!d.ready) setTab('setup')   // only *required* work forces you here
+      })
+      .catch(() => {})                  // never block the console on a failed probe
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -68,6 +92,8 @@ function Shell() {
     const t = setInterval(loadStatus, 8000)
     return () => clearInterval(t)
   }, [loadStatus, refreshKey])
+
+  const tabs = showSetup ? [SETUP_TAB, ...TABS] : TABS
 
   return (
     <div className="app">
@@ -77,7 +103,7 @@ function Shell() {
           <span className="brand-name">Job Pipeline</span>
         </div>
         <nav className="tabs">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button key={t.id}
               className={`tab ${tab === t.id ? 'tab-active' : ''}`}
               onClick={() => setTab(t.id)}>{t.label}</button>
@@ -97,6 +123,9 @@ function Shell() {
         {tab === 'bank' && <AnswerBank />}
         {tab === 'profile' && <Profile />}
         {tab === 'companies' && <Companies />}
+        {tab === 'setup' && (
+          <Setup onGo={(link) => setTab(link.replace('/', ''))} />
+        )}
       </main>
     </div>
   )

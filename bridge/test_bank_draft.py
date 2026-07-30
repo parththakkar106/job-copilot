@@ -43,7 +43,12 @@ def use_temp_bank(rows):
     """Point bank.py at a throwaway file seeded with `rows`. Returns its Path."""
     tmp = Path(tempfile.mkdtemp()) / "answer_bank.yaml"
     tmp.write_text(yaml.safe_dump({"answers": rows}, sort_keys=False), encoding="utf-8")
+    # BOTH, always. bank.py reads BANK and writes BANK_WRITE (they differ on a fresh
+    # install, where the read falls back to the shipped template). Rebinding only the read
+    # sent bank.save() -- which the use-counter calls on every hit -- straight at the real
+    # data/answer_bank.yaml and clobbered it with these fixtures.
     bank_mod.BANK = tmp
+    bank_mod.BANK_WRITE = tmp
     return tmp
 
 
@@ -87,6 +92,7 @@ def test_resolution():
     bad = Path(tempfile.mkdtemp()) / "answer_bank.yaml"
     bad.write_text("{{{ not yaml", encoding="utf-8")
     bank_mod.BANK = bad
+    bank_mod.BANK_WRITE = bad
     assert B.bank_draft({"answer_key": "why_company"}, "Ramp") == (None, None)
     checks += 1
 
@@ -234,6 +240,7 @@ async def scenario_panel():
     bad = Path(tempfile.mkdtemp()) / "answer_bank.yaml"
     bad.write_text("{{{ not yaml", encoding="utf-8")
     bank_mod.BANK = bad
+    bank_mod.BANK_WRITE = bad
     ws = FakeWS()
     await B.handle_drafts({"reqId": "d2", "context": {"company": "Ramp"},
                            "items": [{"id": "q1", "answer_key": "why_company"}]}, ws)

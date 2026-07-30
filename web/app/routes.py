@@ -187,6 +187,15 @@ def delete_bank(answer_id: str):
     return {"ok": True}
 
 
+# ── First-run setup ───────────────────────────────────────────────
+
+@router.get("/setup/status")
+def get_setup_status():
+    """Checklist for a fresh install: what is done, what is left, what only a human can do.
+    Recomputed on every call so the page's "check again" button actually re-checks."""
+    return svc.setup_status()
+
+
 # ── Profile ──────────────────────────────────────────────────────────────────────────
 
 @router.get("/profile")

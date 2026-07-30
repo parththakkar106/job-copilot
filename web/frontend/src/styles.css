@@ -691,3 +691,66 @@ select { cursor: pointer; }
   *, *::before, *::after { animation-duration: .001s !important; transition-duration: .001s !important; }
   .row:hover, .stat:hover, .co-card:hover, .btn:hover:not(:disabled) { transform: none; }
 }
+
+/* ── First-run setup checklist ─────────────────────────────────────────────────────── */
+/* Reuses .card / .btn / .muted so it inherits the console's look rather than inventing a
+   second visual language for a page most users see once. */
+
+.setup { display: flex; flex-direction: column; gap: 14px; max-width: 720px; }
+.setup-intro h2 { margin: 0 0 6px; font-size: 1.25rem; }
+
+.setup-bar {
+  height: 6px; border-radius: 999px; background: var(--line, #e5e7eb);
+  overflow: hidden; margin: 14px 0 6px;
+}
+.setup-bar-fill {
+  height: 100%; background: var(--accent, #4f46e5);
+  transition: width .35s ease;
+}
+.setup-count { margin: 0; font-size: .85rem; color: var(--muted, #6b7280); }
+.setup-ready { margin: 10px 0 0; font-size: .9rem; color: var(--ok, #15803d); }
+
+.setup-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+
+.setup-step {
+  display: flex; gap: 14px; align-items: flex-start;
+  background: var(--card, #fff); border: 1px solid var(--line, #e5e7eb);
+  border-radius: 10px; padding: 14px 16px;
+}
+.setup-step.is-done { opacity: .62; }
+
+.setup-mark {
+  flex: 0 0 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: .82rem; font-weight: 600;
+  background: var(--line, #e5e7eb); color: var(--muted, #6b7280);
+}
+.setup-step.is-done .setup-mark { background: var(--ok, #15803d); color: #fff; }
+
+.setup-body { flex: 1; min-width: 0; }
+.setup-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.setup-head h3 { margin: 0; font-size: .98rem; }
+
+.setup-tag {
+  font-size: .7rem; text-transform: uppercase; letter-spacing: .04em;
+  padding: 2px 7px; border-radius: 999px;
+  background: var(--line, #e5e7eb); color: var(--muted, #6b7280);
+}
+.setup-tag.req { background: #fee2e2; color: #b91c1c; }
+
+.setup-detail { margin: 6px 0 0; font-size: .88rem; color: var(--muted, #6b7280); }
+
+.setup-holes { margin-top: 8px; font-size: .84rem; }
+.setup-holes summary { cursor: pointer; color: var(--muted, #6b7280); }
+/* Long profiles produce 40+ entries; cap it so one step cannot push the rest off screen. */
+.setup-holes ul { margin: 8px 0 0; padding-left: 18px; max-height: 190px; overflow-y: auto; }
+.setup-holes code { font-size: .82rem; }
+
+.setup-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+.setup-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.setup-foot .muted { font-size: .82rem; }
+
+@media (prefers-color-scheme: dark) {
+  .setup-tag.req { background: #7f1d1d; color: #fecaca; }
+}
