@@ -69,7 +69,13 @@ ALLOW = re.compile(
     r"|data/pii_extra\.txt"
     r"|CLAUDE\.md"
     r"|docs/[^/]*audit[^/]*\.md"
-    r"|scripts/publish\.py)$"
+    # This guard's own test, and the ONE entry here that is not private. It is exempt for
+    # the opposite reason to the rest: its whole job is to contain the shapes the guard
+    # hunts, so scanning it means either mangling the fixtures until they stop testing
+    # anything, or a standing --no-verify on the file that proves the guard works. Its
+    # fixtures are invented — a made-up employer, school, country and set of EEO answers,
+    # and a 555 phone — so there is nothing real in it to protect. Keep it that way.
+    r"|scripts/test_pii_guard\.py)$"
 )
 # NOTE this file is NOT in that list, on purpose. It is the one scrubbing tool that holds
 # none of what it hunts — the patterns are built from your profile at runtime and exist
@@ -88,13 +94,45 @@ SHAPE_PATTERNS: list[tuple[str, str]] = [
     (r"\((?!555)\d{3}\)\s*\d{3}[-.\s]?\d{4}", "phone-shaped number"),
     # Both ends need three characters, which drops the one-letter-either-side class of
     # placeholder, and the reserved TLDs (RFC 2606/6761) are as fictional as 555. Writing
-    # such a placeholder out here would itself be an email-shaped string, which the publish
-    # scan flags — describe the shape, do not spell one. Your OWN address is
+    # such a placeholder out here would itself be an email-shaped string, which this very
+    # check flags — describe the shape, do not spell one. Your OWN address is
     # matched literally by the derived set, so tightening here cannot lose it — this
     # pattern is only here to catch somebody else's address pasted into a note.
     (r"[A-Za-z0-9._%+-]{3,}@(?!example\.(?:com|org)\b|users\.noreply\.github\.com\b)"
      r"[A-Za-z0-9.-]{3,}\.(?!test\b|invalid\b|example\b|localhost\b)[A-Za-z]{2,}\b",
      "email address"),
+
+    # --- the classes a DERIVED set structurally cannot catch ---------------------------
+    # Everything else this guard hunts is either a shape or a literal lifted from your own
+    # profile, so it only ever recognises the answers you happen to hold today. These two
+    # hunt the disclosure itself, whoever it belongs to. They came from a second, hardcoded
+    # scanner that has since been retired; it caught things the derived patterns could not,
+    # which is why they were kept rather than deleted with it.
+    #
+    # EEO self-identification is special-category data (GDPR Art.9) and the class a
+    # value-substitution pass misses entirely, because the values look innocuous on their
+    # own. Matching the QUESTION beside ANY standard answer also catches a fixture
+    # transcribed from somebody else's run, or from an answer you have since changed —
+    # neither of which appears in your profile to be derived from. Option lists and
+    # mapping tables are suppressed by lists_alternatives, exactly as for the derived
+    # EEO checks, so a canonicalisation fixture does not fire.
+    (r"(?i)\b(sexual orientation|gender identity|pronouns|gender)\b[^\n]{0,40}"
+     r"\b(straight|heterosexual|gay|lesbian|bisexual|male|female|man|woman|non.?binary)\b",
+     "EEO self-identification"),
+    # A named company beside a DATE or a live record is a partial history of where somebody
+    # applied and when, which is the same category as the data files this repo keeps out.
+    #
+    # The date requirement is the whole boundary, and it is deliberately strict. "Verified
+    # live on <Company>: the first synthesized click is often swallowed" is an ATS
+    # BEHAVIOUR note — the most valuable content in the repo, and the round-2 audit
+    # explicitly kept that class while scrubbing the dated ones. Widening this to any
+    # company name beside any outcome verb immediately flagged that comment, plus an
+    # assertion about a message being "rejected by Telegram" — a bad trade, because a
+    # check that fires on ordinary prose gets bypassed on the line that matters.
+    (r"(?i:live on |the real )[A-Z][A-Za-z]+[^\n]{0,20}\d{4}-\d{2}-\d{2}|"
+     r"(?i:skipped a live )[A-Z][A-Za-z]+ record|"
+     r"(?i:\bthe real )[A-Z][A-Za-z]+ (?i:run|failure)\b",
+     "application outcome"),
 ]
 
 # Mutually exclusive answers to the same question. Nobody is both Male and Female, so a
@@ -193,9 +231,14 @@ def _add_ci(out: list[tuple[str, str]], value: str, label: str, word: bool = Fal
 def _near(question: str, answer: str, window: int = 40) -> str:
     """Match `answer` only when `question` sits within `window` characters, either order.
 
-    For values that are ordinary words on their own. "Woman" in a comment is nothing;
-    "gender: Woman" is a disclosure. Returns "" when there is no answer to hunt, so an
-    unset field contributes no pattern rather than one that matches every line.
+    For values that are ordinary words on their own. An EEO answer sitting in prose is
+    nothing; the same word immediately after its question is a disclosure. Returns "" when
+    there is no answer to hunt, so an unset field contributes no pattern rather than one
+    that matches every line.
+
+    (This docstring spelled out a question-and-answer pair as its example until the
+    shape-based EEO check started flagging it. Name the CLASS of value here, never an
+    instance of one — the same rule the work-authorization comment below records.)
     """
     if not answer.strip():
         return ""
@@ -253,6 +296,14 @@ def derive_patterns(profile: dict) -> list[tuple[str, str]]:
         if len(tail) >= 5 and tail.lower() not in GENERIC:
             _add_ci(pats, tail, f"your {k} handle", word=True)
 
+    # --- your credential. Not hunted at all until 2026-07-31, which let a comment naming
+    # it as its worked example pass the guard and reach the shareable repo. The LEVEL
+    # ("Bachelors") and the MAJOR ("Computer Science") are deliberately not hunted: they
+    # are shared by millions and identify nobody, so hunting them is pure noise. The exact
+    # credential string is the distinctive part.
+    _add_ci(pats, val("education", "degree"), "your degree")
+    _add_ci(pats, val("education", "gpa"), "your GPA")
+
     # --- employer and school, whole and in distinctive pieces
     for keys, label in ((("employment", "current_employer"), "your employer"),
                         (("education", "school"), "your school")):
@@ -294,12 +345,62 @@ def derive_patterns(profile: dict) -> list[tuple[str, str]]:
     return pats
 
 
+def derive_company_stats() -> list[tuple[str, str]]:
+    """Hunt the SIZE and TIERING of the private target list.
+
+    companies.yaml is withheld from the shareable repo, but its statistics leak in prose
+    anyway: a design doc that states the total and the per-tier split gives away the very
+    ranking the file is withheld for, and no pattern derived from profile.json can know
+    those numbers. Reading them from the real companies file keeps this module free of
+    hardcoded facts and makes it work on a stranger's own list.
+
+    (Written with the real totals as its worked example; the check caught them on its
+    first run, which is the same lesson the _near docstring above records.)
+
+    Bare numbers would be far too noisy, so each one only counts beside a word that turns
+    it into a claim about the list. Never fatal: no companies file, or an unreadable one,
+    simply contributes nothing.
+    """
+    # COMPANIES_WRITE, never COMPANIES: the read path falls back to the example template,
+    # whose counts are fiction and would hunt numbers nobody is protecting.
+    path = paths.COMPANIES_WRITE
+    if not path.exists():
+        return []
+    try:
+        import yaml
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        rows = doc.get("companies") if isinstance(doc, dict) else doc
+        rows = [r for r in (rows or []) if isinstance(r, dict)]
+    except Exception as e:                      # a broken config must not block a commit
+        print(f"[pii-guard] could not read {path.name} ({e}); target-list stats not hunted",
+              file=sys.stderr)
+        return []
+    if not rows:
+        return []
+
+    out: list[tuple[str, str]] = []
+    tiers: dict[str, int] = {}
+    for r in rows:
+        t = str(r.get("tier") or "").strip().lower()
+        if t:
+            tiers[t] = tiers.get(t, 0) + 1
+    # A count of 1 or 2 is not a statistic, it is every small number in the codebase.
+    if len(rows) > 2:
+        _add(out, rf"\b{len(rows)}\b[^\n]{{0,30}}(?i:compan|target|employer)",
+             "your target-list size")
+    for tier, n in tiers.items():
+        if n > 2:
+            _add(out, rf"\b{n}\b[^\n]{{0,20}}(?i:{re.escape(tier)})",
+                 "your target-list tiering")
+    return out
+
+
 def load_extra() -> list[tuple[str, str]]:
     """Extra regexes from `pii_extra.txt` in the data dir: one per line, # comments.
 
-    For everything profile.json cannot know — a private target-list statistic, a phrase
-    that only reads as sensitive in context. Lives beside the config it protects, and is
-    gitignored for exactly the reason this whole file exists.
+    For everything the derived patterns cannot know — a phrase that only reads as
+    sensitive in context. Lives beside the config it protects, and is gitignored for
+    exactly the reason this whole file exists.
     """
     path = paths.DATA / "pii_extra.txt"
     if not path.exists():
@@ -334,6 +435,7 @@ def build_patterns() -> tuple[list[tuple[str, str]], bool]:
         except (json.JSONDecodeError, OSError) as e:
             print(f"[pii-guard] could not read profile.json ({e}); shape checks only",
                   file=sys.stderr)
+    pats += derive_company_stats()
     pats += load_extra()
     return pats, personal
 
@@ -400,6 +502,10 @@ def lists_alternatives(line: str) -> set[str]:
     for group in EEO_ALTERNATIVES:
         if sum(1 for p in group if re.search(p, line, re.I)) >= 2:
             hit.add("your EEO answer")
+            # The shape-based EEO check hunts the same disclosure from the other side, so
+            # it needs the same escape hatch — otherwise every canon() mapping table in
+            # the extension becomes a permanent finding.
+            hit.add("EEO self-identification")
             break
     for group in STATE_ALTERNATIVES:
         if sum(1 for p in group if re.search(p, line, re.I)) >= 3:

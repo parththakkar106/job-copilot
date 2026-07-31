@@ -1,4 +1,4 @@
-"""Checks for scripts/pii_guard.py.
+﻿"""Checks for scripts/pii_guard.py.
 
 The profile below is entirely invented. That is not just hygiene: a test that hardcoded the
 author's real details would put them in the repo the guard exists to keep them out of, and
@@ -99,7 +99,7 @@ def main() -> int:
         assert not flags(line), why
         checks += 1
     # Known and accepted: a quoted two-letter state flags wherever it appears, including
-    # `state === 'IL'`. Kept deliberately — the quoting is what makes it a value rather
+    # `state === 'IL'`. Kept deliberately â€” the quoting is what makes it a value rather
     # than a coincidence, and the alternative is missing the real one in a fixture.
     assert flags("if (state === 'IL') {"), "quoted state abbreviation flags by design"
     checks += 1
@@ -135,6 +135,56 @@ def main() -> int:
         "suppression must not extend past the EEO checks"
     checks += 1
 
+    # --- the checks a DERIVED set cannot produce ----------------------------------------
+    # These come from the retired publish-time scanner, which hunted the disclosure rather
+    # than this author's copy of it. The distinguishing case: an EEO answer that is NOT the
+    # one in the profile — someone else's, or one since changed — has no literal to derive
+    # from, so only the shape check can see it.
+    for line, why in (
+        ("gender: Man", "an EEO answer that is not the profile's own"),
+        ("gender identity: Non-binary", "an answer absent from the profile"),
+        ("sexual orientation: Gay", "an orientation absent from the profile"),
+    ):
+        assert G.scan([("f.py", 1, line)], G.SHAPE_PATTERNS), why
+        checks += 1
+    # ...and it must still yield to the option-list rule, or every canon() mapping table in
+    # the extension becomes a permanent finding.
+    for line, why in (
+        ('["Gender", "Man", "Woman"],', "a mapping fixture is not a disclosure"),
+        ("pronouns: He/Him, She/Her", "an option list is not a disclosure"),
+    ):
+        assert not G.scan([("f.py", 1, line)], G.SHAPE_PATTERNS), why
+        checks += 1
+
+    # An application outcome is a company name beside a DATE or a live record. The boundary
+    # is deliberate: an ATS behaviour note naming a company is the most useful content in
+    # the repo and must survive, so widening this to any outcome verb is a bad trade.
+    for line, why in (
+        ("// verified live on Northwind 2026-07-18", "a dated live record"),
+        ("# skipped a live Northwind record during a check", "a named live record"),
+        ("// the real Northwind run never confirmed", "a named run outcome"),
+    ):
+        assert G.scan([("f.py", 1, line)], G.SHAPE_PATTERNS), why
+        checks += 1
+    for line, why in (
+        ("// verified live on Northwind: the first click is swallowed", "behaviour, undated"),
+        ('assert len(t) < 4096, "would be rejected by Telegram"', "an API limit, not an ATS"),
+        ("// Northwind embeds the form in an iframe", "a plain technical note"),
+    ):
+        assert not G.scan([("f.py", 1, line)], G.SHAPE_PATTERNS), why
+        checks += 1
+
+    # The credential itself is hunted; the level and the major are not, being shared by
+    # millions. Not hunting the credential let a comment naming one reach the repo.
+    assert flags("// e.g. the free-text credential 'B.E.'"), "the degree is hunted"
+    checks += 1
+    for line, why in (
+        ("degree_level: Bachelors", "a level identifies nobody"),
+        ("major: Computer Science", "a major identifies nobody"),
+    ):
+        assert not flags(line), why
+        checks += 1
+
     # --- the same rule for the home state: a lookup table is not a disclosure -----------
     # This is why core/scraper.py can carry all 50 states without blocking every future
     # edit to the file. Threshold is 3, so a two-state sentence is still a disclosure.
@@ -152,7 +202,7 @@ def main() -> int:
         assert flags(line), f"{why}: {line}"
         checks += 1
     # ...and suppression is scoped to the state check, like the EEO one.
-    assert flags('"AL", "AK", "CA", "IL", "NY" — call 555-867-5309'), \
+    assert flags('"AL", "AK", "CA", "IL", "NY" â€” call 555-867-5309'), \
         "suppression must not extend past the state check"
     checks += 1
 
@@ -172,7 +222,7 @@ def main() -> int:
     # --- shape checks stand alone, with no profile --------------------------------------
     # Assembled at runtime, never written out whole. The shape rules exist to catch a real
     # number belonging to somebody who is not you, so testing them needs a string that is
-    # not reserved fiction — and a file that contains one would fail its own check.
+    # not reserved fiction â€” and a file that contains one would fail its own check.
     stranger_phone = "312-" + "224-9087"
     stranger_email = "dana.whitfield" + "@" + "northwind.co"
     assert G.scan([("f.py", 1, f"reach me at {stranger_phone}")], G.SHAPE_PATTERNS), \
@@ -191,7 +241,10 @@ def main() -> int:
 
     # --- allowlist ----------------------------------------------------------------------
     for p in ("data/profile.json", "data/companies.yaml", "data/answer_bank.yaml",
-              "data/pii_extra.txt", "CLAUDE.md", "scripts/publish.py",
+              "data/pii_extra.txt", "CLAUDE.md",
+              # this file: its job is to hold the shapes the guard hunts, and its
+              # fixtures are invented, so it is the one exemption that is not private
+              "scripts/test_pii_guard.py",
               "docs/code_audit_2026-07-18.md", "docs/taxonomy_audit_2026-07-12.md"):
         assert G.ALLOW.match(p), p
         checks += 1
@@ -199,7 +252,7 @@ def main() -> int:
               "docs/autonomous_run.md", "scripts/run_daily.ps1",
               "data/profile.example.json",
               # the guard holds none of what it hunts, and is scanned to keep it so
-              "scripts/pii_guard.py", "scripts/test_pii_guard.py"):
+              "scripts/pii_guard.py"):
         assert not G.ALLOW.match(p), f"{p} must be scanned"
         checks += 1
 
@@ -239,7 +292,7 @@ def main() -> int:
         (d / "pii_extra.txt").write_text(
             "# a comment\n"
             "\n"
-            r"\b114\b[^\n]{0,30}compan" + "\ttarget-list size\n"
+            r"\b409\b[^\n]{0,30}compan" + "\ttarget-list size\n"
             "unlabelled-pattern\n"
             "[unclosed\n",
             encoding="utf-8")
@@ -256,7 +309,47 @@ def main() -> int:
     checks += 1
     assert "private detail" in labels, "an unlabelled pattern gets a default label"
     checks += 1
-    assert G.scan([("d.md", 1, "we track 114 companies")], extra), "extra pattern fires"
+    assert G.scan([("d.md", 1, "we track 409 companies")], extra), "extra pattern fires"
+    checks += 1
+
+    # --- target-list statistics, derived from the real companies file -------------------
+    # The file itself is withheld, but its size and tiering leak in prose, and no pattern
+    # built from profile.json can know those numbers. Reading them at runtime keeps the
+    # guard free of hardcoded facts and works on a stranger's own list.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "companies.yaml").write_text(
+            "companies:\n" + "".join(
+                f"  - {{slug: c{i}, tier: {'dream' if i < 4 else 'pipeline'}}}\n"
+                for i in range(11)),
+            encoding="utf-8")
+        orig = G.paths.COMPANIES_WRITE
+        try:
+            G.paths.COMPANIES_WRITE = d / "companies.yaml"
+            stats = G.derive_company_stats()
+        finally:
+            G.paths.COMPANIES_WRITE = orig
+    assert stats, "a real companies file yields patterns"
+    checks += 1
+    # 11 rows: 4 dream, 7 pipeline.
+    assert G.scan([("d.md", 1, "we track 11 companies across three ATSs")], stats), \
+        "the total flags beside a word that makes it a claim about the list"
+    checks += 1
+    assert G.scan([("d.md", 1, "4 of them are dream targets")], stats), "a tier count flags"
+    checks += 1
+    assert G.scan([("d.md", 1, "7 in the pipeline tier")], stats), "the other tier flags"
+    checks += 1
+    # A bare number is every small constant in the codebase; only the claim is hunted.
+    assert not G.scan([("d.md", 1, "retry up to 11 times before giving up")], stats), \
+        "a bare number must not flag"
+    checks += 1
+    # No companies file at all contributes nothing rather than blocking a commit.
+    orig = G.paths.COMPANIES_WRITE
+    try:
+        G.paths.COMPANIES_WRITE = Path(td) / "gone.yaml"
+        assert G.derive_company_stats() == [], "a missing companies file is not fatal"
+    finally:
+        G.paths.COMPANIES_WRITE = orig
     checks += 1
 
     print(f"pii_guard: {checks}/{checks} checks passed")
