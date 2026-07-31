@@ -87,12 +87,26 @@ def cmd_sync_local(a):
     prof = P.load_profile()
     src = prof.get("_local_resume_source") or sys.exit(
         "profile.json has no _local_resume_source block")
-    base = Path(src["base_dir"])
+    base_dir = src.get("base_dir")
+    # An unfilled profile carries the FILL_ME placeholder rather than omitting the key, so
+    # a plain truthiness check passes and the failure surfaces later as a nonsense path
+    # ("missing source for 'quant': FILL_ME\\FILL_ME"). Say what to fill in instead.
+    if not base_dir or base_dir == P.FILL_ME:
+        sys.exit(
+            "profile.json `_local_resume_source.base_dir` is unset — point it at the folder\n"
+            "holding your resume PDFs, then re-run. See `python -m core.profile checkfill`.")
+    base = Path(base_dir)
+    if not base.is_dir():
+        sys.exit(f"resume source folder does not exist: {base}")
     tracks = _tracks()
     tags = [a.tag] if a.tag else list(tracks)
     for tag in tags:
         track = tracks.get(tag) or sys.exit(f"unknown track '{tag}'")
-        rel = track.get("local_source") or sys.exit(f"track '{tag}' has no local_source")
+        rel = track.get("local_source")
+        if not rel or rel == P.FILL_ME:
+            sys.exit(
+                f"resume track '{tag}' has no `local_source` — set it to that track's PDF\n"
+                f"filename inside {base}, then re-run.")
         srcfile = base / rel
         if not srcfile.exists():
             sys.exit(f"missing source for '{tag}': {srcfile}")
