@@ -149,7 +149,7 @@ buckets:
     - {pattern: 'school|university|college|institution|alma mater', value_key: education.school}
     # "Degree Type"/"education level" as a PICK-LIST (Bachelors/Masters/PhD/MBA) asks for the
     # LEVEL, not the credential name — route to degree_level so it matches an option. Must
-    # precede the generic degree rule (which fills the free-text credential "B.E. (Hons)").
+    # precede the generic degree rule, which fills the free-text credential name instead.
     - {pattern: 'degree type|degree level|level of education|education level|highest level|what.{0,10}(is|was) your (highest )?(level|degree)', value_key: education.degree_level}
     - {pattern: '(highest )?(degree|qualification)', value_key: education.degree}
     # Anchored: bare "major"/"discipline" substrings matched "major professional
@@ -186,6 +186,18 @@ buckets:
   draftable:
     - {pattern: 'why (do you want to |are you interested|would you like ).*?(work|join|company|us|here)|why (this company|our company|us\b)', answer_key: why_company}
     - {pattern: 'why (this|the) role|why (are you|were you) (interested|drawn).*role|why do you want this (job|position|role)', answer_key: why_role}
+    # The "what excites you" family. Every rule above keys on "why" + a want-verb, so the
+    # whole excitement phrasing fell through to bucket None and had to be drafted by hand on
+    # every board. These keys are DELIBERATELY absent from answer_bank.yaml: the bank wins
+    # over Claude whenever it has a row, and these questions are too company-specific for a
+    # canned answer to be worth reusing, so a miss is what routes them to a fresh draft.
+    # Role before company: a prompt that asks both ("...why you're applying to work here.
+    # What excited you about this role?") is really asking about the role.
+    - {pattern: 'what (excite[sd]?|interest(s|ed)?|draws?|drew|attract(s|ed)?|appeal(s|ed)?).{0,40}\b(role|position|job|opportunity|opening)\b|why (are|were) you (excited|interested|drawn).{0,40}\b(role|position|job|opportunity|opening)\b', answer_key: role_excitement}
+    - {pattern: 'what (excite[sd]?|interest(s|ed)?|draws?|drew|attract(s|ed)?|appeal(s|ed)?).{0,40}(\bus\b|our (company|team|mission|work)|this company|the company|working here|join(ing)? us)|what (drew|drove|brought) you to\b', answer_key: company_excitement}
+    # Mission/values essays ("our purpose is X — what does that mean to you?"). Anchored on
+    # the "means to you" side so it can't grab a factual question that merely says "mission".
+    - {pattern: '(purpose|mission|values?)\b.{0,60}(means? to you|resonates?|matters? to you)|what.{0,40}(purpose|mission|values?).{0,20}mean', answer_key: values_mission}
     - {pattern: 'cover letter',                                     answer_key: cover_letter}
     - {pattern: 'greatest strength|biggest strength|your strength', answer_key: biggest_strength}
     - {pattern: 'weakness|area.*improv|area.*develop',              answer_key: biggest_weakness}

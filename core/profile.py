@@ -278,14 +278,38 @@ def selftest():
         ("Preferred City", None, "deterministic", "preferences.locations"),
         ("City, State", None, "deterministic", "identity.location_display"),
         ("When did you graduate?", None, "deterministic", "education.graduation_date"),
+        # --- the "what excites you" family (added 2026-07-31) -------------------------
+        # Every earlier draftable rule keys on "why" + a want-verb, so these all fell
+        # through to bucket None and needed a manual "Draft it" tap on every board. The
+        # KEY matters as much as the bucket: answer_bank.yaml has a why_role row, and the
+        # bank beats Claude, so landing on why_role would serve one canned essay to every
+        # company. These three keys are deliberately not in the bank.
+        ("What excites you about this role?", None, "draftable", "role_excitement"),
+        ("What interests you about this position?", None, "draftable", "role_excitement"),
+        ("Why are you excited about this opportunity?", None, "draftable", "role_excitement"),
+        # asks both; the role is the real question
+        ("Tell us a bit about why you're applying to work here. What excited you about this role?",
+         None, "draftable", "role_excitement"),
+        ("What excites you about joining us?", None, "draftable", "company_excitement"),
+        ("What drew you to Zipline?", None, "draftable", "company_excitement"),
+        ("Our purpose is economic empowerment. Briefly tell us what that purpose means to you.",
+         None, "draftable", "values_mission"),
+        # the older "why" phrasings must still win their own keys
+        ("Why do you want to work here?", None, "draftable", "why_company"),
+        ("Why this role?", None, "draftable", "why_role"),
+        # an excitement verb with no role/company noun is not this family
+        ("What excites you about the compensation package?", None, None, None),
     ]
     fails = 0
     for field, company, want_bucket, want_key in cases:
         r = classify(field, company, profile, tax)
-        ok = r.get("bucket") == want_bucket and (want_key is None or r.get("value_key") == want_key)
+        # deterministic rules carry value_key, draftable ones answer_key — a case asserts
+        # whichever its bucket uses, and None still means "don't care".
+        got_key = r.get("value_key") or r.get("answer_key")
+        ok = r.get("bucket") == want_bucket and (want_key is None or got_key == want_key)
         if not ok:
             fails += 1
-            print(f"FAIL: {field!r} -> {r.get('bucket')}/{r.get('value_key')} "
+            print(f"FAIL: {field!r} -> {r.get('bucket')}/{got_key} "
                   f"(wanted {want_bucket}/{want_key})")
     # boolean rendering
     if render(True) != "Yes" or render(False) != "No":
