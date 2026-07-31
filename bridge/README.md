@@ -1,76 +1,107 @@
 # Apply control plane — Telegram bridge
 
-`bridge.py` is the human-in-the-loop for the Apply engine. The extension fills every
-field it can deterministically (Tier 0, no Claude credits); anything that needs Parth —
-salary and other `always_ask` values, low-confidence field mappings (Tier 1), and
-answer-bank drafts (Tier 2) — is asked over Telegram by this bridge and the answer is
-sent straight back into the form. The submit button is always Parth's own tap.
+`bridge.py` is the human-in-the-loop for the Apply engine. The extension fills every field
+it can deterministically (Tier 0, no model calls); anything that needs a decision — salary
+and other `always_ask` values, low-confidence field mappings (Tier 1), and drafted essays
+(Tier 2) — is asked over Telegram and the answer goes straight back into the form.
 
-It runs locally on Parth's laptop, only while he's applying. **Secrets live in the
-environment, never in a file.**
+**Submitting is always your own tap.** The bridge never submits anything.
 
 ```
 extension (background.js)  <-- ws://127.0.0.1:8765 -->  bridge.py  <-- HTTPS -->  Telegram
 ```
 
+It runs locally, only while you are applying. It holds real answers to real application
+questions, so it binds `127.0.0.1` and has no auth: do not expose the port.
+
 ## One-time setup
 
 ### 1. Create the bot
+
 1. In Telegram, message **@BotFather**.
 2. Send `/newbot`, pick a name and a username ending in `bot`.
-3. BotFather replies with a **token** like `1234567890:AAE...`. That's `TELEGRAM_BOT_TOKEN`.
+3. BotFather replies with a **token** like `1234567890:AAE...`. That is `TELEGRAM_BOT_TOKEN`.
 
 ### 2. Get your chat id
-1. Send any message (e.g. `hi`) to your new bot in Telegram.
-2. Open this URL in a browser (paste your token in):
-   `https://api.telegram.org/bot<TOKEN>/getUpdates`
-3. Find `"chat":{"id":123456789,...}`. That number is `TELEGRAM_CHAT_ID`.
 
-### 3. Install deps
+Message your new bot once (any text — it will not reply yet), then:
+
 ```powershell
 python -m pip install -r bridge/requirements.txt
+$env:TELEGRAM_BOT_TOKEN = "1234567890:AAE..."
+python bridge/get_chat_id.py
 ```
+
+It prints the chat id to use as `TELEGRAM_CHAT_ID`. (If you would rather do it by hand,
+that script just reads `https://api.telegram.org/bot<TOKEN>/getUpdates` and pulls
+`.message.chat.id` out of the response.)
+
+### 3. Store the two values
+
+Put them in **`bridge/.env`**, which is gitignored:
+
+```
+TELEGRAM_BOT_TOKEN=1234567890:AAE...
+TELEGRAM_CHAT_ID=123456789
+```
+
+Exported environment variables work too, and **a real environment variable beats the
+file** — `_load_dotenv` uses `setdefault`, so `.env` only fills in what the environment
+has not already set.
+
+> That precedence is the one thing to remember when you **rotate the token**. Updating
+> `.env` alone does nothing if the old token is also set as a persistent environment
+> variable: the stale one keeps winning and the bridge fails authentication on boot. Change
+> both, and start from a fresh terminal — an already-open shell still holds the old value.
+
+Either way the secrets stay out of the repo. Never commit them.
 
 ## Running
 
-Easiest: put the two values in `bridge/.env` (gitignored — never committed) and just run:
+Normally you do not start the bridge directly — the launcher at the repo root starts it
+alongside the web console, as one process tree:
+
+```powershell
+python start.py
 ```
-TELEGRAM_BOT_TOKEN=123:AAE...
-TELEGRAM_CHAT_ID=123456789
-```
+
+To run just the bridge:
+
 ```powershell
 python bridge/bridge.py
 ```
-`bridge.py` auto-loads `bridge/.env`. A real exported env var still wins over the file,
-so you can override per-shell if you want:
-```powershell
-$env:TELEGRAM_BOT_TOKEN = "123:AAE..."
-$env:TELEGRAM_CHAT_ID   = "123456789"
-python bridge/bridge.py
-```
 
-On start it prints the bot username and sends you a "🟢 Apply bridge is up" message.
-Leave it running in a terminal while you apply. `Ctrl+C` to stop.
+On start it prints the bot username and sends a "🟢 Apply bridge is up" message. Leave it
+running while you apply; `Ctrl+C` stops it.
 
-> The token/chat-id belong in `bridge/.env` or your shell env only — both are gitignored
-> / out of the repo. Never commit them.
+Two things worth knowing:
+
+- **Check liveness via the port, not the log.** stdout is buffered, so a backgrounded
+  bridge's log file can sit empty while it is perfectly healthy. `netstat -ano` for a
+  LISTENING socket on 8765 is the reliable signal.
+- **A new WebSocket connection supersedes the old one** (it closes the previous client and
+  drains the inbox). Do not connect a test client while a real run is in progress — it will
+  end that run.
 
 ## Testing the pipe (no form needed)
 
-1. Start the bridge (above).
+1. Start the bridge.
 2. Load the unpacked extension (`chrome://extensions` → Developer mode → Load unpacked →
    `extension/`), open its popup, click **Test control plane**.
 3. Two questions arrive on Telegram. Reply to the first with any text; on the second,
    either reply or tap **👍 Use draft**.
-4. The popup shows your answers echoed back. That's the full round-trip working.
+4. The popup echoes your answers back. That is the full round trip.
 
 ## Protocol (JSON over the WebSocket)
+
+The interactive loop:
 
 ```
 extension -> bridge:  {type:"ping"}
                       {type:"ask", reqId, items:[{id, label, why?, draft?}]}
+                      {type:"review", reqId, summary:[{label,value}], warnings?}
 bridge -> extension:  {type:"pong"}
-                      {type:"hb"}                     # heartbeat, keeps MV3 worker alive
+                      {type:"hb"}                     # heartbeat, keeps the MV3 worker alive
                       {type:"answers", reqId, answers:{id: value}}
                       {type:"error", error}
 ```
@@ -78,10 +109,18 @@ bridge -> extension:  {type:"pong"}
 Items are asked one at a time; the next Telegram message (or a 👍 on a drafted item) is
 that item's answer. A `draft` lets you accept with one tap or reply to edit.
 
-## Built and shipping
+The batch flow adds `collect` (phase 1 parks a job's open questions on disk), `approved`
+(phase 3 pulls back the approved pile), `applied`, `drafts` and `notify`. The full set,
+with the reply shape for each, is documented in the module docstring at the top of
+`bridge.py` — that is the source of truth, since it sits next to the dispatch table.
 
-All three of the slices this section used to list as pending are done and tested:
-`fill.js` escalation calls `ASK_USER` and applies the returned answers; the end-of-form
-review and submit gate work; and Tier 1/2 drafting runs in the bridge. Drafting shells out
-to the **Claude Code CLI** (`bridge/drafter.py`), so it needs a `claude` binary on PATH and
-does NOT use `ANTHROPIC_API_KEY`. Without that binary the bridge simply asks you cold.
+## Drafting (Tier 2)
+
+Essay answers are drafted by shelling out to the **Claude Code CLI** (`drafter.py`), so it
+needs a `claude` binary on `PATH` and does **not** use `ANTHROPIC_API_KEY`. Without that
+binary the bridge just asks you cold — nothing breaks.
+
+Drafting is a persisted on/off flag rather than a startup setting, so the web console and
+Telegram (`/draft`) can toggle it and the running bridge picks the change up on its next
+read. The answer bank always wins over a generated draft, since a saved answer is wording
+you already approved.

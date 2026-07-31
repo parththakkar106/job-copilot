@@ -1,101 +1,128 @@
-# Apply engine — browser extension (Next #2)
+# Apply engine — browser extension
 
-MV3 extension that fills Greenhouse / Lever / Ashby application forms from the
-shared data layer (`profile.json` + `taxonomy.yaml`), attaches the right resume,
-and escalates low-confidence fields to the phone. Submit is always the user's tap.
+An MV3 extension that fills Greenhouse, Lever and Ashby application forms from the shared
+data layer (`profile.json` + `taxonomy.yaml`), attaches the right resume, and escalates
+anything it cannot answer confidently.
 
-## Status
+**It never submits by itself.** Submitting is always a deliberate tap, either yours on the
+page or an approval you sent from Telegram.
 
-Being built as a thin **Tier-0-on-Greenhouse** slice first (silent deterministic
-fill on one ATS, no AI / no Telegram yet), then widened.
+It has to run in your own browser profile: these forms need real cookies, and Greenhouse's
+dropdowns only accept trusted input events, which rules out headless and cloud runners.
 
-| Piece | State |
-|-------|-------|
-| `adapters/greenhouse.js` — DOM map (selectors + setter strategies) | **Live-verified & working** (React react-select via CDP trusted clicks). Now carries `needsCDP:true` + a `dropdown` descriptor consumed generically by fill.js. |
-| `adapters/lever.js` — DOM map | **Live-verified 2026-07-10** on jobs.lever.co/coupa (DOM dry-run). Classic server-rendered form, `needsCDP:false`. Core by `name`, native `<select>`, radio/checkbox groups, `input[name=resume]`. |
-| `adapters/ashby.js` — DOM map | **Live-verified 2026-07-10** on jobs.ashbyhq.com/{notion,plaid} (DOM dry-run). React but honors synthesized events, `needsCDP:false`. `_systemfield_*` ids, combobox typeahead location, labeled-radios incl. full EEO block. |
-| `manifest.json` (MV3) | **Built** — scoped to GH/Lever/Ashby, popup action, WAR for dynamic imports (all 3 adapters). |
-| `classify.js` (taxonomy resolver port) | **Built + parity-verified** against `profile.py` (35 labels, all buckets identical). |
-| `fill.js` content script (find controls → classify → set) | **Generalized + live-verified** — picks adapter by host; adapter-driven dropdown kinds (reactSelect/comboboxTypeahead/native); radio/checkbox **group** handler (classify the question, click the option). CDP attaches only when `needsCDP`. |
-| `attach.js` DataTransfer resume injection | **Built** — untested against a live uploader. |
-| `resume_pick.js` (ports profile.py best-of-4) | **Built + parity-verified** (7 titles, identical tag+score). |
-| `popup` (fill button + report) | **Built** — renders filled / needs-input / skipped / flagged. |
-| `build.py` (stage data layer → extension/) | **Built + runs** (taxonomy.json + profile + 4 resumes). |
+## Layout
 
-## How the two maps combine
+| File | Role |
+|------|------|
+| `manifest.json` | MV3 manifest, scoped to the three ATS hosts |
+| `fill.js` | the content script: find controls → classify → set → report |
+| `classify.js` | JS port of the Python taxonomy resolver (parity-tested against it) |
+| `resume_pick.js` | JS port of the best-of-N resume chooser (parity-tested) |
+| `attach.js` | DataTransfer injection, which is how a file lands in an upload input |
+| `background.js` | service worker: bridge socket, and the CDP calls Greenhouse needs |
+| `popup.html` / `popup.js` | dashboard over every pile, and the manual run controls |
+| `adapters/*.js` | one DOM map per ATS — selectors, control kinds, event sequences |
+| `build.py` | stages `taxonomy.json`, `profile.json` and the resumes into this folder |
 
+The split that matters: **`taxonomy.yaml` says *what* to fill** (semantic, ATS-agnostic),
+**`adapters/*.js` say *how and where*** on one specific ATS. A new ATS should be a new
+adapter and nothing else.
+
+## Two ways to run it
+
+**Panel mode** — a floating panel mounts on any recognised application form. *Fill* fills
+everything deterministic and shows whatever is left as cards you answer in place, with
+drafts offered per question. Telegram stays silent. This is the mode for applying to one
+role while sitting at the keyboard.
+
+**Queue mode** — three phases over disk-backed state. Phase 1 opens each queued job, fills
+it, sends the open questions to the bridge and closes the tab, asking nobody. Phase 2 is
+you answering on Telegram whenever you get to it. Phase 3 reopens the approved jobs,
+refills them with your stored answers, diffs the result against what you approved, and
+submits only if they still match.
+
+## Installing and updating
+
+```powershell
+python extension/build.py          # stage taxonomy + profile + resumes into extension/
 ```
-Greenhouse page
-  → coreFields: known ids (#first_name…) filled directly from profile.json
-  → every other control: extract label → taxonomy.yaml classify → profile value
-  → set value per control type (adapters/greenhouse.js `setters`)
-  → resume: DataTransfer attach
-  → report filled / skipped (skipped = future Tier 1)
+
+Then `chrome://extensions` → Developer mode → **Load unpacked** → `extension/`.
+
+**Any change to a file in this folder needs a reload of the unpacked extension** — that
+includes a `build.py` re-run, since it rewrites the staged data the content script reads.
+This is the single most common reason a fix "did not work".
+
+## Per-ATS notes
+
+The three adapters exist because these forms behave very differently.
+
+### Greenhouse
+
+- Custom questions render as text-input-backed **react-selects**, not native `<select>`.
+  They ignore synthesized events entirely, so this adapter sets `needsCDP: true` and drives
+  them with **trusted clicks via `chrome.debugger`**, attached for the fill and detached in
+  a `finally`.
+- One consequence worth knowing: `chrome.debugger` allows **one client per tab**, so any
+  other tool attached to that tab (DevTools, a browser-automation agent) will take the
+  debugger and hang the fill. Nothing else may be attached while Greenhouse fills.
+- **Typeahead dropdowns run a server-side search on exactly the string typed.** A value
+  with a parenthetical in it returns zero options and the field silently fails, so queries
+  are stripped and tried as a ladder of progressively broader forms, while the option
+  *match* still uses the full value. Type a clean search string, match on the full value.
+- The school list is one shared canonical database, and it genuinely does not contain every
+  institution. Education fields therefore fall back to the list's own **"Other"** row rather
+  than failing a required field forever. That fallback is gated to education fields only —
+  on a location or an EEO dropdown "Other" is a wrong answer, not a safe default.
+- **Greenhouse rebuilds its education block after the resume parses**, re-keying the rows.
+  A node captured before that is detached, and a detached element's bounding rect is all
+  zeros, so a click computed from it lands in the page corner. Every click re-resolves the
+  control first. The general rule: never click a node captured before an async page event
+  without re-checking that it is still connected and has a non-zero rect.
+- Many companies embed the form as a cross-origin iframe on their own careers site, where a
+  content script in the top frame sees no fields. Mounting inside the iframe is not the fix
+  (fixed positioning pins to the iframe's own viewport, and CDP coordinates are relative to
+  the top-level one). The fix is the **legacy embed endpoint**, which serves the same form
+  standalone at top level.
+
+### Lever
+
+Classic server-rendered form. Synthesized events are honoured, so no CDP. Core fields go by
+`name`, custom questions are native `<select>`, text, or radio/checkbox groups. Radio
+options wrap their input in a `<label>` whose text is the human-readable option, and the
+group handler classifies the *question* and clicks the matching option.
+
+### Ashby
+
+React, but it honours synthesized events, so no CDP either. Location is a combobox
+typeahead; short single-selects render as labelled radios rather than a select.
+
+The thing to know about Ashby: **it re-initialises form state asynchronously after the
+resume parses, discarding a varying random subset of values already set** while the DOM
+keeps displaying them. Text is therefore typed per character rather than set in one shot,
+and values are re-asserted from intent at submit time. Do not chase a perfect first fill —
+the retry loop is the designed cure. Submitting an invalid Ashby form is safe and is used
+as a validation probe: it renders inline errors and does not navigate.
+
+## Things this deliberately does not do
+
+- **It does not solve email verification codes.** Some boards gate submission behind a
+  code sent to your inbox. That is an anti-bot control, and the extension detects it, parks
+  the application with a reason, and tells you — it does not read your mail.
+- **It does not submit unattended in panel mode**, and in queue mode it only submits what
+  you explicitly approved, after re-checking the form still matches that approval.
+
+## Tests
+
+```powershell
+node extension/test_fill_units.mjs
 ```
 
-`taxonomy.yaml` = *what* to fill (semantic, ATS-agnostic). `adapters/*.js` = *how /
-where* on this specific ATS (DOM, control types, event sequences).
-
-## VERIFY checklist — live-checked 2026-07-09 (Vercel + Chime React forms)
-
-- [x] Core field ids resolve on React (`job-boards`): `#first_name`, `#last_name`,
-      `#email`, `#phone`, `input#resume`, `input#cover_letter`. React drops `name`, so
-      `input[name=...]` fallbacks are legacy-only. **`boards.greenhouse.io` now 301s to
-      `job-boards` (React) — legacy hosted board is being retired; build React-first.**
-- [x] react-select option node = **`[role="option"]`** (not `.select__option`); control
-      `.select__control`, menu `.select__menu`. No native `<select>` on React.
-- [x] Resume input id confirmed `input#resume` (behind an "Attach" dropzone).
-- [x] Custom questions keep `question_<id>` ids on React, render as text-input-backed
-      react-selects (route via `reactSelect`, not `select`); labels via `label[for=id]`.
-      Submit button reads "Apply".
-- [~] Location: React has **no places autocomplete** — it's a `#country` react-select
-      (fill "United States") + phone-country intl-tel-input. Legacy places box unverified.
-- [ ] **EEO/demographic wrapper on React — STILL UNVERIFIED** (test form had no EEO
-      block). Need a live React form with demographic questions.
-- [ ] DataTransfer resume inject actually registering on the React uploader (needs the
-      extension loaded to test — DOM inspection can't confirm the upload fires).
-- [ ] True legacy `/embed/job_app` DOM (native selects, places box) if any tenant still
-      serves it via a company-site iframe.
-
-## Lever — live findings (DOM dry-run 2026-07-10, jobs.lever.co/coupa)
-
-- Classic server-rendered form — **synthesized events honored, no CDP needed.**
-- Core fields by `name`: `name` (one full-name field), `email`, `phone`,
-  `location` (free-text `.location-input`, places dropdown optional), `org`,
-  `urls[LinkedIn]`/`[GitHub]`/`[Portfolio]`. Resume = `input[name="resume"]`
-  (`#resume-upload-input`). All filled correctly in the dry-run.
-- Custom questions = `cards[<UUID>][field<N>]`: native `<select>` (all committed via
-  setNativeSelect), text, or radio/checkbox groups. Prompt = `.application-question
-  .application-label` ("✱" = required).
-- Radio/checkbox options: each `<input>` wrapped in a `<label>`; `value` attr IS the
-  human text. Group handler extracts the QUESTION label ("Pronouns", not an option like
-  "He/Him" or "She/Her") and clicks the matching option — verified toggling.
-- Submit reads "Submit application".
-
-## Ashby — live findings (DOM dry-run 2026-07-10, jobs.ashbyhq.com/{notion,plaid})
-
-- React app but **honors synthesized events end-to-end — no CDP** (unlike new Greenhouse).
-- Core: `#_systemfield_name` (one full-name field), `#_systemfield_email`,
-  `#_systemfield_resume`, phone/customs use per-job UUID ids. Clean `label[for]`
-  associations. All filled in the dry-run.
-- **Location = combobox typeahead** (`input[role=combobox]`): opens on a synthesized
-  `input` event; type the city prefix, match the full display string against
-  `[role="option"]` (state name expands, e.g. "Springfield, Illinois, United States"),
-  synth-click commits. Verified: value committed correctly.
-- Dropdowns also appear as native `<select>` (setNativeSelect handles them).
-- Short single-selects render as **labeled radios**; multi-select as labeled checkboxes.
-  The Notion form carried the full **EEO block as radio groups** (Gender / Race / Veteran
-  Status) plus a work-auth sponsorship question — the group handler read every QUESTION
-  label correctly and clicking committed. **This closes the "EEO on React unverified" gap
-  for Ashby** (it's labeled-radios, not a native-select wrapper).
-- Submit reads "Submit Application".
-
-> Both dry-runs injected the adapter's selectors + setters into the live page (extension
-> not yet loaded — the RC session can't load unpacked extensions). Still pending an actual
-> loaded-extension run: DataTransfer resume upload firing on Lever/Ashby uploaders, and the
-> full popup → fill → report round-trip.
+Unit tests over the pure functions the batch flow's correctness rests on — question
+identity across phases, the approval diff, the search ladder, degree/level mapping and the
+stale-node resolver. `fill.js` is a content script with no exports, so the harness pulls
+the real function source out of the file rather than testing a copy.
 
 ## References
 
 - Greenhouse Job Board API (canonical field names): https://developers.greenhouse.io/job-board.html
-- Field/knockout guide: https://notchresume.com/resources/greenhouse-job-application.html
