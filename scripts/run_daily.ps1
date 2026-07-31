@@ -23,26 +23,35 @@
 #     Chrome to claim the flag.
 
 $ErrorActionPreference = 'Continue'
-# This script lives in scripts/, so the repo root is one level up. Everything below
-# (git, the bridge, the sentinel path) is relative to the ROOT, not to scripts/.
+# This script lives in scripts/, so the repo root is one level up. The CODE (the bridge,
+# the sentinel) is relative to that root.
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
 function Log($msg) { Write-Host "[$(Get-Date -Format HH:mm:ss)] $msg" }
 
+# out/queue.json is DATA, so it lives in JOBCOPILOT_HOME - a different repo from this one
+# once the two halves were split. Unset, it is the repo root, which is the pre-split layout.
+$dataHome = $env:JOBCOPILOT_HOME
+if (-not $dataHome) { $dataHome = $repo }
+
 # --- 1. Refresh today's queue (best-effort; the bridge warns if it's stale anyway) ------
 # Narrow + non-destructive: fetch origin and check out ONLY the scraper outputs, so local
 # commits and working changes are never touched. A local clone diverges from origin every
 # run (Actions force-commits out/* back), which is exactly why a full `git pull` is unsafe
-# here - see the project notes.
+# here - see the project notes. Run against the DATA repo, which is what the Action commits
+# the queue back to.
 try {
+    Push-Location $dataHome
     git fetch --quiet origin main 2>&1 | Out-Null
     # queue.json is the only file the bridge reads; check out just that one so a missing
     # sibling (digest.html isn't tracked on origin) can't fail the whole refresh.
     git checkout origin/main -- out/queue.json 2>&1 | Out-Null
-    Log "Refreshed out/queue.json from origin/main."
+    Log "Refreshed out/queue.json from origin/main in $dataHome."
 } catch {
     Log "Queue refresh skipped ($($_.Exception.Message)); the bridge will flag a stale queue."
+} finally {
+    Pop-Location
 }
 
 # --- 2. Ensure the bridge is running ----------------------------------------------------
