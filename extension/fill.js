@@ -228,6 +228,46 @@ const isOtherable = (el) => !!el && OTHER_OK_FIELD.test([el.id, el.name, labelFo
 // a real school whose name merely contains the word.
 const otherOption = (opts) => opts.find(o => /^other\b|\bnot listed\b/.test(canon(o.textContent)));
 
+// A degree PICK-LIST can only ever offer LEVELS ("Bachelor's Degree", "Master's Degree") —
+// it is an enum, not a free-text credential box. A stored credential like "B.Eng. (Hons)"
+// therefore returns nothing for every query in the ladder, and because degree is in
+// OTHER_OK_FIELD the field then quietly commits "Other" (observed live on a Greenhouse
+// education block). Map the credential to its level instead, and use that as BOTH the
+// search query and the match target: canon() leaves the apostrophe in place but \b sits
+// against it, so a want of "Bachelor" whole-word-matches the option "Bachelor's Degree".
+// A free-text degree box is left alone — there the credential name is the right answer.
+const DEGREE_FIELD = /\b(degree|degrees|education level|level of education|qualification)\b/i;
+// Order is load-bearing: the longer/more specific credentials must be tested before the
+// families that would also match them (a doctorate is not a master's; an MBA is its own
+// row on most lists and only falls back to the master's family if that row is absent).
+const DEGREE_LEVELS = [
+  [/\b(ph\.?\s?d|d\.?\s?phil|doctora(l|te)|doctor of|ed\.?\s?d|j\.?\s?d|m\.?\s?d)\b/i, "Doctor"],
+  [/\bm\.?\s?b\.?\s?a\b/i, "MBA"],
+  [/\b(m\.?\s?(s|a|e|ed|eng|tech|sc|com|phil|fa)|master)\b/i, "Master"],
+  [/\b(b\.?\s?(s|a|e|ed|eng|tech|sc|com|ba|ca|fa)|bachelor|under\s?grad)\b/i, "Bachelor"],
+  [/\b(a\.?\s?(a|s)|associate)\b/i, "Associate"],
+  [/\b(high school|secondary|hsc|g\.?\s?e\.?\s?d|diploma)\b/i, "High School"],
+];
+// Is this control a pick-from-a-list, as opposed to a text box? Only a pick-list gets the
+// degree substitution.
+function isPickList(el, dd) {
+  if (!el || !el.tagName) return false;
+  if (el.tagName.toLowerCase() === "select") return true;
+  if (dd && dd.kind === "reactSelect" && el.closest && el.closest(dd.control || ".select__control")) return true;
+  return !!(el.getAttribute && el.getAttribute("role") === "combobox");
+}
+// The level term to search/match for, or null to leave the value untouched. Exported for
+// the fill units.
+function degreeLevel(el, value) {
+  const label = [el && el.id, el && el.name, labelFor(el)].filter(Boolean).join(" ");
+  // "Discipline"/"Major"/"Field of study" are degree-adjacent but want the SUBJECT
+  // ("Computer Science"), so DEGREE_FIELD deliberately excludes them.
+  if (!DEGREE_FIELD.test(label)) return null;
+  const v = String(value || "");
+  for (const [re, level] of DEGREE_LEVELS) if (re.test(v)) return level;
+  return null;
+}
+
 // Match a desired answer to one of a set of options. Each option is any object with a
 // `.textContent` (real DOM node OR a lightweight {textContent, ...} descriptor) — the
 // matched object is returned so the caller can act on it. ATS option wording varies
@@ -448,6 +488,13 @@ async function pickReactSelect(control, value, dd, field) {
       ? `no option matched "${value}" (options: ${opts.slice(0, 8).map(o => o.textContent.trim()).join(" | ")})`
       : `this list has nothing for "${value}"${searched}${otherNote} ${state}` };
   }
+  // The option's own text, whatever path selected it. matchOption deliberately accepts
+  // near-misses (whole-word and token-overlap tiers), so the row that commits is routinely
+  // worded differently from what we asked for — "Bachelor" selects "Bachelor's Degree",
+  // "No" selects "I am not a protected veteran". Recording the ASKED value there was a
+  // latent flush bug: phase 1 stored our wording, phase 3 re-read the form's wording, and
+  // diffApproved saw drift on a field nobody had touched.
+  chose = chose || cleanText(hit.textContent) || "";
   bringIntoView(hit);
   await sleep(50);
   res = await rpc({ type: "CDP_CLICK", ...centerOf(hit) });
@@ -458,9 +505,6 @@ async function pickReactSelect(control, value, dd, field) {
   // Multi-select keeps its menu open after a pick; close it so it doesn't cover the next
   // field (single-select closes itself). A second click on the control toggles it shut.
   if (ok && document.querySelector(dd.menu || ".select__menu")) { await rpc({ type: "CDP_CLICK", ...centerOf(control) }); await sleep(40); }
-  // `value` is what the form actually holds now — it differs from what we were asked to fill
-  // whenever the Other fallback fired, and the report must say so rather than claim the
-  // school went in.
   return { ok, value: chose || undefined, why: ok ? "" : "clicked option but value did not commit" };
 }
 
@@ -514,6 +558,8 @@ async function pickComboboxTypeahead(el, value, dd) {
       ? `no option matched "${value}" (options: ${opts.slice(0, 8).map(o => o.textContent.trim()).join(" | ")})`
       : "combobox opened but no options rendered" };
   }
+  // Report the option's own wording, not ours — same reason as the react-select path.
+  chose = chose || cleanText(hit.textContent) || "";
   bringIntoView(hit);
   hit.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   hit.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -690,6 +736,10 @@ function clickOption(input) {
 async function applyValue(el, value, adapter) {
   const dd = adapter.dropdown || { kind: "native" };
   const tag = el.tagName.toLowerCase();
+  // A pick-list wants the LEVEL, a text box wants the credential — see degreeLevel().
+  // Done here because this is the only place that knows the widget kind: the taxonomy
+  // classifies on the label alone, and "Degree" is the same label either way.
+  if (isPickList(el, dd)) value = degreeLevel(el, value) || value;
   if (tag === "select") return { ok: setNativeSelect(el, value), why: "no matching <option>" };
   // react-select (Greenhouse): its labelled control is a text input inside
   // .select__control — must be driven by trusted clicks (CDP), never setText.

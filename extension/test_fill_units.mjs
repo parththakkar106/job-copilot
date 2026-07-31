@@ -53,13 +53,18 @@ function extractConst(name) {
 // liveControl walks the DOM, so it gets a tiny fake `document`/`labelFor` injected rather
 // than a real one — enough to pin the matching ORDER and the detached-node rule, which is
 // the part that broke (a detached control clicks at 0,0 and fails as "no options").
-const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl } =
+const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,
+        isPickList, makeDegreeLevel, canon, wb } =
   new Function(
   `${extractConsts()}\n${extract("askId")}\n${extract("diffApproved")}\n` +
   `${extractConst("searchable")}\n${extractConst("GENERIC_SEARCH_WORD")}\n${extract("searchCandidates")}\n` +
   `${extractConst("OTHER_OK_FIELD")}\n${extractConst("otherOption")}\n` +
+  `${extract("isPickList")}\n` +
+  `${extractConst("DEGREE_FIELD")}\n${extractConst("DEGREE_LEVELS")}\n` +
+  `const makeDegreeLevel = (labelFor) => { ${extract("degreeLevel")} return degreeLevel; };\n` +
   `const makeLiveControl = (document, labelFor) => { ${extract("liveControl")} return liveControl; };\n` +
-  `return { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl };`)();
+  `return { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,` +
+  ` isPickList, makeDegreeLevel, canon, wb };`)();
 
 let n = 0;
 const ok = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); process.exit(1); } n++; };
@@ -294,6 +299,79 @@ ok(OTHER_OK_FIELD.test("school--0") && OTHER_OK_FIELD.test("What university did 
    "education fields are otherable");
 ok(!OTHER_OK_FIELD.test("Location (City)") && !OTHER_OK_FIELD.test("Gender") && !OTHER_OK_FIELD.test("Race"),
    "location and EEO fields must never fall back to Other");
+
+// --- degreeLevel ----------------------------------------------------------------------
+// A degree pick-list offers LEVELS, never credential names, so a stored "B.Eng. (Hons)"
+// matched nothing and the field silently committed "Other" (observed on a live Greenhouse
+// education block). The substitution only ever applies to a pick-list.
+{
+  // el stand-in; labelFor is injected the same way liveControl's is.
+  const el = (id, label = "") => ({ tagName: "INPUT", id, name: "", _label: label,
+                                    getAttribute: () => null, closest: () => null });
+  const degreeLevel = makeDegreeLevel((e) => (e && e._label) || "");
+
+  // Dotted initials plus a parenthetical — the shape that broke a live form, because
+  // searchable() strips the parenthetical and the remaining stub matches no enum row.
+  ok(degreeLevel(el("degree--0"), "B.Eng. (Hons)") === "Bachelor",
+     "a dotted-initials credential with a parenthetical maps to its level");
+  ok(degreeLevel(el("", "Degree"), "B.Eng. (Hons)") === "Bachelor",
+     "the bare visible label 'Degree' is enough to trigger it");
+
+  // THE property the whole fix rests on: the level term must actually match the option
+  // text. canon() keeps the apostrophe, but \b sits against it, so the whole-word tier of
+  // matchOption connects "Bachelor" to "Bachelor's Degree".
+  ok(wb(canon("Bachelor")).test(canon("Bachelor's Degree")),
+     "the level term must whole-word-match the option it is meant to select");
+  ok(!wb(canon("Bachelor")).test(canon("Master's Degree")),
+     "and must not match a different level");
+
+  // Families. Order matters: a doctorate is not a master's, an MBA is its own row.
+  const cases = [
+    ["B.Tech", "Bachelor"], ["BS", "Bachelor"], ["B.Sc", "Bachelor"],
+    ["Bachelor of Engineering", "Bachelor"],
+    ["M.S.", "Master"], ["MSc", "Master"], ["Master of Science", "Master"],
+    ["MBA", "MBA"], ["M.B.A.", "MBA"],
+    ["Ph.D.", "Doctor"], ["PhD", "Doctor"], ["Doctorate", "Doctor"],
+    ["Associate of Arts", "Associate"], ["A.S.", "Associate"],
+    ["High School Diploma", "High School"],
+  ];
+  for (const [credential, level] of cases) {
+    ok(degreeLevel(el("degree"), credential) === level,
+       `${credential} should map to ${level}, got ${degreeLevel(el("degree"), credential)}`);
+  }
+
+  // Degree-ADJACENT fields want the subject, not a level. Getting this wrong would type
+  // "Bachelor" into Discipline, which is a wrong answer rather than a failed one.
+  ok(degreeLevel(el("discipline--0"), "Computer Science") === null,
+     "discipline must be left alone");
+  ok(degreeLevel(el("", "Major"), "Bachelor of Science in Biology") === null,
+     "major must be left alone even when the value names a degree");
+  ok(degreeLevel(el("", "Field of Study"), "B.S. Physics") === null,
+     "field of study must be left alone");
+  ok(degreeLevel(el("school--0"), "Some University") === null, "school must be left alone");
+
+  // An unrecognisable credential returns null so the caller keeps the original value and
+  // the existing ladder/Other path still runs — never a silent wrong answer.
+  ok(degreeLevel(el("degree"), "Licenciatura") === null,
+     "an unmapped credential falls through to the existing ladder");
+  ok(degreeLevel(el("degree"), "") === null, "an empty value never substitutes");
+}
+
+// isPickList: the substitution is gated on the widget, since a free-text degree box
+// legitimately wants "B.Eng. (Hons)".
+{
+  const plain = { tagName: "INPUT", getAttribute: () => null, closest: () => null };
+  ok(isPickList({ tagName: "SELECT", getAttribute: () => null, closest: () => null }, {}),
+     "a native <select> is a pick-list");
+  ok(isPickList({ tagName: "INPUT", getAttribute: () => "combobox", closest: () => null }, {}),
+     "a role=combobox is a pick-list");
+  ok(isPickList({ tagName: "INPUT", getAttribute: () => null, closest: () => ({}) },
+                { kind: "reactSelect" }), "an input inside a react-select control is a pick-list");
+  ok(!isPickList(plain, {}), "a bare text input is not a pick-list");
+  ok(!isPickList(plain, { kind: "reactSelect" }),
+     "a text input with no react-select ancestor is not a pick-list");
+  ok(!isPickList(null, {}), "a missing element must not throw");
+}
 
 // --- liveControl ----------------------------------------------------------------------
 // Minimal DOM stand-ins. A "control" owns one input; `connected`/`size` model the two ways
