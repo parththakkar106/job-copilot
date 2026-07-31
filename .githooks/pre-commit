@@ -1,0 +1,24 @@
+#!/bin/sh
+# Block a commit that would add personal details to this repo. See scripts/pii_guard.py.
+#
+# Tracked in the repo rather than installed into .git/hooks, so it travels with a clone
+# instead of living only on one machine. Activate it once with:
+#
+#     git config core.hooksPath .githooks
+#
+# (bootstrap.py does this for you.)
+
+if command -v python >/dev/null 2>&1; then
+    PY=python
+elif command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v py >/dev/null 2>&1; then
+    PY=py
+else
+    # Warn loudly but let the commit through. A hook that hard-fails on an environment
+    # quirk gets switched off entirely, and a switched-off hook protects nothing.
+    echo "[pii-guard] no python on PATH, skipping the personal-details check." >&2
+    exit 0
+fi
+
+exec "$PY" scripts/pii_guard.py --staged

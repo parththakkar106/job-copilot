@@ -51,13 +51,13 @@ async def test_edit_lists_answers():
     n = 0
     P.put(job("aaa"), QS, FILLED)
     P.set_answer("aaa", "ask_0", "Because I love payments infra")
-    P.set_answer("aaa", "ask_1", "He/Him")
+    P.set_answer("aaa", "ask_1", "They/Them")
 
     await B.handle_edit("/edit")
     text, _ = SENT[-1]
     assert "1. <b>Why Ramp?</b>: Because I love payments infra" in text, text
     n += 1
-    assert "2. <b>Pronouns</b>: He/Him" in text, text
+    assert "2. <b>Pronouns</b>: They/Them" in text, text
     n += 1
     return n
 
@@ -67,7 +67,7 @@ async def test_edit_one_shot():
     n = 0
     P.put(job("aaa"), QS, FILLED)
     P.set_answer("aaa", "ask_0", "old answer")
-    P.set_answer("aaa", "ask_1", "He/Him")
+    P.set_answer("aaa", "ask_1", "They/Them")
 
     await B.handle_edit("/edit 1 Because the team is elite")
     assert P.load("aaa")["questions"][0]["answer"] == "Because the team is elite"
@@ -83,7 +83,7 @@ async def test_edit_reopen_re_asks():
     n = 0
     P.put(job("aaa"), QS, FILLED)
     P.set_answer("aaa", "ask_0", "keep me")
-    P.set_answer("aaa", "ask_1", "He/Him")
+    P.set_answer("aaa", "ask_1", "They/Them")
 
     await B.handle_edit("/edit 2")          # clear ask_1 and re-serve it
     assert P.load("aaa")["questions"][1]["answer"] is None, "re-open must clear the answer"

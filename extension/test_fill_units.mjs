@@ -117,7 +117,7 @@ ok(diffApproved(approved, [...approved]).length === 0,
    "an identical fill must produce no mismatch");
 
 ok(diffApproved(approved, [
-  { label: "Email", value: "someone.else@gmail.com" },
+  { label: "Email", value: "someone.else@example.com" },
   { label: "Why Ramp?", value: "Because I like Ramp." },
 ]).length === 1, "a changed value must be flagged");
 
@@ -135,24 +135,51 @@ ok(diffApproved(approved, [
 
 // A TYPED answer lands on the OPTION matchOption maps it to — the committed text is not
 // the typed text, and the gate must accept the matcher's own equivalence tiers (raw
-// string compare held EVERY typed answer at phase 3):
-ok(diffApproved([{ label: "Sexual orientation", value: "Straight" }],
-                [{ label: "Sexual orientation", value: "Heterosexual" }]).length === 0,
-   "typed 'Straight' committed as 'Heterosexual' must not be drift (canon tier)");
-ok(diffApproved([{ label: "Sponsorship", value: "No" }],
-                [{ label: "Sponsorship", value: "None" }]).length === 0,
-   "typed 'No' committed as 'None' must not be drift (canon tier)");
-ok(diffApproved([{ label: "Gender", value: "Female" }],
-                [{ label: "Gender", value: "Woman" }]).length === 0,
-   "'Female' committed as 'Woman' must not be drift (canon tier)");
-ok(diffApproved([{ label: "Consent", value: "Yes" }],
-                [{ label: "Consent", value: "Yes - I consent to receiving text messages" }]).length === 0,
-   "an answer committed as a longer option containing it must not be drift (whole-word tier)");
+// string compare held EVERY typed answer at phase 3).
+//
+// Driven off a table so every rewrite rule in canon() is covered rather than the two that
+// happened to break first. Both directions of each pair are listed: canon() is applied to
+// the answer AND the options, so which side the profile wording lands on is arbitrary, and
+// a rule that only collapses one way would pass a single-direction test.
+const CANON_PAIRS = [
+  // gender wording, both encodings and both directions
+  ["Gender", "Male", "Man"], ["Gender", "Man", "Male"],
+  ["Gender", "Male", "Men"], ["Gender", "Men", "Male"],
+  ["Gender", "Female", "Woman"], ["Gender", "Woman", "Female"],
+  ["Gender", "Female", "Women"], ["Gender", "Women", "Female"],
+  // sexual-orientation wording: a profile may say either, Greenhouse offers either
+  ["Sexual orientation", "Straight", "Heterosexual"],
+  ["Sexual orientation", "Heterosexual", "Straight"],
+  ["Sexual orientation", "Heterosexual", "Heterosexual / Straight"],
+  // the No/None/N-A equivalence class
+  ["Sponsorship", "No", "None"], ["Sponsorship", "No", "N/A"],
+  ["Sponsorship", "No", "Not applicable"], ["Sponsorship", "None", "No"],
+  // consent-checkbox wording: a deterministic Yes must satisfy an "I <verb>" option
+  ["Consent", "Yes", "I agree"], ["Consent", "Yes", "I accept"],
+  ["Consent", "Yes", "I acknowledge"], ["Consent", "Yes", "I consent"],
+  // whole-word tier: committed as a longer option that contains the answer
+  ["Consent", "Yes", "Yes - I consent to receiving text messages"],
+];
+for (const [label, typed, committed] of CANON_PAIRS) {
+  ok(diffApproved([{ label, value: typed }],
+                  [{ label, value: committed }]).length === 0,
+     `typed '${typed}' committed as '${committed}' must not be drift (${label})`);
+}
+
 // ...but the equivalence must stay as strict as the matcher: a genuinely different value
-// is still drift.
-ok(diffApproved([{ label: "Gender", value: "Male" }],
-                [{ label: "Gender", value: "Female" }]).length === 1,
-   "male vs female must still be drift (whole-word, not substring)");
+// is still drift. "male" is a substring of "female", so a naive contains-check passes the
+// first of these — that is the bug this row exists to catch.
+const CANON_DRIFT = [
+  ["Gender", "Male", "Female"], ["Gender", "Man", "Woman"],
+  ["Gender", "Female", "Male"], ["Gender", "Women", "Men"],
+  ["Sexual orientation", "Straight", "Bisexual"],
+  ["Sponsorship", "Yes", "No"],
+];
+for (const [label, typed, committed] of CANON_DRIFT) {
+  ok(diffApproved([{ label, value: typed }],
+                  [{ label, value: committed }]).length === 1,
+     `'${typed}' vs '${committed}' must still be drift (${label})`);
+}
 
 // He approved a blank -> nothing was promised, so nothing to enforce.
 ok(diffApproved([{ label: "Portfolio", value: "" }], []).length === 0,

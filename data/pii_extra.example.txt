@@ -1,0 +1,33 @@
+# Extra things pii-guard should refuse to let you commit.
+#
+# Copy this to pii_extra.txt (same folder) and edit. The real file is gitignored, because
+# a list of your secrets is itself a list of your secrets.
+#
+# Most of what matters is derived from profile.json automatically — phone, email, address,
+# employer, school, handles, citizenship, EEO answers. This file is for the rest: things
+# that are only sensitive in context, or that live nowhere in your profile.
+#
+# Format: one PYTHON REGEX per line, optionally followed by a TAB and a short label shown
+# when it fires. Lines starting with # are comments. An invalid regex is reported and
+# skipped, never fatal.
+#
+# See what is actually active:  python scripts/pii_guard.py --patterns
+
+# --- private statistics that leaked in prose after the file itself was excluded ---------
+# Your target list is private, but its SIZE and TIERING are just as revealing and they end
+# up in comments and design docs. Adjust the numbers to your own.
+# \b114\b[^\n]{0,30}(compan|target)	target-list size
+# \b86\b[^\n]{0,20}pipeline	target-list tiering
+# \b28\b[^\n]{0,20}dream	target-list tiering
+
+# --- where you actually applied ---------------------------------------------------------
+# A named company plus an outcome or a date is a record of your job search, which is the
+# same category as the config files this repo keeps out. The ATS *behaviour* is worth
+# writing down; the fact that you applied there on a Tuesday is not.
+# (?i)the real (\w+) (run|failure)	application outcome
+# (?i)live on \w+ \d{4}-\d{2}-\d{2}	application outcome
+# (?i)(rejected|accepted|interview) (by|at) [A-Z]\w+	application outcome
+
+# --- answers you gave a form ------------------------------------------------------------
+# Salary expectations and notice periods are always-ask questions for a reason.
+# (?i)(salary|compensation)[^\n]{0,30}\$?\d{2,3}[,k]	target compensation

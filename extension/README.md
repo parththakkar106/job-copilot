@@ -68,8 +68,8 @@ where* on this specific ATS (DOM, control types, event sequences).
   setNativeSelect), text, or radio/checkbox groups. Prompt = `.application-question
   .application-label` ("✱" = required).
 - Radio/checkbox options: each `<input>` wrapped in a `<label>`; `value` attr IS the
-  human text. Group handler extracts the QUESTION label ("Pronouns", not "He/him") and
-  clicks the matching option — verified toggling.
+  human text. Group handler extracts the QUESTION label ("Pronouns", not an option like
+  "He/Him" or "She/Her") and clicks the matching option — verified toggling.
 - Submit reads "Submit application".
 
 ## Ashby — live findings (DOM dry-run 2026-07-10, jobs.ashbyhq.com/{notion,plaid})

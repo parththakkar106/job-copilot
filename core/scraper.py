@@ -45,6 +45,49 @@ from core import paths
 UA = "job-copilot/2.0 (personal job search)"
 FIELD_PRIORITY = ("quant", "ai", "ds", "tech")  # order matters for classification
 
+# --- what counts as a US location -------------------------------------------
+# State NAMES are matched against the normalized (lowercased) string; the two-letter
+# ABBREVIATIONS are matched against the RAW string with their real casing, on purpose.
+# Lowercasing turns IN / OR / ME / OK / DE / LA / HI into ordinary English words, and
+# "Remote in Europe" would then read as Indiana.
+US_STATE_NAMES = (
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut",
+    "delaware", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa",
+    "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan",
+    "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada",
+    "new hampshire", "new jersey", "new mexico", "new york", "north carolina",
+    "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island",
+    "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont",
+    "virginia", "washington", "west virginia", "wisconsin", "wyoming",
+    "district of columbia",
+)
+US_STATE_ABBR = (
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN",
+    "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
+    "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
+    "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC",
+)
+US_MARKERS = (
+    "united states", "usa", "us", "u s", "u s a", "america", "nationwide",
+    "remote us", "us remote",
+)
+# Cities that commonly appear WITHOUT a state ("San Francisco", "NYC"). Deliberately
+# excludes names that are also major non-US cities (Cambridge, Birmingham, Manchester,
+# Portland is fine, London is not) -- Cambridge MA still passes on the "MA" abbreviation.
+US_CITIES = (
+    "new york", "nyc", "brooklyn", "manhattan", "san francisco", "sf", "bay area",
+    "silicon valley", "palo alto", "mountain view", "menlo park", "sunnyvale",
+    "san jose", "santa clara", "san mateo", "redwood city", "oakland", "berkeley",
+    "los angeles", "santa monica", "irvine", "san diego", "sacramento", "seattle",
+    "bellevue", "portland", "austin", "dallas", "houston", "san antonio", "denver",
+    "boulder", "chicago", "boston", "somerville", "atlanta", "miami", "orlando",
+    "tampa", "philadelphia", "pittsburgh", "phoenix", "scottsdale", "salt lake city",
+    "minneapolis", "detroit", "ann arbor", "nashville", "charlotte", "raleigh",
+    "durham", "columbus", "kansas city", "st louis", "las vegas", "jersey city",
+    "hoboken", "princeton", "stamford", "madison", "indianapolis", "milwaukee",
+    "cincinnati", "cleveland", "richmond", "baltimore", "honolulu", "anchorage",
+)
+
 
 # ------------------------------------------------------------------ model ---
 @dataclass
@@ -153,15 +196,43 @@ def passes_seniority(title: str, cfg: dict) -> bool:
     return not any(has_word(title, bad) for bad in cfg.get("exclude", []))
 
 
-def passes_location(location: str, cfg: dict) -> bool:
+def location_verdict(location: str, cfg: dict) -> str:
+    """'us' | 'excluded' | 'unknown' — why a location passed or failed us_only.
+
+    exclude_locations alone was never enough: it is a DENYLIST, so every location that
+    simply wasn't on it passed. That is how "Reykjavik" and bare "Hybrid" reached the
+    queue. The denylist still runs first (it is precise and Parth curates it), but a
+    location now has to show a POSITIVE US signal to be kept.
+    """
     if not cfg.get("us_only"):
-        return True
+        return "us"
     loc = norm(location)
     if not loc:
-        return True  # unknown -> keep, liveness/manual will catch
+        return "us"  # no location field at all -> keep, liveness/manual will catch
+
     # Word-bounded (has_word), NOT substring: "india" was dropping Indianapolis/Indiana,
     # "uk" was dropping Milwaukee, "dublin" Dublin CA — real US roles silently lost.
-    return not any(has_word(loc, bad) for bad in cfg.get("exclude_locations", []))
+    if any(has_word(loc, bad) for bad in cfg.get("exclude_locations", [])):
+        return "excluded"
+
+    allow = (US_MARKERS + US_STATE_NAMES + US_CITIES
+             + tuple(cfg.get("include_locations", []) or ()))
+    if any(has_word(loc, good) for good in allow):
+        return "us"
+    # Abbreviations are checked against the RAW string so their casing still means
+    # something — see the US_STATE_ABBR note.
+    if any(re.search(rf"\b{ab}\b", location or "") for ab in US_STATE_ABBR):
+        return "us"
+    return "unknown"
+
+
+def passes_location(location: str, cfg: dict) -> bool:
+    v = location_verdict(location, cfg)
+    if v == "unknown":
+        # Default drop: a location we can't place is usually foreign or not a location
+        # at all ("Hybrid"). Set `unknown_locations: keep` in filters.yaml to invert.
+        return str(cfg.get("unknown_locations", "drop")).lower() == "keep"
+    return v == "us"
 
 
 def is_fresh(posted: str | None, days: int) -> bool:
@@ -276,9 +347,12 @@ def run(args):
 
     # filter
     kept, seen = [], set()
+    unplaceable: dict[str, int] = {}   # location -> count, so the lists can be extended
     for j in all_jobs:
         if j.field is None:                                   continue
         if not passes_seniority(j.title, filt["seniority"]):  continue
+        if location_verdict(j.location, filt["location"]) == "unknown":
+            unplaceable[j.location] = unplaceable.get(j.location, 0) + 1
         if not passes_location(j.location, filt["location"]): continue
         if not is_fresh(j.posted, filt.get("freshness_days", 14)): continue
         if j.dedup_key in applied:                            continue
@@ -287,6 +361,14 @@ def run(args):
         kept.append(j)
 
     kept.sort(key=lambda x: x.posted or "", reverse=True)  # freshest first
+
+    if unplaceable:
+        # A US role landing here is a gap in US_CITIES / include_locations, not noise.
+        print(f"\ncouldn't place {sum(unplaceable.values())} location(s) as US "
+              f"(add real ones to location.include_locations in filters.yaml):",
+              file=sys.stderr)
+        for loc, n in sorted(unplaceable.items(), key=lambda kv: -kv[1])[:15]:
+            print(f"  {n:>3}x {loc!r}", file=sys.stderr)
 
     if args.verify_liveness:
         checked = []
@@ -391,12 +473,15 @@ def selftest():
               "ai": ["machine learning", "ml engineer", "applied scientist"],
               "ds": ["data scientist", "data science"],
               "tech": ["software engineer", "backend"]}
+    # Dates are computed, never hardcoded: a literal fixture date goes stale and the
+    # freshness assert below then aborts the selftest, masking every check after it.
+    _recent = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     gh = {"jobs": [{"id": 1, "title": "Software Engineer, Backend",
                     "location": {"name": "New York, NY"},
-                    "absolute_url": "http://x/1", "first_published": "2026-07-08T00:00:00Z"},
+                    "absolute_url": "http://x/1", "first_published": _recent},
                    {"id": 2, "title": "Senior Data Scientist",
                     "location": {"name": "London, UK"},
-                    "absolute_url": "http://x/2", "updated_at": "2026-07-01T00:00:00-04:00"}]}
+                    "absolute_url": "http://x/2", "updated_at": _recent}]}
     jobs = parse_greenhouse("Acme", "acme", "pipeline", gh)
     for j in jobs:
         j.field = classify_field(j.title, fields); j.keyed()
@@ -422,6 +507,28 @@ def selftest():
     assert passes_location("Milwaukee, WI", location) is True                # "uk" ⊄
     assert passes_location("Bengaluru, India", location) is False
     assert passes_location("Remote - UK", {"us_only": True, "exclude_locations": ["uk"]}) is False
+    # us_only is an ALLOWLIST: a location off the denylist is no longer automatically US.
+    # These two shapes are what actually leaked into a live queue.
+    assert location_verdict("Reykjavik, Iceland", location) == "unknown"
+    assert passes_location("Reykjavik, Iceland", location) is False
+    assert passes_location("Hybrid", location) is False
+    assert location_verdict("Zurich", location) == "unknown"
+    assert passes_location("Remote", location) is False       # ambiguous, not a US signal
+    # ...but every real US shape still passes
+    for good in ("New York, NY", "San Francisco", "Remote - US", "United States",
+                 "Austin, Texas", "Cambridge, MA", "NYC", "Remote (USA)",
+                 "Boston, Massachusetts", "Seattle, WA or Remote"):
+        assert passes_location(good, location) is True, good
+    # abbreviations only count with their real casing, else "Remote in Europe" == Indiana
+    assert passes_location("Remote in Europe", location) is False
+    assert passes_location("Portland, OR", location) is True
+    # the denylist still wins over an allow signal (a US-named company office abroad)
+    assert passes_location("London, UK", {**location, "include_locations": ["london"]}) is False
+    # escape hatches
+    assert passes_location("Reykjavik", {**location, "unknown_locations": "keep"}) is True
+    assert passes_location("Zurich", {**location, "include_locations": ["zurich"]}) is True
+    assert passes_location("Anywhere", {"us_only": False}) is True
+    assert passes_location("", location) is True              # no location field -> keep
     assert jobs[0].dedup_key == dedup_key("Acme", "Software Engineer, Backend", "New York, NY")
     print("selftest OK")
 

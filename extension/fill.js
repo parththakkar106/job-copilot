@@ -163,9 +163,10 @@ const norm = (s) => String(s).trim().toLowerCase().replace(/\//g, " ").replace(/
 const canon = (s) => norm(s)
   .replace(/\bmen\b/g, "male").replace(/\bman\b/g, "male")
   .replace(/\bwomen\b/g, "female").replace(/\bwoman\b/g, "female")
-  // Sexual-orientation wording: a profile may say "Straight" where Greenhouse's EEO
-  // option is "Heterosexual" (sometimes "Heterosexual / Straight"). Collapse both so the
-  // answer matches either. Applied to answer AND options.
+  // Sexual-orientation wording: "Straight" and "Heterosexual" are the same answer, and a
+  // profile may store either while Greenhouse's EEO option offers the other (sometimes
+  // both, as "Heterosexual / Straight"). Collapse them so either matches either. Applied
+  // to answer AND options.
   .replace(/\bheterosexual\b/g, "straight")
   // Consent/agreement: a deterministic "Yes" should select an "I agree" / "I accept" /
   // "I acknowledge" option. The "I <verb>" phrasing is consent-checkbox wording (not a
@@ -175,7 +176,12 @@ const canon = (s) => norm(s)
   // answer fills a "None" option (e.g. sponsorship "require visa? -> OPT/H1B/TN/None/Other",
   // where require_sponsorship=false renders "No"). Safe because exact/whole-word matches run
   // first: if a literal "No" option exists it still wins before this ever collapses them.
-  .replace(/\bn\s*\/\s*a\b|\bnot applicable\b/g, "none").replace(/\bno\b/g, "none");
+  //
+  // The separator is a CHARACTER CLASS, not a literal slash, because norm() above has
+  // already rewritten "/" to a space by the time this runs — matching on "\/" made the
+  // N/A half of this rule dead code, so an ATS offering "N/A" was read as drift against a
+  // deterministic "No". Requiring at least one separator keeps a bare "na" from matching.
+  .replace(/\bn[\s\/]+a\b|\bnot applicable\b/g, "none").replace(/\bno\b/g, "none");
 const wb = (s) => new RegExp(`\\b${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
 
 // The string we TYPE into a type-to-search dropdown (Greenhouse/Ashby run a server-side

@@ -1,6 +1,6 @@
 """One-command first-time setup.
 
-    python setup.py
+    python bootstrap.py
 
 Installs the Python dependencies, creates your config files from the shipped templates,
 and launches the console, which walks you through the rest in a browser.
@@ -75,6 +75,32 @@ def config() -> None:
         say("config", f"created {dst_name} ({what}) from the template")
 
 
+def hooks() -> None:
+    """Activate the tracked git hooks, which is one config line nobody reads the README for.
+
+    Git will not run a hook out of a tracked directory unless it is told to, so a clone
+    has the pii-guard check sitting inert on disk until this runs. Skipped outside a git
+    checkout, and never overrides a hooksPath somebody has already chosen.
+    """
+    if not (ROOT / ".git").exists():
+        return
+    try:
+        cur = subprocess.run(["git", "config", "--get", "core.hooksPath"], cwd=ROOT,
+                             capture_output=True, text=True).stdout.strip()
+        if cur and cur != ".githooks":
+            say("hooks", f"core.hooksPath is already set to {cur}, leaving it alone")
+            return
+        if cur == ".githooks":
+            say("hooks", "personal-details check already active")
+            return
+        subprocess.run(["git", "config", "core.hooksPath", ".githooks"], cwd=ROOT,
+                       check=True, capture_output=True)
+        say("hooks", "enabled the pre-commit check that keeps your details out of commits")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        say("hooks", "could not configure git hooks; run this by hand if you commit here:\n"
+                     "       git config core.hooksPath .githooks")
+
+
 def ui() -> None:
     """Node is optional-ish: without it the console cannot be built, but the scraper and
     every CLI still work. Say so plainly instead of failing at an npm error."""
@@ -98,6 +124,7 @@ def main() -> int:
     print("job copilot - first-time setup\n")
     ok = deps()
     config()
+    hooks()
     ui()
     print()
     say("next", "The console will show a checklist. Two things it cannot do for you:")

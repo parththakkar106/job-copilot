@@ -22,8 +22,23 @@ seniority:
      vice president, intern, internship, phd, "10 years", "8 years"]
 
 location:
+  # us_only is an ALLOWLIST: a role is kept only if its location shows a positive US
+  # signal (state name, uppercase state abbreviation, a known US city, or "US"/"USA").
+  # It used to be denylist-only, so anything not in exclude_locations below passed --
+  # that is how "Reykjavik" and bare "Hybrid" reached the queue.
   us_only: true
-  # dropped if the location string contains any of these (extend as you hit noise)
+
+  # What to do with a location that is neither excluded nor recognisably US.
+  # drop (default) | keep. Each run prints the ones it couldn't place, so if a real US
+  # role ends up here, add its city to include_locations rather than flipping this.
+  unknown_locations: drop
+
+  # Extra strings that COUNT AS US (word-bounded). For offices the built-in city list
+  # doesn't know. exclude_locations still wins over anything listed here.
+  include_locations: []
+
+  # dropped if the location string contains any of these (extend as you hit noise).
+  # Checked FIRST, so it overrides every allow signal.
   exclude_locations:
     [india, gurugram, gurgaon, bengaluru, bangalore, hyderabad, pune, noida, chennai, mumbai,
      london, uk, united kingdom, ireland, dublin, canada, toronto, vancouver, montreal,
