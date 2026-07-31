@@ -45,7 +45,7 @@ jobs:
             echo "::error::data/companies.example.yaml instead of your own targets."
             echo "::error::Either commit your own list (make the repo PRIVATE first — it"
             echo "::error::reveals who you are targeting), or drop the schedule and run the"
-            echo "::error::scraper locally with JOBCOPILOT_DATA pointing at your config."
+            echo "::error::scraper locally with JOBCOPILOT_HOME pointing at your own data."
             exit 1
           fi
 

@@ -77,12 +77,30 @@ python -m core.profile checkfill      # lists everything still unset
 python -m core.profile --selftest     # resolver checks against your profile
 ```
 
-Point `JOBCOPILOT_DATA` at any directory holding those config files and the whole pipeline
-reads from there instead, keeping personal data out of the repo entirely:
+### Keeping your data out of the checkout
+
+Set `JOBCOPILOT_HOME` and everything personal moves to one directory — config, history,
+answers, drafts, resumes, scrape output:
 
 ```bash
-JOBCOPILOT_DATA=~/private/jobcopilot-data python start.py
+JOBCOPILOT_HOME=~/private/jobcopilot python start.py
 ```
+
+```
+~/private/jobcopilot/
+  profile.json  companies.yaml  answer_bank.yaml   your config
+  applied.json  prefs.json                         history and settings
+  resumes/  pending/  logs/  out/                  PDFs, in-flight answers, reports
+```
+
+One variable, so that directory is a single portable thing: copy it and you have moved the
+whole job search, with nothing personal left behind in the checkout. `filters.yaml` and
+`taxonomy.yaml` are tuning rather than identity, so the ones shipped here are used by
+default — drop your own copies in `JOBCOPILOT_HOME` to override them.
+
+(`JOBCOPILOT_DATA` is the older, narrower variable: config directory only, state stays in
+the checkout. It still works, and it still wins over `JOBCOPILOT_HOME` for config, which is
+how a test or a throwaway console points itself somewhere safe.)
 </details>
 
 ## Run it

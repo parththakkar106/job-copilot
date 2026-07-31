@@ -24,14 +24,20 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from datetime import date
 from pathlib import Path
 
-# bridge/triage.py -> repo root is two levels up.
-REPO_ROOT = Path(__file__).resolve().parent.parent
-QUEUE_PATH = REPO_ROOT / "out" / "queue.json"
-APPLIED_PATH = REPO_ROOT / "applied.json"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core import paths  # noqa: E402
+
+# Imported, never re-derived. This module used to compute its own repo root and its own
+# applied.json path; core/paths.py holds the same two, so pointing one at a temp directory
+# left the other aimed at the real file, and a test wrote live records through it.
+REPO_ROOT = paths.REPO_ROOT
+QUEUE_PATH = paths.QUEUE
+APPLIED_PATH = paths.APPLIED
 
 
 def _int_env(name: str, default: int) -> int:

@@ -103,6 +103,7 @@ import drafter as drafter_mod  # Tier-2 essay drafting via the Claude Code CLI
 # repo root on the path before importing them. triage.py is a sibling and needs no help.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from core import bank as bank_mod
+from core import paths as paths_mod       # the one place that knows where anything lives
 from core import profile as profile_mod  # resume track tags + display names for /resume
 from core import scraper as scraper_mod  # dedup_key — the panel path must mint the same key
 
@@ -174,9 +175,11 @@ CLIENTS: set = set()                 # connected extension sockets, for unsolici
 ACTIVE_HANDLER: asyncio.Task = None  # the in-flight ask/review task, so a reconnect can cancel it
 STOP_WORDS = {"/stop", "stop", "cancel", "/cancel", "halt"}
 
-LOG_PATH = pathlib.Path(__file__).parent / "logs" / "fill_reports.jsonl"
-AUDIT_DIR = pathlib.Path(__file__).parent / "logs" / "audit"
-AUDIT_INDEX_PATH = pathlib.Path(__file__).parent / "logs" / "audit_dumps.jsonl"
+# Fill reports and audit dumps quote real form values, so they are state, not scratch:
+# they follow JOBCOPILOT_HOME with everything else. Unset, this stays bridge/logs.
+LOG_PATH = paths_mod.FILL_REPORTS
+AUDIT_DIR = paths_mod.AUDIT_DIR
+AUDIT_INDEX_PATH = paths_mod.AUDIT_INDEX
 
 
 # --- timing/debug logging -----------------------------------------------------------
@@ -726,11 +729,11 @@ _NUDGED = False        # told him Chrome is gone; don't tell him again until it'
 # watches — WS-free, token-free local IPC that works whether the bridge is cold-started
 # by the same launcher or was already running from earlier in the day. `/run` on Telegram
 # is the manual equivalent. The run is P1 collection only; nothing is ever submitted here.
-TRIGGER_FILE = pathlib.Path(__file__).resolve().parent / ".run_trigger"
+TRIGGER_FILE = paths_mod.RUN_TRIGGER
 # The web console (web/) drops this to ask for a flush of the approved pile without
 # opening a WebSocket (which would supersede Parth's live extension session). Same
 # file-handoff pattern as .run_trigger; watched by flush_trigger_watcher below.
-FLUSH_TRIGGER_FILE = pathlib.Path(__file__).resolve().parent / ".flush_trigger"
+FLUSH_TRIGGER_FILE = paths_mod.FLUSH_TRIGGER
 TRIGGER_POLL_SECS = 3            # how often to look for the sentinel; tests shrink this
 RUN_CLIENT_WAIT_SECS = 120       # how long to wait for the extension to connect before giving up
 _LAST_RUN_KICK = 0.0             # cooldown so a double-drop / fat-fingered /run can't double-fire

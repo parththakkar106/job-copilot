@@ -16,10 +16,15 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import sys
 import tempfile
 
-# One file, next to pending/ and the sentinels, so both processes resolve the same path.
-PREFS_PATH = pathlib.Path(__file__).resolve().parent / "prefs.json"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from core import paths  # noqa: E402
+
+# One file, resolved through core.paths so the bridge and the web console — separate
+# processes that share this state — always agree on where it is.
+PREFS_PATH = paths.PREFS
 
 
 def _read() -> dict:

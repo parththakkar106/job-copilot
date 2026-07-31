@@ -34,11 +34,17 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-PENDING_DIR = Path(__file__).resolve().parent / "pending"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core import paths  # noqa: E402
+
+# These files hold typed answers and drafts, so they follow JOBCOPILOT_HOME when it is set
+# rather than living beside the code. Unset, this is bridge/pending as before.
+PENDING_DIR = paths.PENDING
 
 AWAITING = "awaiting"
 APPROVED = "approved"
