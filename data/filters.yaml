@@ -1,24 +1,37 @@
 # Everything here is editable. Field keyword lists drive classification AND relevance
 # (a role matching no field is dropped as irrelevant). Priority: quant > ai > ds > tech,
 # so "ML Engineer" -> ai, "Quant Researcher" -> quant even if it also says "engineer".
-freshness_days: 10          # you said "posted within last few days" — 10 gives buffer for weekend gaps
+# 10 was discarding ~93% of the eligible pool: measured against the 2026-07-29 dump,
+# 10d gave 64 eligible roles, 30d gives 161, no limit at all gives 852. Widened 2026-08-01.
+freshness_days: 30
 
 fields:
   quant:
     [quant, quantitative]
   ai:
+    # research scientist / forward deployed / computer vision added 2026-08-01 after
+    # measuring marginal gain on the raw dump. Bare "engineer" and bare "analyst" were
+    # measured too and deliberately REJECTED — they pull in Sales/Solutions/Support
+    # Engineer and Business/Financial Analyst noise (+152 and +59 @30d, mostly junk).
     [machine learning, ml engineer, ai engineer, applied scientist, research engineer,
-     deep learning, llm, nlp, "ai/ml", genai, generative ai]
+     deep learning, llm, nlp, "ai/ml", genai, generative ai,
+     research scientist, forward deployed, computer vision]
   ds:
-    [data scientist, data science, decision scientist, analytics engineer, quantitative analyst]
+    [data scientist, data science, decision scientist, analytics engineer, quantitative analyst,
+     data engineer]
   tech:
     [software engineer, software developer, backend engineer, full stack, fullstack,
-     platform engineer, infrastructure engineer, systems engineer]
+     platform engineer, infrastructure engineer, systems engineer,
+     product engineer, security engineer, solutions architect, site reliability,
+     distributed systems, member of technical staff, new grad]
 
 seniority:
   # dropped if the title contains any of these as a whole word (you're early-career)
+  # 'senior'/'sr' removed 2026-08-01 (you asked to allow them): +52 roles @10d, +102 @30d.
+  # Many "Senior" postings at these firms are 2-4 YOE bands, so they're worth surfacing;
+  # 'staff'/'principal'/'lead' stay excluded — those are genuinely out of range.
   exclude:
-    [senior, sr, staff, principal, lead, manager, director, head, vp,
+    [staff, principal, lead, manager, director, head, vp,
      vice president, intern, internship, phd, "10 years", "8 years"]
 
 location:
@@ -32,6 +45,16 @@ location:
   # drop (default) | keep. Each run prints the ones it couldn't place, so if a real US
   # role ends up here, add its city to include_locations rather than flipping this.
   unknown_locations: drop
+
+  # Second chance for the "unknown" bucket only. Boards routinely file real US roles as
+  # "Hybrid" / "In-Office" / "Remote" / "N/A" and keep the geography elsewhere in the
+  # payload (Greenhouse offices[].name + "Job Posting Location" metadata, Ashby
+  # address.postalAddress.addressCountry, Workday country.descriptor). When the location
+  # itself can't be placed, that secondary evidence is judged by these SAME rules.
+  # It is not a blanket "keep unknowns": a hint of "Remote India" is still excluded, and
+  # each rescued role is printed at the end of the run so a bad hint is visible.
+  # Set false to go back to dropping every unplaceable location.
+  keep_unknown_if_us: true
 
   # Extra strings that COUNT AS US (word-bounded). For offices the built-in city list
   # doesn't know. exclude_locations still wins over anything listed here.

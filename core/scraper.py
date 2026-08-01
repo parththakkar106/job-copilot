@@ -102,6 +102,13 @@ class Job:
     posted: str | None      # ISO8601 UTC, or None if unknown
     field: str | None       # ai / tech / quant / ds / None(=irrelevant)
     tier: str               # dream / pipeline
+    # Secondary location evidence, used ONLY when `location` itself can't be placed.
+    # Boards routinely put "Hybrid" / "In-Office" / "Remote" / "N/A" in the location field
+    # and keep the real geography somewhere else: Greenhouse in offices[].name and the
+    # "Job Posting Location" metadata, Ashby in address.postalAddress.addressCountry,
+    # Workday in country.descriptor. Free text on purpose — it is fed back through
+    # location_verdict(), so the same allowlist and exclude_locations judge it.
+    location_hint: str = ""
     dedup_key: str = ""
 
     def keyed(self) -> "Job":
@@ -152,8 +159,35 @@ def parse_greenhouse(company, slug, tier, raw) -> list[Job]:
         loc = (j.get("location") or {}).get("name", "")
         posted = iso_date(j.get("first_published") or j.get("updated_at"))
         out.append(Job(company, j.get("title", ""), loc, j.get("absolute_url", ""),
-                       "greenhouse", slug, str(j.get("id", "")), posted, None, tier))
+                       "greenhouse", slug, str(j.get("id", "")), posted, None, tier,
+                       greenhouse_location_hint(j)))
     return out
+
+
+def greenhouse_location_hint(j: dict) -> str:
+    """Where Greenhouse hides the real geography when `location.name` is useless.
+
+    Two places, both seen in production: offices[].name ("Remote India", "Canada
+    Locations") and a metadata field literally called "Job Posting Location"
+    (["Bengaluru, India"]). Cloudflare files real India roles as location "In-Office",
+    so this is what stops `keep_unknown_if_us` from re-admitting them.
+    """
+    parts = []
+    for o in j.get("offices") or []:
+        n = (o or {}).get("name")
+        if n:
+            parts.append(str(n))
+    for m in j.get("metadata") or []:
+        if not isinstance(m, dict):
+            continue
+        if "location" not in str(m.get("name", "")).lower():
+            continue
+        v = m.get("value")
+        if isinstance(v, list):
+            parts.extend(str(x) for x in v if x)
+        elif v:
+            parts.append(str(v))
+    return "; ".join(parts)
 
 
 def parse_lever(company, slug, tier, raw) -> list[Job]:
@@ -161,10 +195,39 @@ def parse_lever(company, slug, tier, raw) -> list[Job]:
     for j in raw:  # lever returns a bare list
         cat = j.get("categories") or {}
         posted = iso_from_ms(j.get("createdAt"))
+        hint = "; ".join(str(x) for x in (cat.get("country"), j.get("country"),
+                                          j.get("workplaceType")) if x)
         out.append(Job(company, j.get("text", ""), cat.get("location", ""),
                        j.get("hostedUrl", ""), "lever", slug, str(j.get("id", "")),
-                       posted, None, tier))
+                       posted, None, tier, hint))
     return out
+
+
+def parse_workday_relative(posted_on: str | None) -> str | None:
+    """'Posted 3 Days Ago' -> ISO date. Workday's LIST endpoint has no real date.
+
+    Only a fallback: the detail endpoint returns a true `startDate`, and that is what we
+    use whenever the detail fetch succeeds. '30+ Days Ago' is Workday's terminal bucket —
+    it means "at least 31", so it reads as exactly 31 and such roles fall out of any
+    freshness window <= 31. That is the correct bias: better to drop a stale-looking role
+    than to date it optimistically and surface something closed.
+    """
+    if not posted_on:
+        return None
+    t = norm(posted_on)
+    if "today" in t or "just posted" in t:
+        days = 0
+    elif "yesterday" in t:
+        days = 1
+    else:
+        m = re.search(r"(\d+)\s*(day|week|month)", t)
+        if not m:
+            return None
+        n = int(m.group(1))
+        days = n * {"day": 1, "week": 7, "month": 30}[m.group(2)]
+        if "30" in t and "+" in (posted_on or ""):
+            days = 31
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
 def parse_ashby(company, slug, tier, raw) -> list[Job]:
@@ -174,8 +237,13 @@ def parse_ashby(company, slug, tier, raw) -> list[Job]:
             continue
         posted = iso_date(j.get("publishedAt"))
         url = j.get("jobUrl") or j.get("applyUrl") or ""
+        # Ashby is the tidy one: a real ISO-ish country on the posting itself.
+        country = (((j.get("address") or {}).get("postalAddress") or {})
+                   .get("addressCountry") or "")
+        hint = "; ".join(x for x in ([country] + list(j.get("secondaryLocations") or [])
+                                     ) if isinstance(x, str) and x)
         out.append(Job(company, j.get("title", ""), j.get("location", ""), url,
-                       "ashby", slug, str(j.get("id", "")), posted, None, tier))
+                       "ashby", slug, str(j.get("id", "")), posted, None, tier, hint))
     return out
 
 
@@ -235,6 +303,24 @@ def passes_location(location: str, cfg: dict) -> bool:
     return v == "us"
 
 
+def resolved_verdict(location: str, hint: str, cfg: dict) -> str:
+    """location_verdict, with a second look at the hint when the location won't place.
+
+    The primary location always wins when it is conclusive — a hint never overrides a
+    real answer. The hint is consulted ONLY for the "unknown" bucket ("Hybrid",
+    "In-Office", "Remote", "N/A"), and it is judged by the same rules, so a hint of
+    "Remote India" comes back `excluded` and one of "United States" comes back `us`.
+    Gated on `keep_unknown_if_us` so the old drop-everything behaviour stays available.
+    """
+    v = location_verdict(location, cfg)
+    if v != "unknown" or not hint:
+        return v
+    if not cfg.get("keep_unknown_if_us", True):
+        return v
+    # location_verdict treats an empty string as "keep"; we already know hint is non-empty.
+    return location_verdict(hint, cfg)
+
+
 def is_fresh(posted: str | None, days: int) -> bool:
     if not posted:
         return True  # unknown date -> don't drop
@@ -262,17 +348,158 @@ def _get(url, **kw):
     return None
 
 
-def fetch_company(c: dict, fields_cfg: dict) -> list[Job]:
-    ats, slug = c["ats"], c["slug"]
+def _post(url, payload):
+    for attempt in range(3):
+        try:
+            r = requests.post(url, headers={"User-Agent": UA, "Accept": "application/json",
+                                            "Content-Type": "application/json"},
+                              json=payload, timeout=25)
+            if r.status_code in (200, 404):
+                return r
+        except requests.RequestException:
+            pass
+        time.sleep(1.5 * (attempt + 1))
+    return None
+
+
+# --- Workday -----------------------------------------------------------------
+# Workday's public "CXS" JSON API. No auth, no key. Two endpoints:
+#   POST /wday/cxs/<tenant>/<board>/jobs           -> a page of postings (limit caps at 20)
+#   GET  /wday/cxs/<tenant>/<board><externalPath>  -> one posting, in full
+# The list page is deliberately thin: `locationsText` is often just "3 Locations" and
+# `postedOn` is prose ("Posted 3 Days Ago"), so neither the US filter nor the freshness
+# filter can run on it honestly. The detail call returns a real `location`, an
+# `additionalLocations` array, a `country`, and a true ISO `startDate`.
+#
+# So this is TWO-PHASE on purpose: page the whole board cheaply, drop everything whose
+# TITLE already fails field/seniority (that is ~90% of a 2000-posting bank board), and
+# only then spend one detail request per survivor. Filtering on the title first is what
+# keeps Citi from costing 2000 extra round-trips.
+WORKDAY_PAGE = 20          # hard server-side cap; limit=50 returns HTTP 400
+WORKDAY_MAX = 1500         # per-company posting ceiling, override with `max_postings`
+
+
+def _workday_list(host: str, board: str, tenant: str, cap: int) -> list[dict]:
+    url = f"https://{host}/wday/cxs/{tenant}/{board}/jobs"
+    out, offset, total = [], 0, None
+    while offset < cap:
+        r = _post(url, {"appliedFacets": {}, "limit": WORKDAY_PAGE,
+                        "offset": offset, "searchText": ""})
+        if not r or r.status_code != 200:
+            break
+        try:
+            data = r.json()
+        except ValueError:
+            break
+        page = data.get("jobPostings") or []
+        out.extend(page)
+        # `total` is only populated on the FIRST page — every later page reports 0. Reading
+        # it each time made `offset >= total` true on page 2 and silently capped every
+        # board at 40 postings. Latch it once; a short page is the real terminator.
+        if total is None:
+            total = data.get("total") or 0
+        offset += WORKDAY_PAGE
+        if len(page) < WORKDAY_PAGE or (total and offset >= total):
+            break
+        time.sleep(0.25)
+    return out
+
+
+def _workday_detail(host: str, board: str, tenant: str, path: str) -> dict | None:
+    r = _get(f"https://{host}/wday/cxs/{tenant}/{board}{path}")
+    if not r or r.status_code != 200:
+        return None
+    try:
+        return r.json().get("jobPostingInfo") or {}
+    except ValueError:
+        return None
+
+
+def fetch_workday(c: dict, fields_cfg: dict, filt: dict | None) -> list[Job]:
+    """`host` + `board` in companies.yaml, e.g.
+       {name: Adobe, ats: workday, host: adobe.wd5.myworkdayjobs.com,
+        board: external_experienced, tier: pipeline}
+    """
+    name = c.get("name", "?")
+    host, board = c.get("host"), c.get("board")
     tier = c.get("tier", "pipeline")
-    name = c.get("name", slug)
+    if not host or not board:
+        print(f"  ! {name}: workday entry needs both `host` and `board` — skipped", file=sys.stderr)
+        return []
+    tenant = c.get("tenant") or host.split(".")[0]
+    cap = int(c.get("max_postings") or WORKDAY_MAX)
+
+    listings = _workday_list(host, board, tenant, cap)
+    if not listings:
+        print(f"  ! {name} (workday/{tenant}/{board}) returned no postings", file=sys.stderr)
+        return []
+
+    sen_cfg = (filt or {}).get("seniority", {})
+    # Title-only prefilter. Same predicates run again in run() against the real record;
+    # this pass exists purely to decide which postings are worth a detail request.
+    candidates = []
+    for p in listings:
+        title = p.get("title") or ""
+        if classify_field(title, fields_cfg) is None:
+            continue
+        if sen_cfg and not passes_seniority(title, sen_cfg):
+            continue
+        candidates.append(p)
+
+    print(f"    workday: {len(listings)} postings -> {len(candidates)} title-matches "
+          f"-> fetching detail", file=sys.stderr)
+
+    out = []
+    for p in candidates:
+        path = p.get("externalPath") or ""
+        bullets = p.get("bulletFields") or []
+        job_id = str(bullets[0]) if bullets else path.rsplit("_", 1)[-1]
+        info = _workday_detail(host, board, tenant, path) if path else None
+        hint = ""
+        if info:
+            locs = [info.get("location") or ""] + list(info.get("additionalLocations") or [])
+            location = "; ".join(x for x in locs if x)
+            country = ((info.get("country") or {}).get("descriptor") or "")
+            if country and "united states" not in country.lower():
+                # Explicit country beats string-sniffing: a role stamped India is India
+                # however its city reads. Only skip when the API actually told us.
+                continue
+            hint = country
+            posted = iso_date(info.get("startDate")) or parse_workday_relative(info.get("postedOn"))
+            url = info.get("externalUrl") or f"https://{host}/{board}{path}"
+            title = info.get("title") or p.get("title") or ""
+            job_id = str(info.get("jobReqId") or job_id)
+        else:
+            # detail unavailable -> fall back to the thin list record rather than drop
+            location = p.get("locationsText") or ""
+            posted = parse_workday_relative(p.get("postedOn"))
+            url = f"https://{host}/{board}{path}"
+            title = p.get("title") or ""
+        out.append(Job(name, title, location, url, "workday", f"{tenant}/{board}",
+                       job_id, posted, None, tier, hint))
+        time.sleep(0.2)
+
+    for j in out:
+        j.field = classify_field(j.title, fields_cfg)
+        j.keyed()
+    return out
+
+
+def fetch_company(c: dict, fields_cfg: dict, filt: dict | None = None) -> list[Job]:
+    ats = c["ats"]
+    tier = c.get("tier", "pipeline")
+    name = c.get("name", c.get("slug", "?"))
+    if ats == "workday":
+        return fetch_workday(c, fields_cfg, filt)
+    slug = c["slug"]
     urls = {
         "greenhouse": f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true",
         "lever":      f"https://api.lever.co/v0/postings/{slug}?mode=json",
         "ashby":      f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=false",
     }
     if ats not in urls:  # a typo'd ats: must cost one company, not the whole daily run
-        print(f"  ! {name}: unknown ats '{ats}' (want greenhouse/lever/ashby) — skipped", file=sys.stderr)
+        print(f"  ! {name}: unknown ats '{ats}' (want greenhouse/lever/ashby/workday) — skipped",
+              file=sys.stderr)
         return []
     r = _get(urls[ats])
     if not r or r.status_code != 200:
@@ -312,6 +539,11 @@ def verify_live(j: Job) -> bool:
     if j.ats == "ashby":
         ids = _ashby_live_ids(j.ats_slug)
         return True if ids is None else j.ats_job_id in ids
+    if j.ats == "workday":
+        # The detail endpoint 404s once a requisition closes, so the job url is a real
+        # liveness probe here (unlike Ashby's SPA shell). Network failure -> keep.
+        r = _get(j.url)
+        return True if r is None else r.status_code == 200
     urls = {
         "greenhouse": f"https://boards-api.greenhouse.io/v1/boards/{j.ats_slug}/jobs/{j.ats_job_id}",
         "lever":      f"https://api.lever.co/v0/postings/{j.ats_slug}/{j.ats_job_id}?mode=json",
@@ -340,20 +572,27 @@ def run(args):
     for c in companies:
         print(f"- {c.get('name', c.get('slug', '?'))} [{c.get('ats', '?')}]")
         try:
-            all_jobs.extend(fetch_company(c, fields_cfg))
+            all_jobs.extend(fetch_company(c, fields_cfg, filt))
         except Exception as e:  # one malformed entry must not kill the whole daily run
             print(f"  ! {c.get('name', c.get('slug', '?'))}: {e}", file=sys.stderr)
         time.sleep(0.5)
 
     # filter
-    kept, seen = [], set()
+    kept, seen, rescued = [], set(), []
     unplaceable: dict[str, int] = {}   # location -> count, so the lists can be extended
     for j in all_jobs:
         if j.field is None:                                   continue
         if not passes_seniority(j.title, filt["seniority"]):  continue
-        if location_verdict(j.location, filt["location"]) == "unknown":
+        verdict = resolved_verdict(j.location, j.location_hint, filt["location"])
+        if verdict == "excluded":
+            continue
+        if verdict == "unknown":
+            # Still unplaceable even after the hint — these are the ones worth eyeballing.
             unplaceable[j.location] = unplaceable.get(j.location, 0) + 1
-        if not passes_location(j.location, filt["location"]): continue
+            if str(filt["location"].get("unknown_locations", "drop")).lower() != "keep":
+                continue
+        if verdict == "us" and location_verdict(j.location, filt["location"]) == "unknown":
+            rescued.append(j)
         if not is_fresh(j.posted, filt.get("freshness_days", 14)): continue
         if j.dedup_key in applied:                            continue
         if j.dedup_key in seen:                               continue
@@ -361,6 +600,16 @@ def run(args):
         kept.append(j)
 
     kept.sort(key=lambda x: x.posted or "", reverse=True)  # freshest first
+
+    if rescued:
+        # These were kept on secondary evidence, not on their own location string, so
+        # print what convinced us. A wrong hint should be obvious here, not invisible.
+        print(f"\nkept {len(rescued)} role(s) whose location was unplaceable but whose "
+              f"board data says US:", file=sys.stderr)
+        for j in rescued[:15]:
+            print(f"  {j.company}: {j.location!r} -> {j.location_hint!r}", file=sys.stderr)
+        if len(rescued) > 15:
+            print(f"  ... and {len(rescued) - 15} more", file=sys.stderr)
 
     if unplaceable:
         # A US role landing here is a gap in US_CITIES / include_locations, not noise.
@@ -530,6 +779,50 @@ def selftest():
     assert passes_location("Anywhere", {"us_only": False}) is True
     assert passes_location("", location) is True              # no location field -> keep
     assert jobs[0].dedup_key == dedup_key("Acme", "Software Engineer, Backend", "New York, NY")
+
+    # --- location hints: rescue ambiguous locations, but only on US evidence --
+    assert resolved_verdict("Hybrid", "United States", location) == "us"
+    assert resolved_verdict("N/A", "San Francisco, CA", location) == "us"
+    # the real Cloudflare case: location says "In-Office", offices say Remote India
+    assert resolved_verdict("In-Office", "Remote India", location) == "excluded"
+    assert resolved_verdict("N/A", "Canada Locations", {**location,
+                                                        "exclude_locations": ["canada"]}) == "excluded"
+    assert resolved_verdict("Remote", "", location) == "unknown"        # no hint -> unchanged
+    assert resolved_verdict("Remote", "Zurich", location) == "unknown"  # hint no help
+    # a conclusive primary location is never overridden by a hint
+    assert resolved_verdict("London, UK", "United States", location) == "excluded"
+    assert resolved_verdict("Austin, TX", "Remote India", location) == "us"
+    # opt-out restores the old drop-everything behaviour
+    assert resolved_verdict("Hybrid", "United States",
+                            {**location, "keep_unknown_if_us": False}) == "unknown"
+    # hint extraction from the two real Greenhouse shapes
+    assert greenhouse_location_hint(
+        {"offices": [{"name": "Remote India"}]}) == "Remote India"
+    assert greenhouse_location_hint(
+        {"metadata": [{"name": "Job Posting Location", "value": ["Bengaluru, India"]}]}
+    ) == "Bengaluru, India"
+    assert greenhouse_location_hint({"offices": [], "metadata": None}) == ""
+    assert greenhouse_location_hint(
+        {"metadata": [{"name": "Cost Center", "value": "6300 - Accounting"}]}) == ""
+    _ash = parse_ashby("Acme", "acme", "pipeline", {"jobs": [
+        {"id": 9, "title": "Software Engineer", "location": "Remote",
+         "address": {"postalAddress": {"addressCountry": "United States"}}}]})
+    assert _ash[0].location_hint == "United States"
+    assert resolved_verdict(_ash[0].location, _ash[0].location_hint, location) == "us"
+
+    # --- workday relative-date parsing ---------------------------------------
+    def _age(s):
+        iso = parse_workday_relative(s)
+        return None if iso is None else (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).days
+    assert _age("Posted Today") == 0
+    assert _age("Posted Yesterday") == 1
+    assert _age("Posted 3 Days Ago") == 3
+    assert _age("Posted 2 Weeks Ago") == 14
+    assert _age("Posted 30+ Days Ago") == 31          # terminal bucket -> "at least 31"
+    assert _age(None) is None and _age("Posted recently") is None
+    # a "30+ Days Ago" role must fall out of a 30-day window, never sneak in as fresh
+    assert is_fresh(parse_workday_relative("Posted 30+ Days Ago"), 30) is False
+    assert is_fresh(parse_workday_relative("Posted 3 Days Ago"), 30) is True
     print("selftest OK")
 
 
