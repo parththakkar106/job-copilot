@@ -23,6 +23,8 @@ function resumeTrack(resume) {
 function Card({ row, onOpen, onMove, onDragRow, dragging, index, menuUp }) {
   const editable = isEditable(row.bucket)
   const track = resumeTrack(row.resume)
+  // _dream_rows and the applied rows don't carry apply_url at all, so the fallback matters.
+  const postUrl = row.url || row.apply_url || ''
 
   const onDragStart = (e) => {
     e.dataTransfer.setData('text/plain', row.dedup_key)
@@ -59,6 +61,21 @@ function Card({ row, onOpen, onMove, onDragRow, dragging, index, menuUp }) {
         <span className={`tag tag-${row.bucket}`} title={row.tag}>{row.tag}</span>
         <div className="spacer" />
         {track && <span className="kb-track" title={row.resume}>{track}</span>}
+        {/* Every card gets this, not just the editable ones. Only in_queue/filled cards
+            respond to a click (isEditable), so a dream or applied card was a dead end on
+            this view — the posting was reachable only from the list or Focus. Prefers the
+            posting itself over apply_url: this link is for READING the role, and the
+            Greenhouse embed apply_url renders a bare form with no job description. */}
+        {postUrl && (
+          <a className="kb-link" href={postUrl} target="_blank" rel="noreferrer"
+            draggable={false}
+            // Without this the click bubbles to the card and opens the drawer behind the
+            // new tab. Native DnD still works: the anchor's own drag is off, so a drag
+            // starting here falls through to the card.
+            onClick={(e) => e.stopPropagation()}
+            title={`Open posting — ${row.company}`}
+            aria-label={`Open the posting for ${row.title} at ${row.company}`}>↗</a>
+        )}
         <span className="kb-date" title={`${row.date} — ${relDate(row.date)}`}>{shortDate(row.date)}</span>
       </div>
     </article>

@@ -543,6 +543,17 @@ kbd {
   overflow: hidden; text-overflow: ellipsis;
 }
 .kb-date { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+/* The posting link. Sits in the meta row, quiet until the card is hovered so it doesn't
+   compete with the tag — but it keeps a real 18px hit target the whole time (opacity, not
+   display), so it stays clickable on touch and reachable by keyboard. */
+.kb-link {
+  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 5px; text-decoration: none;
+  color: var(--dim); font-size: 11px; line-height: 1; opacity: .45; transition: all .12s;
+}
+.kb-card:hover .kb-link { opacity: 1; color: var(--accent); }
+.kb-link:hover { background: var(--accent); color: #fff !important; opacity: 1; }
+.kb-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; opacity: 1; }
 .kb-track {
   flex-shrink: 0; color: var(--violet); font-size: 10.5px;
   text-transform: uppercase; letter-spacing: .3px;
