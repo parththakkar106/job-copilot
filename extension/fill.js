@@ -1115,6 +1115,7 @@ function askId(label, kind, used) {
  *         "apply"    PHASE 3 — write Parth's stored answers in, then submit
  *   answers:  {askId: value}  (mode "apply")
  *   approved: [{label,value}] the summary he approved (mode "apply") — diffed before submit
+ *   company:  the queue's display name, when the caller knows it. Overrides the URL guess.
  */
 async function runFill(autoSubmit = false, opts = {}) {
   const mode = opts.mode || "live";
@@ -1157,10 +1158,13 @@ async function runFill(autoSubmit = false, opts = {}) {
       confirm: adapter.submit.confirm || { urlIncludes: [], textIncludes: [] },
     } : null;
 
-    // Company name for the Telegram header, so Parth knows which application the questions
-    // belong to. All three ATSs put the tenant slug as the first path segment
-    // (ashbyhq.com/<co>/..., lever.co/<co>/..., greenhouse.io/<co>/...); title-case it.
-    const company = pageCompany();
+    // Company name for the Telegram header (so Parth knows which application the questions
+    // belong to) AND for the drafter's why_company context — a wrong name here ships a
+    // wrong name inside the essay, so prefer the authoritative one.
+    // opts.company is the queue's own display name, passed down by background.js whenever
+    // the fill was driven from a queue/pending record. Only when nobody told us (the manual
+    // popup path, /apply <url>) do we guess it from the URL — see pageCompany.
+    const company = (opts.company || "").trim() || pageCompany();
     report.company = company;
     report.url = location.href;
 
@@ -1943,8 +1947,29 @@ async function submitWithRetry(log) {
 // Read off the URL/DOM alone so the panel can name a job it never filled (the
 // "I submitted this by hand" path runs with no report behind it).
 function pageCompany() {
+  const titleCase = s => String(s || "").trim().replace(/[-_]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
+  // The tenant-slug-as-first-path-segment rule holds for the CANONICAL board URLs
+  // (ashbyhq.com/<co>/…, lever.co/<co>/…, greenhouse.io/<co>/…) but NOT for the Greenhouse
+  // embed endpoint that background.js rewrites custom career domains to:
+  //   job-boards.greenhouse.io/embed/job_app?for=<slug>&token=<id>
+  // There the first segment is the literal "embed", which is how every Discord/Airbnb/
+  // Roblox-style proxied board came out named "Embed" — and that name is what the drafter
+  // writes into the why_company essays ("I want to work at Embed…").
+  if (/\/embed\/job_app/i.test(location.pathname)) {
+    let forSlug = "";
+    try { forSlug = new URL(location.href).searchParams.get("for") || ""; } catch (_) {}
+    if (forSlug) return titleCase(forSlug);
+    // The legacy ?token=<id> rewrite (background.js's gh_jid probe) carries no `for`, so
+    // fall back to Greenhouse's own page title: "Job Application for <role> at <Company>".
+    // That's the real display name, better-cased than any slug.
+    const m = (document.title || "").match(/\bat\s+(.+?)\s*$/i);
+    if (m) return m[1].trim();
+    return "";   // better empty than "Embed" — the drafter omits an empty company
+  }
+
   const slug = (location.pathname.split("/").filter(Boolean)[0] || "").trim();
-  return slug.replace(/[-_]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  return titleCase(slug);
 }
 function pageRole() {
   return (document.querySelector("h1, .app-title, [class*=posting-headline]")?.textContent
@@ -2001,7 +2026,6 @@ function mountPanel() {
       .badge{font-size:9px;font-weight:700;padding:1px 5px;border-radius:99px;flex:0 0 auto}
       .badge.req{background:#fee2e2;color:#b91c1c}.badge.opt{background:#e5e7eb;color:#4b5563}
       .qwhy{font-size:11px;color:#6b7280;margin-top:2px}
-      .draft{font-size:11px;background:#f3f4f6;border-radius:6px;padding:6px;margin-top:6px;white-space:pre-wrap;max-height:88px;overflow:auto}
       .qin{width:100%;margin-top:6px;padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;
         font-family:inherit;resize:vertical;min-height:34px;background:#fff;color:#111}
       .qbtns{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
@@ -2020,7 +2044,7 @@ function mountPanel() {
         .panel{background:#1f2937;color:#e5e7eb}.log{border-top-color:#374151}.empty{color:#9ca3af}
         .qs{border-top-color:#374151}.q{border-bottom-color:#374151}
         .more{border-top-color:#374151;color:#a5b4fc}.more:hover{background:#111827}
-        .draft{background:#111827}.qin{background:#111827;color:#e5e7eb;border-color:#4b5563}
+        .qin{background:#111827;color:#e5e7eb;border-color:#4b5563}
         .badge.opt{background:#374151;color:#d1d5db}.badge.req{background:#7f1d1d;color:#fecaca}
       }
     </style>
@@ -2101,12 +2125,16 @@ function mountPanel() {
       };
 
       let d = (drafts && drafts[q.id]) || (q.draft ? { draft: q.draft, bank_id: null } : null);
-      const draftBox = el("div", "draft");
-      if (d && d.draft) {
-        draftBox.textContent = d.draft;
-        body.appendChild(draftBox);
-        input.value = d.draft;
-      }
+      // The draft goes into the EDITABLE textarea only. It used to also render into a
+      // read-only .draft box above it, which showed every essay twice in the panel —
+      // the box and the textarea held identical text. The textarea alone still supports
+      // both outcomes: "👍 Use draft" accepts d.draft verbatim (and counts as a bank use),
+      // "Save" sends whatever he edited it into.
+      const showDraft = (text) => {
+        input.value = text;
+        input.rows = Math.min(10, Math.max(4, Math.ceil(text.length / 60)));
+      };
+      if (d && d.draft) showDraft(d.draft);
       body.appendChild(input);
 
       const btns = el("div", "qbtns");
@@ -2141,9 +2169,7 @@ function mountPanel() {
               return;
             }
             d = got;
-            draftBox.textContent = got.draft;
-            if (!draftBox.isConnected) body.insertBefore(draftBox, input);
-            input.value = got.draft;   // editable: the draft is a starting point, not the answer
+            showDraft(got.draft);   // editable: the draft is a starting point, not the answer
             if (!useBtn.isConnected) btns.insertBefore(useBtn, dr);
             dr.remove();
           } catch (e) {

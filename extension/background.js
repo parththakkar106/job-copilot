@@ -633,7 +633,8 @@ async function runFlush() {
         // resumeTag: Parth's per-job /resume override, if any. fill.js attaches that
         // track instead of its best-of-4 pick; unset => the auto pick stands.
         const report = await fillTab(tab.id, /* autoSubmit */ true,
-          { mode: "apply", answers, approved, resumeTag: rec.resume_override || null });
+          { mode: "apply", answers, approved, resumeTag: rec.resume_override || null,
+            company: rec.company || "" });
 
         if (report.reviewed !== "ok") {
           summary.parked++;
@@ -829,7 +830,8 @@ async function runQueue(opts = {}) {
         // PHASE 1: fill deterministically, note what's unresolved, ask nobody. The tab
         // closes right after — parking it waiting on a human is what MV3 eviction (which
         // detaches chrome.debugger after ~30s idle) makes impossible.
-        const report = await fillTab(tab.id, /* autoSubmit */ false, { mode: "collect" });
+        const report = await fillTab(tab.id, /* autoSubmit */ false,
+          { mode: "collect", company: job.company || "" });
         if ((report.errors || []).length && !report.filled.length) {
           summary.failed++;
           await notify(`⚠️ <b>${escHtml(job.company)}</b>: ${escHtml((report.errors || []).join("; "))}`);

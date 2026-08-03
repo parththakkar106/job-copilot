@@ -54,7 +54,7 @@ function extractConst(name) {
 // than a real one — enough to pin the matching ORDER and the detached-node rule, which is
 // the part that broke (a detached control clicks at 0,0 and fails as "no options").
 const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,
-        isPickList, makeDegreeLevel, canon, wb } =
+        isPickList, makeDegreeLevel, makePageCompany, canon, wb } =
   new Function(
   `${extractConsts()}\n${extract("askId")}\n${extract("diffApproved")}\n` +
   `${extractConst("searchable")}\n${extractConst("GENERIC_SEARCH_WORD")}\n${extract("searchCandidates")}\n` +
@@ -63,8 +63,9 @@ const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, make
   `${extractConst("DEGREE_FIELD")}\n${extractConst("DEGREE_LEVELS")}\n` +
   `const makeDegreeLevel = (labelFor) => { ${extract("degreeLevel")} return degreeLevel; };\n` +
   `const makeLiveControl = (document, labelFor) => { ${extract("liveControl")} return liveControl; };\n` +
+  `const makePageCompany = (location, document) => { ${extract("pageCompany")} return pageCompany; };\n` +
   `return { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,` +
-  ` isPickList, makeDegreeLevel, canon, wb };`)();
+  ` isPickList, makeDegreeLevel, makePageCompany, canon, wb };`)();
 
 let n = 0;
 const ok = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); process.exit(1); } n++; };
@@ -447,6 +448,45 @@ const labelOf = (el) => (el && el._label) || "";
   ok(lc({isConnected: false, getBoundingClientRect: () => ({width: 0, height: 0})},
         {id: "school--0", _label: "School"}, {}) === null,
      "an unresolvable control must return null, never a stale node");
+}
+
+// --- pageCompany -------------------------------------------------------------------
+
+// The company name is NOT cosmetic: it goes into the drafter's context and gets written
+// into the why_company essay itself. A wrong name here ships "I want to work at Embed"
+// to a real Discord application — which is exactly what happened, because background.js
+// rewrites proxied career domains to /embed/job_app and the old first-path-segment rule
+// read the literal "embed" as the tenant.
+{
+  const co = (href, title = "") => {
+    const u = new URL(href);
+    return makePageCompany({ href, pathname: u.pathname }, { title })();
+  };
+
+  // The canonical boards keep the first-path-segment rule.
+  ok(co("https://job-boards.greenhouse.io/discord/jobs/7869543") === "Discord",
+     "canonical greenhouse board still reads the tenant slug");
+  ok(co("https://jobs.ashbyhq.com/ramp/1a2b3c") === "Ramp",
+     "ashby board still reads the tenant slug");
+  ok(co("https://jobs.lever.co/scale-ai/abc") === "Scale Ai",
+     "lever slug is title-cased across the hyphen");
+
+  // THE regression: the embed rewrite background.js emits for proxied career domains.
+  ok(co("https://job-boards.greenhouse.io/embed/job_app?for=discord&token=7869543") === "Discord",
+     "embed/job_app must read the company from ?for=, never the literal 'embed'");
+  ok(co("https://boards.greenhouse.io/embed/job_app?for=roblox&token=99") === "Roblox",
+     "the legacy embed host is covered too");
+
+  // The gh_jid probe path rewrites to ?token= with no `for` — fall back to the page title
+  // Greenhouse renders: "Job Application for <role> at <Company>".
+  ok(co("https://boards.greenhouse.io/embed/job_app?token=7869543",
+        "Job Application for Senior Data Scientist at Discord") === "Discord",
+     "with no ?for=, the company comes off Greenhouse's page title");
+
+  // Nothing to go on: empty beats a confidently wrong name, because the drafter omits an
+  // empty company from its context but would happily write a wrong one into the essay.
+  ok(co("https://boards.greenhouse.io/embed/job_app?token=7869543") === "",
+     "an unresolvable embed company must be empty, never 'Embed'");
 }
 
 console.log(`fill units: ${n}/${n} checks passed`);
