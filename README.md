@@ -231,12 +231,32 @@ For the unattended local collection run (Task Scheduler → bridge → extension
 
 ## Tests
 
+Every suite is a plain script with its own `main()` — there is no pytest, no unittest
+discovery, and no conftest. Run each file directly; each prints an `N/N checks passed`
+line and exits non-zero on failure.
+
+One-time setup. The venv is optional but keeps the test-only dep out of the interpreter
+the bridge runs on:
+
 ```bash
-for t in bridge/test_*.py; do python "$t"; done
-python web/test_api.py
-python -m core.profile --selftest
+python -m venv .venv
+.venv/Scripts/python -m pip install -r bridge/requirements.txt \
+    -r web/requirements.txt -r requirements-dev.txt
+```
+
+```bash
+for t in bridge/test_*.py; do .venv/Scripts/python "$t"; done
+.venv/Scripts/python web/test_api.py
+.venv/Scripts/python -m core.profile --selftest
+.venv/Scripts/python scripts/test_pii_guard.py
+.venv/Scripts/python test_home_layout.py && .venv/Scripts/python test_write_target.py
 node extension/test_fill_units.mjs
 ```
+
+Run the whole thing **twice back to back, then `git status data/`**. Every suite is
+supposed to work on an isolated temp copy of the data layer; one that isn't passes alone
+and fails on the rerun, because the first run clobbered the live state it then reads.
+That is how `core/bank.py`'s save-through-a-READ-path bug was caught.
 
 ## Constraints
 

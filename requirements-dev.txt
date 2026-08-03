@@ -1,0 +1,17 @@
+# Extra packages needed only to RUN THE TESTS, on top of bridge/requirements.txt and
+# web/requirements.txt. Deliberately separate from those two: bootstrap.py installs them
+# for every user setting the pipeline up, and none of this is needed to actually apply to
+# a job. Install with:
+#
+#     .venv/Scripts/python -m pip install -r bridge/requirements.txt \
+#         -r web/requirements.txt -r requirements-dev.txt
+#
+# httpx backs starlette's TestClient, which web/test_api.py imports through
+# fastapi.testclient. Without it that whole file dies at import with a RuntimeError, and
+# the 47 API checks silently never run. It is NOT pulled in by fastapi itself — only by
+# `fastapi[all]`, which the web requirements deliberately don't use.
+#
+# Note: starlette 1.3 warns that the httpx TestClient backend is deprecated in favour of
+# `httpx2`. The tests pass on httpx today; when that deprecation turns into a removal,
+# swap this line rather than pinning starlette back.
+httpx>=0.27
