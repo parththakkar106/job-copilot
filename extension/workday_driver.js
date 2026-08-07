@@ -421,11 +421,182 @@ function cssPathOf(el) {
 
 // ── the loop ─────────────────────────────────────────────────────────────────
 
+// ── entry: advert -> open form ───────────────────────────────────────────────
+// A Workday job page is an advert with no form on it. Apply opens a modal offering up to
+// four ways to start, and the form only exists once one is chosen. Everything below gets
+// from the advert to step 1; runWorkday takes over there.
+
+// WHICH ROUTE. Pure on purpose: this is where a silent wrong answer is expensive and
+// invisible — every route lands on the same six steps, so picking badly does not throw,
+// it just fills slower or replays an application it should not have.
+//
+// `preferred` comes from applied.json via the bridge and wins whenever Workday actually
+// offers it. `available` is ground truth about what is clickable right now: a tenant with
+// no history simply has no "use my last application" button, and a route we cannot click
+// is not a route.
+export function chooseRoute(preferred, available, order) {
+  const avail = new Set(available || []);
+  const ladder = [];
+  for (const r of [preferred, ...(order || [])]) if (r && !ladder.includes(r)) ladder.push(r);
+
+  const route = ladder.find(r => avail.has(r)) || null;
+  const out = { route, preferred: preferred || null, available: [...avail] };
+
+  if (!route) { out.reason = "the modal offered no route we know how to take"; return out; }
+  if (route === preferred) out.reason = `took the decided route '${route}'`;
+  else out.reason = `'${preferred}' was not offered; fell back to '${route}'`;
+
+  // Our records said cold, Workday says otherwise — he applied to this tenant outside the
+  // tool, or a submit never got logged. Worth surfacing rather than silently ignoring: it
+  // means applied.json is incomplete, and a clone we did not record has an unknown track,
+  // which is exactly the case the reconcile pass has to catch rather than trust.
+  if (preferred !== "useMyLastApplication" && avail.has("useMyLastApplication")) {
+    out.unrecordedHistory = true;
+  }
+  return out;
+}
+
+// Which of the adapter's routes the modal is actually showing.
+function offeredRoutes(adapter) {
+  const routes = adapter.entry.routes;
+  return Object.keys(routes).filter(k => {
+    const el = document.querySelector(routes[k]);
+    return !!el && el.getAttribute("aria-disabled") !== "true" && !el.disabled;
+  });
+}
+
+async function waitFor(sel, timeoutMs, step = 300) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const el = document.querySelector(sel);
+    if (el) return el;
+    await sleep(step);
+  }
+  return null;
+}
+
+export function needsSignIn(adapter) {
+  const s = adapter.entry.signIn;
+  if (!s || !Array.isArray(s.markers)) return false;
+  // Only meaningful when there is no Apply button — a signed-in advert can still carry a
+  // "sign in" link in its header, and treating that as a wall would stop every run.
+  if (document.querySelector(adapter.entry.applyButton)) return false;
+  return s.markers.some(m => document.querySelector(m));
+}
+
+// Get from the advert to step 1. Returns {ok, route, ...} and never types into the form.
+export async function enterApplyFlow(ctx) {
+  const { adapter, rpc, attachResume, track } = ctx;
+  const e = adapter.entry;
+
+  // Already inside the wizard (he clicked Apply himself, or a re-fill). Nothing to do —
+  // and clicking Apply again from in here would be a different button entirely.
+  if (currentStep(adapter)) return { ok: true, route: "already-in-flow", entered: false };
+
+  if (needsSignIn(adapter)) {
+    return { ok: false, stage: "signin",
+             error: "this tenant wants an account before it will show the form. Sign in " +
+                    "on the tab, then press Fill again — signing in is deliberately not " +
+                    "automated." };
+  }
+
+  const apply = document.querySelector(e.applyButton);
+  if (!apply) {
+    return { ok: false, stage: "apply-button",
+             error: "no Apply button on this page. If the form is already open this is a " +
+                    "step-detection problem, not an entry one." };
+  }
+  apply.click();
+
+  const modal = await waitFor(e.modal, 12000);
+  if (!modal) {
+    return { ok: false, stage: "modal",
+             error: "clicked Apply but the route modal never appeared" };
+  }
+
+  // Ask Python which route our own records justify. Best-effort: a bridge that is down
+  // must not stop an application, so an unanswered call falls back to the adapter's
+  // default and the ladder below still constrains it to something clickable.
+  let decided = null;
+  try {
+    const res = await rpc({ type: "WORKDAY_ROUTE", url: location.href });
+    decided = res && res.route ? res : null;
+  } catch (_) { /* bridge off — fall through */ }
+
+  const pick = chooseRoute(decided ? decided.route : e.fallbackRoute,
+                           offeredRoutes(adapter), e.routePreference);
+  if (!pick.route) {
+    return { ok: false, stage: "route", error: pick.reason, offered: pick.available };
+  }
+
+  document.querySelector(e.routes[pick.route]).click();
+
+  const entry = { ok: true, route: pick.route, entered: true, why: pick.reason,
+                  tenant: decided ? decided.tenant : null,
+                  unrecordedHistory: !!pick.unrecordedHistory };
+
+  // The autofill route wants the PDF before it will build anything. Attach the track's
+  // file through the SAME helper the other three adapters use, then wait for the parse:
+  // it rebuilds the form when it lands, so anything written before that is discarded.
+  if (pick.route === "autofillWithResume") {
+    const up = adapter.entry.resumeUpload;
+    const input = await waitFor(up.input, 12000);
+    if (!input) {
+      return { ...entry, ok: false, stage: "resume-upload",
+               error: "the autofill route never showed a file input" };
+    }
+    try {
+      await attachResume(input, track);
+    } catch (err) {
+      return { ...entry, ok: false, stage: "resume-upload",
+               error: `could not attach the ${track.tag} resume: ${err && err.message || err}` };
+    }
+    entry.attached = track.tag;
+    const settled = await waitFor(up.settleSelector, up.settleTimeoutMs);
+    if (!settled) {
+      return { ...entry, ok: false, stage: "resume-parse",
+               error: "the resume was attached but the form never came back from parsing" };
+    }
+  }
+
+  // Both routes end in the wizard. Wait for a progress bar rather than a URL change —
+  // the URL is the same on every step and does not move here either.
+  const t0 = Date.now();
+  while (Date.now() - t0 < 30000) {
+    if (currentStep(adapter)) return entry;
+    await sleep(400);
+  }
+  return { ...entry, ok: false, stage: "wizard",
+           error: `took the '${pick.route}' route but no step marker ever appeared` };
+}
+
 export async function runWorkday(ctx) {
   const { adapter, rpc } = ctx;
   const report = [];
   const needsInput = [];
   const steps = [];
+
+  // Advert -> open form. A no-op when the form is already open, so pressing Fill on a
+  // half-finished application still works. Done BEFORE the debugger attaches: entry is all
+  // ordinary clicks, and a sign-in wall should not leave a debugging banner on the tab.
+  const entry = await enterApplyFlow(ctx);
+  if (!entry.ok) {
+    return { ok: false, adapter: "workday", stage: entry.stage, error: entry.error,
+             entry, report };
+  }
+
+  // Into the report array rather than onto one return, so HOW the application started
+  // survives every exit below — it is the first thing worth knowing when a run misbehaves,
+  // and a clone that went wrong looks nothing like an autofill that went wrong.
+  if (entry.entered) {
+    report.push(["entry", entry.attached ? `${entry.route} (${entry.attached} resume)`
+                                         : entry.route]);
+    if (entry.unrecordedHistory) {
+      report.push(["entry-note",
+                   "Workday offered a previous application we have no record of — " +
+                   "applied.json is incomplete for this tenant"]);
+    }
+  }
 
   const att = await rpc({ type: "CDP_ATTACH" });
   if (!att || !att.ok) {

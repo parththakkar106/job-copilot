@@ -67,12 +67,41 @@ export const WORKDAY = {
     },
     formUrlIncludes: "/apply/",
 
-    // Route is decided per posting by core.apply_log.workday_route(url), which answers
-    // "have we applied to this TENANT before" from applied.json. Cold tenant -> manual;
-    // warm tenant -> clone. First application to each of the 11 tenants is therefore a
-    // full fill, and every one after it is a clone.
+    // Route is decided per posting by core.apply_log.workday_route(url), reached over the
+    // bridge (message "workday_route"), which answers "have we applied to this TENANT
+    // before" from applied.json. Warm tenant -> clone; cold tenant -> seed from the resume.
+    // Either way Workday does the bulk of the typing and the driver reconciles after.
     routePolicy: "core.apply_log.workday_route",
-    fallbackRoute: "manual",
+
+    // Tried in order when the decided route is not on offer. `manual` is last because it
+    // is the only one that types six steps from nothing.
+    routePreference: ["useMyLastApplication", "autofillWithResume", "manual"],
+    fallbackRoute: "autofillWithResume",
+
+    // UNVERIFIED. Workday requires an account per tenant and shows a sign-in wall instead
+    // of the apply modal when there is no session. Detection exists so the driver can say
+    // "sign in first" rather than report a missing Apply button, which is what an
+    // unauthenticated page looks like from the inside. Signing in is deliberately NOT
+    // automated: it means handling credentials, and a wrong guess here locks an account.
+    signIn: {
+      verified: false,
+      markers: ['[data-automation-id="signInLink"]',
+                '[data-automation-id="createAccountLink"]',
+                '[data-automation-id="signInSubmitButton"]',
+                '[data-automation-id="createAccountSubmitButton"]'],
+    },
+
+    // UNVERIFIED. The autofill route asks for the PDF before it will build the form. The
+    // file input is the standard one; attachResume() drives it exactly as it does on the
+    // other three adapters, so the DataTransfer handling is shared, not re-invented.
+    resumeUpload: {
+      verified: false,
+      input: 'input[type="file"]',
+      // Parsing is async and rebuilds the form when it lands — the Ashby hydration race
+      // in a new costume. Nothing may be read or written until it settles.
+      settleSelector: '[data-automation-id="formField-legalName--firstName"]',
+      settleTimeoutMs: 45000,
+    },
 
     // THE GUARD THAT MATTERS: "Use My Last Application" copies the previous submission
     // WHOLESALE — its answers AND its resume. The four resume tracks describe the same
@@ -84,10 +113,20 @@ export const WORKDAY = {
     // This is also why applied.json should start recording the resume track on submit —
     // without it the stream of a past application is unknowable and every clone is a
     // guess. Until then, treat "track unknown" as a mismatch and fill manually.
+    // A clone is now RECONCILED, not refused. The old policy required proving the previous
+    // application used the same resume track before cloning, read from
+    // applied.json.resume_track — which nothing wrote, so "unknown" was the only possible
+    // answer and the clone path could never be taken. That made the volume argument for
+    // supporting Workday at all unreachable. resume_track is recorded from now on, but it
+    // is not a precondition: the driver clones, then overwrites every field that is
+    // missing or disagrees with the track chosen for THIS role, including the attachment.
     clonePolicy: {
-      requireSameStream: true,
       appliedTrackField: "resume_track",
-      onUnknownTrack: "manual",
+      // THE ONE THING RECONCILING TEXT DOES NOT FIX. A clone carries the previous
+      // application's PDF, so a quant CV can arrive on an AI role with every visible
+      // answer looking right. The attachment must be re-checked against the chosen track
+      // and replaced on mismatch, or the pair still contradicts itself.
+      reattachOnTrackMismatch: true,
       // A clone still lands in the 6-step wizard, pre-filled. It must be reviewed and
       // advanced like any other fill, not blind-submitted: the tenant questions on step 3
       // are per-requisition and the clone cannot answer ones the old req never asked.

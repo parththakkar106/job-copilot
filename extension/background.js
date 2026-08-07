@@ -237,6 +237,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
   }
+  if (msg.type === "WORKDAY_ROUTE") {
+    (async () => {
+      // "Have we applied to this tenant before?" — only applied.json knows, so the rule
+      // stays in Python and this just relays. A bridge that is down answers null rather
+      // than an invented route: the driver then uses the adapter's default and, either
+      // way, can only click a route the modal is actually offering.
+      try { sendResponse(await requestBridge({ type: "workday_route", url: msg.url || "" })); }
+      catch (_) { sendResponse(null); }
+    })();
+    return true; // async sendResponse
+  }
   if (msg.type === "BANK_TOUCH") {
     (async () => {
       try { await requestBridge({ type: "bank_touch", bank_id: msg.bankId }); } catch (_) {}

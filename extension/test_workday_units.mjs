@@ -158,8 +158,17 @@ eq(g.querySelectorAll("input[type=radio]").some(r => r.checked), false,
 // ── adapter invariants the driver relies on ──────────────────────────────────
 ok(WORKDAY.multiStep.submitStep === 6, "adapter: submitStep is Review");
 ok(WORKDAY.submit.verified === false, "adapter: submit still flagged unverified");
-ok(WORKDAY.entry.clonePolicy.requireSameStream === true,
-   "adapter: cloning requires a matching resume stream");
+// Cloning used to REFUSE unless it could prove the previous application used the same
+// resume track — read from a field nothing wrote, so the clone path was unreachable and
+// the whole volume argument for supporting Workday with it. It now clones and reconciles.
+// What must not be lost in that trade is the attachment: reconciling every visible answer
+// still leaves the old PDF stapled to the form, and that is the mismatch we were avoiding.
+ok(WORKDAY.entry.clonePolicy.reattachOnTrackMismatch === true,
+   "adapter: a clone must re-check the attached CV against the chosen track");
+ok(WORKDAY.entry.clonePolicy.requireSameStream === undefined,
+   "adapter: the old refuse-to-clone gate is gone, not merely disabled");
+ok(WORKDAY.entry.clonePolicy.stillReviewSteps === true,
+   "adapter: a clone is still walked step by step, never blind-submitted");
 ok(WORKDAY.promptTree.needsCDP && WORKDAY.date.needsCDP,
    "adapter: prompt tree and date both demand trusted input");
 ok(WORKDAY.dropdown.optionScope.includes("not(") &&
@@ -169,6 +178,88 @@ ok(WORKDAY.customQuestion.knownCoreIds.includes("formField-source"),
    "adapter: source counted as core so the taxonomy pass skips it");
 ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousWorker"),
    "adapter: tenant question NOT in core ids, so the taxonomy pass sees it");
+
+// ── entry: which route to take out of the Apply modal ────────────────────────
+// Pure, and pinned hard. Every route lands on the same six steps, so a wrong choice does
+// not throw — it quietly fills the slow way, or replays an application it should not have.
+{
+  const chooseRoute = eval(`(${extract("chooseRoute")})`);
+  const ORDER = WORKDAY.entry.routePreference;
+  const ALL = ["useMyLastApplication", "autofillWithResume", "manual"];
+
+  // The decided route wins whenever Workday is offering it.
+  eq(chooseRoute("useMyLastApplication", ALL, ORDER).route, "useMyLastApplication",
+     "a warm tenant clones");
+  eq(chooseRoute("autofillWithResume", ALL, ORDER).route, "autofillWithResume",
+     "THE POLICY: a cold tenant seeds from the resume even though clone is on the menu");
+
+  // Ground truth is what is clickable. A cold tenant has no clone button, and a route we
+  // cannot click is not a route however much applied.json likes it.
+  eq(chooseRoute("useMyLastApplication", ["autofillWithResume", "manual"], ORDER).route,
+     "autofillWithResume", "falls back when the decided route is not offered");
+  eq(chooseRoute("autofillWithResume", ["manual"], ORDER).route, "manual",
+     "manual is the last resort, not the first");
+
+  // Bridge down: no decided route at all, so the ladder alone decides.
+  eq(chooseRoute(null, ALL, ORDER).route, "useMyLastApplication",
+     "with no decision the preference order picks the cheapest route");
+  eq(chooseRoute(undefined, ["manual"], ORDER).route, "manual",
+     "with no decision and one option, take it");
+
+  // Nothing recognisable on the menu is a stop, not a guess.
+  eq(chooseRoute("autofillWithResume", [], ORDER).route, null,
+     "an empty modal yields no route");
+  eq(chooseRoute("autofillWithResume", ["applyWithLinkedIn"], ORDER).route, null,
+     "a route we have no handling for is not taken by accident");
+
+  // applied.json said cold, Workday offers a clone: he applied outside the tool, or a
+  // submit never got logged. The run continues, but the report has to say so — that clone
+  // has an unknown resume track, which is the case reconcile must not trust.
+  ok(chooseRoute("autofillWithResume", ALL, ORDER).unrecordedHistory,
+     "an unrecorded prior application is flagged");
+  ok(!chooseRoute("useMyLastApplication", ALL, ORDER).unrecordedHistory,
+     "no flag when our records already knew about it");
+  ok(!chooseRoute("autofillWithResume", ["autofillWithResume"], ORDER).unrecordedHistory,
+     "no flag when no clone is on offer");
+
+  // Every fallback says which route it wanted and which it took — the report is the only
+  // window into a run that holds the tab's debugger.
+  ok(/not offered/.test(chooseRoute("useMyLastApplication", ["manual"], ORDER).reason),
+     "a fallback explains itself");
+  eq(chooseRoute("manual", ["manual"], ORDER).preferred, "manual",
+     "the decided route is echoed back for the report");
+
+  // Config sanity: the ladder must end at the route that always exists, and the adapter's
+  // default must be a route the ladder actually contains.
+  eq(ORDER[ORDER.length - 1], "manual", "adapter: manual is last in the preference order");
+  ok(ORDER.includes(WORKDAY.entry.fallbackRoute),
+     "adapter: the fallback route is one the ladder knows");
+  ok(ORDER.every(r => r in WORKDAY.entry.routes),
+     "adapter: every preferred route has a selector");
+}
+
+// ── entry: the sign-in wall ──────────────────────────────────────────────────
+// An unauthenticated advert has no Apply button, which is indistinguishable from a broken
+// selector unless sign-in is detected explicitly.
+{
+  const needsSignIn = eval(`(${extract("needsSignIn")})`);
+  const doc = (sels) => ({ querySelector: (s) => (sels.includes(s) ? { s } : null) });
+  const APPLY = WORKDAY.entry.applyButton;
+  const MARKER = WORKDAY.entry.signIn.markers[0];
+
+  globalThis.document = doc([MARKER]);
+  ok(needsSignIn(WORKDAY), "a sign-in marker with no Apply button is a wall");
+
+  // A signed-in advert can still carry a sign-in link in its header. Treating that as a
+  // wall would stop every run on those tenants, so the Apply button wins.
+  globalThis.document = doc([APPLY, MARKER]);
+  ok(!needsSignIn(WORKDAY), "an Apply button means we are through, whatever else is on the page");
+
+  globalThis.document = doc([APPLY]);
+  ok(!needsSignIn(WORKDAY), "a normal advert is not a wall");
+  globalThis.document = doc([]);
+  ok(!needsSignIn(WORKDAY), "no Apply button and no marker is a different failure, not this one");
+}
 
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);
