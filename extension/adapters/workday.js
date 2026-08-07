@@ -104,9 +104,15 @@ export const WORKDAY = {
     resumeUpload: {
       verified: false,
       input: 'input[type="file"]',
-      // Parsing is async and rebuilds the form when it lands — the Ashby hydration race
-      // in a new costume. Nothing may be read or written until it settles.
-      settleSelector: '[data-automation-id="formField-legalName--firstName"]',
+
+      // THE UPLOAD PAGE HAS ITS OWN NEXT, and the wizard does not exist until it is
+      // clicked. An earlier version waited here for the wizard's first-name field to
+      // appear on its own; it never can, so the run hung for the full parse budget and
+      // then reported a parse that had actually succeeded. Wait for Next to become
+      // enabled — that is Workday saying it has accepted and read the file — then click it.
+      continueButton: '[data-automation-id="pageFooterNextButton"]',
+      // Parsing is async and rebuilds the form when it lands, so nothing may be read or
+      // written until Next is live. Generous: a big PDF on a slow tenant takes a while.
       settleTimeoutMs: 45000,
     },
 

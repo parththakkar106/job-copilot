@@ -418,6 +418,34 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
      "adapter: every preferred route has a selector");
 }
 
+// ── entry: Next is enabled, not merely present ───────────────────────────────
+// The upload page has its OWN Next, and the wizard does not exist until it is clicked. An
+// earlier version waited for the wizard's first-name field to appear on its own — it
+// cannot — so the run hung for the whole parse budget and then blamed the parse. Workday
+// also renders the footer button before the page is ready and disables it, so existence is
+// not permission to click.
+{
+  const isEnabled = eval(`(${extract("isEnabled")})`);
+  const btn = (attrs = {}) => ({
+    disabled: !!attrs.disabled,
+    getAttribute: (n) => (n in attrs ? String(attrs[n]) : null),
+  });
+
+  ok(isEnabled(btn()), "a plain button is clickable");
+  ok(!isEnabled(null), "a missing button is not clickable");
+  ok(!isEnabled(btn({ disabled: true })), "a disabled button is not clickable");
+  ok(!isEnabled(btn({ "aria-disabled": "true" })),
+     "aria-disabled counts — Workday disables the footer while it parses");
+  ok(isEnabled(btn({ "aria-disabled": "false" })), "aria-disabled=false is clickable");
+
+  // The upload page must reuse the real footer button, not a selector of its own that
+  // could drift away from the one the wizard uses.
+  eq(WORKDAY.entry.resumeUpload.continueButton, WORKDAY.multiStep.nextButton,
+     "adapter: the upload page continues via the same footer button the wizard uses");
+  ok(WORKDAY.entry.resumeUpload.settleTimeoutMs >= 30000,
+     "adapter: the parse budget is generous, since a big PDF on a slow tenant is not a fault");
+}
+
 // ── entry: the sign-in wall ──────────────────────────────────────────────────
 // An unauthenticated advert has no Apply button, which is indistinguishable from a broken
 // selector unless sign-in is detected explicitly.

@@ -685,6 +685,25 @@ async function waitForWizard(ctx, timeoutMs = 30000) {
   return false;
 }
 
+// Present AND actually clickable. Workday renders its footer button before the page is
+// ready and disables it, so existence alone is not permission to click.
+export function isEnabled(el) {
+  if (!el) return false;
+  if (el.disabled) return false;
+  const aria = el.getAttribute && el.getAttribute("aria-disabled");
+  return aria !== "true";
+}
+
+async function waitForEnabled(sel, timeoutMs, step = 300) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const el = document.querySelector(sel);
+    if (isEnabled(el)) return el;
+    await sleep(step);
+  }
+  return null;
+}
+
 async function waitFor(sel, timeoutMs, step = 300) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
@@ -724,11 +743,17 @@ async function uploadAndSettle(ctx, entry) {
   }
   entry.attached = track && track.tag;
 
-  const settled = await waitFor(up.settleSelector, up.settleTimeoutMs);
-  if (!settled) {
+  // Workday enables Next once it has accepted and parsed the file. That is the signal —
+  // the wizard's own fields do not exist yet and cannot be waited on from here.
+  const go = await waitForEnabled(up.continueButton, up.settleTimeoutMs);
+  if (!go) {
     return { ...entry, ok: false, stage: "resume-parse",
-             error: "the resume was attached but the form never came back from parsing" };
+             error: "the resume was attached but Next never became clickable — either the " +
+                    "parse failed or the page wants something else first" };
   }
+  // Safe to click: this is the entry page, not step 6, so the footer button advances
+  // rather than submits. The step guard in the main loop covers the wizard itself.
+  go.click();
   return { ...entry, ok: true };
 }
 
@@ -784,9 +809,16 @@ export async function enterApplyFlow(ctx) {
   // Ask Python which route our own records justify. Best-effort: a bridge that is down
   // must not stop an application, so an unanswered call falls back to the adapter's
   // default and the ladder below still constrains it to something clickable.
+  // Bounded. background's bridge round-trip has no timeout of its own, so a bridge that is
+  // down or mid-reconnect leaves this promise unsettled — and an entry step that never
+  // returns looks exactly like a hung fill, with no report written to say why. The route
+  // is an optimisation; the ladder below still constrains us to something clickable.
   let decided = null;
   try {
-    const res = await rpc({ type: "WORKDAY_ROUTE", url: location.href });
+    const res = await Promise.race([
+      rpc({ type: "WORKDAY_ROUTE", url: location.href }),
+      sleep(6000).then(() => null),
+    ]);
     decided = res && res.route ? res : null;
   } catch (_) { /* bridge off — fall through */ }
 
