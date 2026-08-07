@@ -324,19 +324,17 @@ export const WORKDAY = {
     // stream-resolved profile, so the form agrees with the attached CV.
     skills: '[data-automation-id="formField-skills"]',
 
-    // SEARCH-ONLY, unlike Field of Study, and measured rather than assumed 2026-08-07:
-    // opening the panel shows a single "No Items." row and nothing else. There is no list
-    // to walk, so the scroll walker cannot work here at any budget. Its input IS a real
-    // search box (placeholder "Search", enterkeyhint "search") and trusted typing lands in
-    // it — the two together are why this field gets its own path.
-    //
-    // On Adobe the vocabulary is EMPTY: "Python", "data" and even "a" all return
-    // "No Items." after several seconds. The field is optional there, so nothing is lost,
-    // but a tenant can clearly ship this field with no options behind it and the driver
-    // has to notice that rather than grind through every candidate.
+    // SEARCH-ONLY, unlike Field of Study: opening the panel shows a single "No Items."
+    // row, and the vocabulary only ever arrives from the search box. There is no list to
+    // walk, so the scroll walker cannot work here at any budget.
     skillsSearch: true,
-    // Give up once this many searches in a row come back empty — an empty vocabulary is a
-    // property of the tenant, not of the term, so the third miss tells you nothing new.
+
+    // AND THE SEARCH SUBMITS ON ENTER. It is server-side, not type-ahead. Typing "python"
+    // and waiting — ten seconds, repeatedly — leaves the panel on "No Items."; pressing
+    // Enter returns "Search Results (20)". Do not read the empty state as an empty
+    // vocabulary, which is precisely the mistake this comment exists to prevent.
+    skillsSearchSubmit: "Enter",
+    // Give up once this many searches in a row come back genuinely empty AFTER Enter.
     skillsEmptyGiveUp: 2,
     // Each skill costs a search round-trip, and the field is optional on every tenant seen
     // so far. A handful of accurate skills beats an exhaustive list.
@@ -501,6 +499,10 @@ export const WORKDAY = {
     // That is an EMPTY STATE, not an option: counted as a row it makes an empty list look
     // populated, and a prefix match on a short search term could even click it.
     emptyRow: /^no items\.?$/i,
+
+    // The results panel is headed "Search Results (20)". It sits among the rows and is not
+    // an option; matching it would tick a count.
+    headerRow: /^search results\b/i,
 
     // Whether THIS field's panel is open. Measured on the live Skills field: the input
     // carries no aria-expanded at all, but the wrapper's own text gains "Expanded". That

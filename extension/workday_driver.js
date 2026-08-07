@@ -279,8 +279,12 @@ export function whatIsAt(x, y, row) {
 // look populated, and a prefix match on a short term could click it.
 export function allRows(pt) {
   const all = [...document.querySelectorAll(`${pt.portal} ${pt.row}`)];
-  if (!pt.emptyRow) return all;
-  return all.filter(r => !pt.emptyRow.test((r.innerText || "").trim()));
+  return all.filter(r => {
+    const t = (r.innerText || "").trim();
+    if (pt.emptyRow && pt.emptyRow.test(t)) return false;
+    if (pt.headerRow && pt.headerRow.test(t)) return false;   // "Search Results (20)"
+    return true;
+  });
 }
 export function showsEmptyState(pt) {
   if (!pt.emptyRow) return false;
@@ -827,6 +831,23 @@ async function fillEducationField(ctx, report, key, sel, value, alternates = [])
 //
 // Returns { ok } on success, { empty: true } when the search came back with nothing (a
 // fact about the vocabulary, not a failure of ours), or { ok: false, reason }.
+// WHICH RESULT MEANS WHAT WE ASKED FOR. Searching "python" returns twenty rows, and the
+// plain word is not among them: the entry is "Python (Programming Language)", sitting
+// beside "Python IDLE", "Maya Python", "Python Numpy" and "Python on z/OS". A prefix match
+// would tick "Python Automation"; a substring match would tick "Maya Python". Both are
+// different claims about someone's skills than the one they wrote down.
+//
+// So: the term itself, or the term with a parenthetical qualifier after it, and nothing
+// else. Anything further from that is reported with what was on offer, so a real
+// preference can be written into the profile instead of inferred here.
+export function matchSearchResult(term, rows, txt) {
+  const want = String(term).trim().toLowerCase();
+  const of = (r) => txt(r).toLowerCase();
+  return rows.find(r => of(r) === want)
+      || rows.find(r => new RegExp(`^${want.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`).test(of(r)))
+      || null;
+}
+
 export async function pickBySearch(ctx, wrapperSel, term) {
   const { adapter, rpc, bringIntoView } = ctx;
   const pt = adapter.promptTree;
@@ -849,6 +870,12 @@ export async function pickBySearch(ctx, wrapperSel, term) {
   if (input.value) await rpc({ type: "CDP_ERASE", times: input.value.length + 4 });
   await rpc({ type: "CDP_TYPE", text: term });
 
+  // SUBMIT. The search is server-side and runs on Enter, not as you type. Waiting for
+  // type-ahead results that never come reads exactly like a tenant with no vocabulary —
+  // I measured that and drew that conclusion, and it was wrong.
+  const submit = adapter.experience && adapter.experience.skillsSearchSubmit;
+  if (submit) await rpc({ type: "CDP_KEY", key: submit });
+
   // Results arrive from the server, so wait for them to settle rather than reading once.
   let opts = [], prev = -1;
   for (let i = 0; i < 12; i++) {
@@ -861,12 +888,10 @@ export async function pickBySearch(ctx, wrapperSel, term) {
   }
   if (!opts.length) return { empty: true, ok: false };
 
-  const want = term.trim().toLowerCase();
   const txt = (o) => (o.innerText || "").trim();
-  const hit = opts.find(o => txt(o).toLowerCase() === want)
-           || opts.find(o => txt(o).toLowerCase().startsWith(want));
-  if (!hit) return { ok: false, reason: "searched but no exact match",
-                     sample: opts.slice(0, 5).map(txt) };
+  const hit = matchSearchResult(term, opts, txt);
+  if (!hit) return { ok: false, reason: "no result means exactly this",
+                     sample: opts.slice(0, 6).map(txt) };
 
   const target = clickPointFor(hit, pt, true);
   if (!target) return { ok: false, reason: "result row has no clickable box" };

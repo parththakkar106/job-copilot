@@ -73,7 +73,13 @@ async function trustedErase(tabId, times) {
 // kept focus on the month, so the year's digits were typed into a month spinner and
 // clamped to 12 ("Invalid Date: 12/"). Moving with a keypress is what a person does and
 // removes the coordinate guess entirely.
-const NAV_KEYS = { ArrowRight: 39, ArrowLeft: 37, Tab: 9 };
+//
+// Enter is here for one reason: Workday's Skills search is SERVER-SIDE and submits on
+// Enter. Typing alone leaves the panel on "No Items." indefinitely — which I measured and
+// read as an empty vocabulary, when in fact "python" + Enter returns 20 results. Enter is
+// still a submit key, so it is only ever sent to a search box that is already open, never
+// to a form.
+const NAV_KEYS = { ArrowRight: 39, ArrowLeft: 37, Tab: 9, Enter: 13 };
 async function trustedKey(tabId, key, times) {
   const vk = NAV_KEYS[key];
   if (!vk) return false;                       // allowlist: never dispatch arbitrary keys

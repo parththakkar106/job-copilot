@@ -1269,5 +1269,53 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
      "with no signal at all the answer is 'cannot tell', not 'shut'");
 }
 
+// ── which search result means what we asked for ──────────────────────────────
+// Measured: searching "python" returns 20 rows and the plain word is NOT among them. The
+// entry is "Python (Programming Language)", sitting beside near-misses that are different
+// claims about someone's skills.
+{
+  const matchSearchResult = eval(`(${extract("matchSearchResult")})`);
+  const txt = (r) => r;
+  const real = ["Python (Programming Language)", "Python IDLE", "Maya Python",
+                "Python Software Development", "Python Frameworks", "Python Numpy",
+                "Programming Languages", "Python on z/OS", "Python Matplotlib",
+                "Python Automation", "Python on Google App Engine", "Python Sqlite3"];
+
+  eq(matchSearchResult("Python", real, txt), "Python (Programming Language)",
+     "the parenthetical-qualified entry is the one meant");
+  // The traps, in the order a lazier rule would hit them.
+  ok(matchSearchResult("Python", real, txt) !== "Python IDLE", "not a prefix match");
+  ok(matchSearchResult("Python", real, txt) !== "Maya Python", "not a substring match");
+
+  eq(matchSearchResult("Python Numpy", real, txt), "Python Numpy", "an exact hit wins outright");
+  // Nothing close enough: report it, do not settle for a neighbour.
+  eq(matchSearchResult("Ruby", real, txt), null, "an absent skill is not approximated");
+  eq(matchSearchResult("Pyth", real, txt), null, "a partial word does not match a longer entry");
+  // Regex metacharacters in a skill name must not blow up the pattern.
+  eq(matchSearchResult("C++", ["C++ (Programming Language)"], txt), "C++ (Programming Language)",
+     "a skill containing regex metacharacters is matched literally");
+  eq(matchSearchResult("C", ["C++ (Programming Language)"], txt), null,
+     "...and does not let a shorter term match it");
+}
+
+// The results panel's own header is not an option.
+{
+  const allRows = eval(`(${extract("allRows")})`);
+  globalThis.document = { querySelectorAll: () => ["Search Results (20)",
+    "Python (Programming Language)", "Python IDLE"].map(t => ({ innerText: t })) };
+  const rows = allRows(WORKDAY.promptTree);
+  eq(rows.length, 2, "the 'Search Results' header is not counted as a result");
+  ok(!rows.some(r => /^search results/i.test(r.innerText)), "and cannot be clicked");
+}
+
+// Enter has to be dispatchable, or the search never submits.
+{
+  const bg = readFileSync(new URL("./background.js", import.meta.url), "utf8");
+  const m = bg.match(/const NAV_KEYS = \{([^}]*)\}/);
+  ok(m && /Enter:\s*13/.test(m[1]), "Enter is on the trusted-key allowlist");
+  ok(m && !/Escape|Delete/.test(m[1]), "and the allowlist has not become a free-for-all");
+  ok(WORKDAY.experience.skillsSearchSubmit === "Enter", "the adapter asks for it by name");
+}
+
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);
