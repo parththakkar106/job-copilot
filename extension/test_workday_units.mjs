@@ -181,11 +181,18 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
     };
     month.getAttribute = () => "dateSectionMonth-input";
     year.getAttribute = () => "dateSectionYear-input";
-    globalThis.document = { querySelector: (s) => (s === "#w" ? wrap : null) };
     let focused = null;
+    // The driver focuses a section directly and then checks document.activeElement, so the
+    // harness has to model focus rather than just clicks.
+    month.focus = () => { if (opts.allowFocus !== false) focused = month; };
+    year.focus = () => { if (opts.allowFocus !== false) focused = year; };
+    globalThis.document = {
+      querySelector: (s) => (s === "#w" ? wrap : null),
+      get activeElement() { return focused; },
+    };
     const rpc = async (msg) => {
       if (msg.type === "CDP_CLICK") focused = msg.y < 20 ? month : year;
-      if (msg.type === "CDP_KEY" && msg.key === "ArrowRight" && opts.arrowMoves !== false) {
+      if (msg.type === "CDP_KEY" && msg.key === "Tab" && opts.tabMoves) {
         focused = focused === month ? year : focused;
       }
       if (msg.type === "CDP_ERASE" && focused) focused.value = "";
@@ -214,43 +221,37 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
     return { ctx: { adapter: WORKDAY, rpc, bringIntoView: () => {} }, month, year };
   };
 
-  // The intended path: focus the month, type it, move the caret, type the year.
+  // THE PRIMARY PATH, chosen from measurement rather than guesswork. The live control
+  // committed the month and gave the year NOTHING: the slash did not advance the section,
+  // ArrowRight did not move the caret, and a six-digit burst did not spill over. All three
+  // were attempts to TRAVEL to the year. Focusing it directly needs no travel at all.
   {
     const { ctx, month, year } = mkWidget();
     const res = await setDate(ctx, "#w", "2024-01");
-    ok(res.ok, "a committing widget reports success");
+    ok(res.ok, "focusing each section directly commits both halves");
     eq(month.value, "01", "the month section got only the month");
     eq(year.value, "2024", "the year section got only the year");
   }
 
-  // ArrowRight ignored, but the widget spills a long burst itself. The second attempt
-  // exists for exactly this, and the two strategies must not both fail on one widget.
+  // A widget that manages its own focus and ignores focus() on its inner inputs. Tab is
+  // the fallback, and the two strategies must not both fail on one control.
   {
-    const { ctx, month, year } = mkWidget({ arrowMoves: false, autoAdvance: true });
+    const { ctx, month, year } = mkWidget({ allowFocus: false, tabMoves: true });
     const res = await setDate(ctx, "#w", "2022-05");
-    ok(res.ok, "the one-burst fallback rescues a widget that ignores the caret move");
+    ok(res.ok, "Tab rescues a widget that refuses programmatic focus");
     eq(month.value, "05", "month still ends up correct");
     eq(year.value, "2022", "and so does the year");
   }
 
-  // THE LIVE FAILURE: a month that keeps nothing. Both strategies fail, and it must SAY so.
+  // THE LIVE FAILURE: focus never leaves the month, so the year stays empty however it is
+  // approached. Every strategy fails and it must SAY so rather than claim success.
   {
-    const { ctx } = mkWidget({ dropMonth: true, arrowMoves: false });
+    const { ctx } = mkWidget({ allowFocus: false, tabMoves: false });
     const res = await setDate(ctx, "#w", "2005-05");
     ok(!res.ok, "THE REGRESSION: an uncommitted date is a FAILURE, not a silent success");
     ok(/wanted 05\/2005/.test(res.reason), "the reason says what was wanted");
-    ok(/reads/.test(res.reason), "and what the field actually reads");
-  }
-
-  // THE SLASH ADVANCES. On many date widgets the separator is what moves to the next
-  // section, and "MM/YYYY" is the shape the field displays — so it is what a person types
-  // and the first thing to try.
-  {
-    const { ctx, month, year } = mkWidget({ arrowMoves: false, slashAdvances: true });
-    const res = await setDate(ctx, "#w", "2024-01");
-    ok(res.ok, "a slash-separated date commits on a widget that advances on the separator");
-    eq(month.value, "01", "month took its own digits");
-    eq(year.value, "2024", "and the year took the rest");
+    ok(/dateSectionYear-input/.test(res.reason),
+       "and names the sections with their values, so the next failure diagnoses itself");
   }
 
   // SINGLE-BOX SHAPE. Not every tenant renders two sections; some render one input wanting
@@ -282,9 +283,10 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   // The year must never be typed into the month section. That is what clamped it to 12 and
   // produced "Invalid Date: 12/" for every date the driver tried to set.
   {
-    const { ctx, month } = mkWidget({ arrowMoves: false });
+    const { ctx, month } = mkWidget({ allowFocus: false, tabMoves: false });
     await setDate(ctx, "#w", "2024-01");
-    ok(month.value !== "12", "a failed caret move must not leave the month clamped at 12");
+    ok(month.value !== "12",
+       "even when every strategy fails, the year is never left typed into the month");
   }
 
   // Structural refusals, before any typing.

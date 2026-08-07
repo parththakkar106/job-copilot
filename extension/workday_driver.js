@@ -281,32 +281,59 @@ export async function setDate(ctx, wrapperSel, iso) {
   // clamped the month to 12 — and there is no way to tell from here which shape a given
   // tenant renders. Verification is what makes trying several safe: a strategy that half
   // works is otherwise indistinguishable from one that works.
+  // MEASURED, not guessed: the month commits and the year receives NOTHING. The slash does
+  // not advance the section, ArrowRight does not move the caret, and a six-digit burst does
+  // not spill over. Every one of those was an attempt to move focus off the month, and all
+  // three failed the same way — so the answer is to put focus on the year directly instead
+  // of trying to travel there.
+  //
+  // Input.insertText goes to whatever the renderer has focused, and el.focus() genuinely
+  // moves renderer focus, so focusing the section needs no coordinates at all. That also
+  // sidesteps the earlier clamp: a click aimed at the year landed on the month, and typing
+  // a year into a month spinner pinned it to 12.
+  const typeInto = async (el, text, erase) => {
+    el.focus();
+    await sleep(120);
+    if (document.activeElement !== el) return false;
+    await rpc({ type: "CDP_ERASE", times: erase });
+    await sleep(120);
+    await rpc({ type: "CDP_TYPE", text });
+    await sleep(250);
+    return true;
+  };
+
   const strategies = [
-    // The separator advances the section on many date widgets, and "MM/YYYY" is what the
-    // field displays, so it is the shape a person would type.
-    async () => { await rpc({ type: "CDP_TYPE", text: `${mm}/${yyyy}` }); },
-    // Explicit caret move. Harmless if the widget already auto-advanced: there is no
-    // section beyond the year to overshoot into.
+    // Focus each section directly. No coordinates, no caret travel.
     async () => {
+      if (!await typeInto(month, mm, 4)) return "the month section would not take focus";
+      if (!await typeInto(year, yyyy, 6)) return "the year section would not take focus";
+      return null;
+    },
+    // Tab between sections, in case the widget manages focus itself and rejects a
+    // programmatic focus() on its inner inputs.
+    async () => {
+      if (!await focusMonth()) return "the month section has no rect";
+      await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
       await rpc({ type: "CDP_TYPE", text: mm });
-      await sleep(250);
-      await rpc({ type: "CDP_KEY", key: "ArrowRight" });
+      await sleep(200);
+      await rpc({ type: "CDP_KEY", key: "Tab" });
       await sleep(150);
       await rpc({ type: "CDP_TYPE", text: yyyy });
+      return null;
     },
-    // Let the widget advance itself off a single burst.
-    async () => { await rpc({ type: "CDP_TYPE", text: mm + yyyy }); },
+    // Last resort: the separator, which is what the field displays.
+    async () => {
+      if (!await focusMonth()) return "the month section has no rect";
+      await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
+      await rpc({ type: "CDP_TYPE", text: `${mm}/${yyyy}` });
+      return null;
+    },
   ];
 
+  let lastWhy = null;
   for (const run of strategies) {
-    if (!await focusMonth()) {
-      return { ok: false, reason: "the month section has no rect (row detached?)" };
-    }
-    await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
-    await sleep(150);
-    await run();
-    await sleep(400);
-
+    lastWhy = await run();
+    await sleep(350);
     const [gotM, gotY] = reads();
     if (gotM === mm && gotY === yyyy) return { ok: true, value: `${mm}/${yyyy}` };
   }
@@ -316,8 +343,9 @@ export async function setDate(ctx, wrapperSel, iso) {
   // wrong, because the run moves on and blames the next step.
   const [m2, y2] = reads();
   return { ok: false,
-           reason: `did not commit after 3 strategies — reads "${m2 || "MM"}/${y2 || "YYYY"}", ` +
-                   `wanted ${mm}/${yyyy}; ${describeDateWidget(wrap)}` };
+           reason: `did not commit after ${strategies.length} strategies — reads ` +
+                   `"${m2 || "MM"}/${y2 || "YYYY"}", wanted ${mm}/${yyyy}` +
+                   (lastWhy ? ` (${lastWhy})` : "") + `; ${describeDateWidget(wrap)}` };
 }
 
 // ── steps ────────────────────────────────────────────────────────────────────
