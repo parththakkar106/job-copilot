@@ -463,6 +463,12 @@ export const WORKDAY = {
     needsCDP: true,
     levels: 2,
     committedText: /\d+ item selected/i,
+    // MEASURED on the Field of Study list 2026-08-07: virtualised, alphabetical, and only
+    // NINE rows rendered at a time. 12 scrolls covered barely a hundred entries out of
+    // several hundred, so a discipline in the middle of the alphabet was unreachable.
+    // The list is also NOT searchable — text typed into its input never lands, the box
+    // stays empty and the rows stay unfiltered — so scrolling is the only way through it.
+    maxScrolls: 40,
   },
 
   // Referral-source vocabulary is TENANT-SPECIFIC and cannot come from one profile string.

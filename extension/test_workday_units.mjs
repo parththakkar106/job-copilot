@@ -335,6 +335,15 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   for (const k of ["school", "degree", "fieldOfStudy", "gpa", "firstYear", "lastYear"]) {
     ok(WORKDAY.experience.education[k], `adapter: education.${k} has a selector`);
   }
+
+  // MEASURED on the live Field of Study list: virtualised and alphabetical, NINE rows
+  // rendered at a time, several hundred entries, and its input does not accept typed text
+  // — the box stayed empty and the rows stayed unfiltered. Scrolling is the only way
+  // through, so the budget has to cover a discipline in the middle of the alphabet.
+  // 12 scrolls reached barely a hundred entries, which is how "Computer Science" came back
+  // as "no row matched".
+  ok(WORKDAY.promptTree.maxScrolls >= 40,
+     "adapter: the prompt-tree scroll budget can reach the middle of a long list");
 }
 
 // ── a row is a row, not the i-th node of one field type ──────────────────────

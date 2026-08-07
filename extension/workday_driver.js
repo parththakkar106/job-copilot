@@ -145,6 +145,21 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
 //   * the click must land on the ROW'S RADIO, not its text — text only highlights
 //   * the panel collapses to root on blur, so nothing may steal focus between the two
 //     clicks (read coordinates from the DOM, never via a round-trip that touches the page)
+// WHICH element actually scrolls. The portal is the node the rows live in, but it is not
+// necessarily the one with the overflow — scrolling a non-scrolling element moves nothing,
+// the loop sees scrollTop unchanged, concludes it has hit the bottom, and gives up on the
+// first pass. Measured on the live discipline list: only 9 of several hundred rows are
+// rendered at a time, so failing to scroll means never seeing all but the first nine.
+function scrollerFor(portalSel) {
+  const portal = document.querySelector(portalSel);
+  if (!portal) return null;
+  const canScroll = (e) => e && e.scrollHeight > e.clientHeight + 5;
+  if (canScroll(portal)) return portal;
+  for (const child of portal.querySelectorAll(":scope > *")) if (canScroll(child)) return child;
+  if (canScroll(portal.parentElement)) return portal.parentElement;
+  return portal;                       // nothing obviously scrollable: try it anyway
+}
+
 export async function pickPromptTree(ctx, wrapperSel, path) {
   const { adapter, rpc, bringIntoView } = ctx;
   const pt = adapter.promptTree;
@@ -170,11 +185,11 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
     // The list is virtualized: only rendered rows exist in the DOM, so a target further
     // down needs scrolling before it can be found at all.
     let hit = null;
-    for (let scroll = 0; scroll < 12; scroll++) {
+    for (let scroll = 0; scroll < (pt.maxScrolls || 40); scroll++) {
       hit = rows().find(x => rowText(x).toLowerCase() === want)
          || rows().find(x => rowText(x).toLowerCase().startsWith(want));
       if (hit) break;
-      const list = document.querySelector(pt.portal);
+      const list = scrollerFor(pt.portal);
       if (!list) break;
       const before = list.scrollTop;
       list.scrollTop += list.clientHeight || 200;
@@ -489,64 +504,6 @@ async function removeAttachment(ctx) {
   return false;
 }
 
-// A SEARCHABLE multiselect — the Field of Study shape. Same container as the referral
-// prompt tree, but the option set is every discipline there is, and pickPromptTree finds
-// rows by SCROLLING a virtualised list: fine for a short two-level tree, hopeless against
-// a list this long. Type first, then pick from what the search returns.
-//
-// Verified live 2026-08-07 that this field is a multiSelectContainer with a text input
-// inside and no listbox button — which is exactly the shape that reads as "text" to naive
-// probing, where typing fills the search box and commits nothing.
-export async function pickSearchableMultiselect(ctx, wrapperSel, value) {
-  const { adapter, rpc, bringIntoView } = ctx;
-  const pt = adapter.promptTree;
-  const wrap = document.querySelector(wrapperSel);
-  if (!wrap) return { ok: false, reason: "field not found" };
-
-  bringIntoView(wrap);
-  const box = wrap.querySelector("input");
-  if (!box) return { ok: false, reason: "no search input in the multiselect" };
-  const r0 = box.getBoundingClientRect();
-  if (!r0.width && !r0.height) return { ok: false, reason: "the search input has no rect" };
-
-  await rpc({ type: "CDP_CLICK",
-              x: Math.round(r0.left + r0.width / 2), y: Math.round(r0.top + r0.height / 2) });
-  await sleep(600);
-  await rpc({ type: "CDP_ERASE", times: 40 });      // whatever a previous attempt typed
-  await sleep(150);
-  await rpc({ type: "CDP_TYPE", text: String(value) });
-
-  // The search is server-side on some tenants, so give it room rather than assuming the
-  // list is client-side and instant.
-  const rows = () => [...document.querySelectorAll(`${pt.portal} ${pt.row}`)];
-  const want = String(value).trim().toLowerCase();
-  let hit = null;
-  for (let i = 0; i < 20 && !hit; i++) {
-    await sleep(250);
-    hit = rows().find(x => (x.innerText || "").trim().toLowerCase() === want)
-       || rows().find(x => (x.innerText || "").trim().toLowerCase().startsWith(want));
-  }
-  if (!hit) {
-    return { ok: false, reason: `no option matched "${value}"`,
-             sample: rows().slice(0, 8).map(x => (x.innerText || "").trim()) };
-  }
-
-  // Same rule as the prompt tree's leaves: the row commits only when the RADIO is hit,
-  // clicking the text merely highlights it.
-  const r = hit.getBoundingClientRect();
-  await rpc({ type: "CDP_CLICK",
-              x: Math.round(r.left + (pt.radioOffsetFromLeft ?? 22)),
-              y: Math.round(r.top + r.height / 2) });
-  await sleep(900);
-
-  const committed = wrap.querySelector(pt.selected);
-  const text = (wrap.innerText || "").trim();
-  if (committed || pt.committedText.test(text)) {
-    return { ok: true, value: committed ? (committed.innerText || "").trim() : String(value) };
-  }
-  return { ok: false, reason: "clicked the option but nothing committed" };
-}
-
 // WHAT KIND OF CONTROL IS THIS. Order matters and is not cosmetic: a prompt tree contains
 // a text input, so checking for an input first reports "text", and typing into it fills a
 // SEARCH BOX and commits nothing — the field then reads as filled and the step bounces on
@@ -586,12 +543,18 @@ async function fillEducationField(ctx, report, key, sel, value) {
     const res = await pickListbox(ctx, sel, value);
     report.push([label, res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
   } else if (kind === "promptTree") {
-    // Search first — a discipline list is far too long to scroll. Fall back to the
-    // two-level walker only if the search finds nothing, since a tenant may render this
-    // as a categorised tree rather than a flat searchable set.
-    let res = await pickSearchableMultiselect(ctx, sel, value);
-    if (!res.ok) res = await pickPromptTree(ctx, sel, [String(value)]);
-    report.push([label, res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
+    // ONE attempt, and it scrolls. Measured on the live control: the list is a virtualised
+    // alphabetical menu, and its input does NOT accept typed text — after typing, the box
+    // still read empty and the rows were unfiltered. So there is nothing to search.
+    //
+    // A previous version tried searching first and falling back to this. That did not
+    // merely fail, it CAUSED the failure: the search typed and erased into a dead input,
+    // then the fallback clicked the opener again, which toggled the already-open panel
+    // shut — so the walker reported "no row matched" against a list that was not there.
+    // Two strategies against a stateful widget are not free.
+    const res = await pickPromptTree(ctx, sel, [String(value)]);
+    report.push([label, res.ok ? `set ${res.value}`
+                               : `FAILED ${res.reason}${res.sample ? ` (saw: ${res.sample.slice(0, 4).join(", ")})` : ""}`]);
   } else {
     const el = wrapper.querySelector("input,textarea");
     setTextNative(el, String(value));
