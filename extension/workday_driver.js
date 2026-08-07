@@ -249,14 +249,40 @@ async function fillMyInformation(ctx, report) {
   // country while the label still read "Select One". A non-empty value here is not
   // evidence of a correct one, and getting it wrong poisons the work-authorization
   // answers downstream.
-  const r = await pickListbox(ctx, `[data-automation-id="${pre.field}"]`, country);
-  report.push(["country", r.ok ? `set ${r.value}` : `FAILED ${r.reason}`]);
-  if (!r.ok) return;
+  // WAIT FOR THE PAGE FIRST. The progress bar updates before the fields exist, so arriving
+  // at the step is not the same as the step being ready — reading it too early reports
+  // every control as missing, which is indistinguishable from a bad selector.
+  let expanded = await waitFor(pre.thenWaitFor, 20000);
 
-  for (let i = 0; i < 20 && !document.querySelector(pre.thenWaitFor); i++) await sleep(300);
-  if (!document.querySelector(pre.thenWaitFor)) {
-    report.push(["step1", "FAILED form did not expand after country"]);
+  // COUNTRY IS A PREREQUISITE ONLY WHILE THE FORM IS COLLAPSED. That is the manual flow:
+  // nothing else renders until a country is picked. The autofill flow arrives with the
+  // form already built from the parsed PDF, and there country is just another field —
+  // sometimes not even present, having been captured during the parse. Treating it as a
+  // hard gate there aborted the entire step over one absent control, which is exactly what
+  // happened live: a lone "country FAILED no listbox button" and not one other field
+  // touched.
+  const countryWrapper = document.querySelector(`[data-automation-id="${pre.field}"]`);
+  if (countryWrapper) {
+    const r = await pickListbox(ctx, `[data-automation-id="${pre.field}"]`, country);
+    report.push(["country", r.ok ? `set ${r.value}` : `FAILED ${r.reason}`]);
+    if (!r.ok && !expanded) {
+      report.push(["step1", "FAILED could not set country and the form is still collapsed"]);
+      return;
+    }
+  } else if (!expanded) {
+    report.push(["country", "FAILED control not found and the form never expanded"]);
     return;
+  } else {
+    report.push(["country", "not on this page — the resume parse already captured it"]);
+  }
+
+  // Manual flow: the fields appear only after country commits.
+  if (!expanded) {
+    expanded = await waitFor(pre.thenWaitFor, 6000);
+    if (!expanded) {
+      report.push(["step1", "FAILED form did not expand after country"]);
+      return;
+    }
   }
 
   for (const f of adapter.coreFields) {
@@ -471,10 +497,18 @@ async function fillQuestions(ctx, report, needsInput) {
     // question — label "Upload either DOC, DOCX, HTML, PDF, or TXT file types (5MB
     // max)Parth_Resume_d.pdf loading..." — and paused the whole run for input on a field
     // that had just been filled successfully.
-    if (w.querySelector('input[type=file]')) continue;
+    //
+    // Testing for input[type=file] alone was NOT enough, which is how it survived a first
+    // fix: once the upload completes Workday swaps the input for a file chip, so by the
+    // time the taxonomy pass runs there is no file input left to find. Match the upload
+    // container as well, and fall back to the label — the prompt text is unmistakable and
+    // is the one signal that outlives the widget's own DOM.
+    const cq = adapter.customQuestion;
+    if ((cq.skipContaining || []).some(s => w.matches?.(s) || w.querySelector(s))) continue;
 
     const label = extractLabel(w, adapter);
     if (!label) continue;
+    if (cq.skipLabelPattern && cq.skipLabelPattern.test(label)) continue;
 
     const c = classify(label, company, profile, tax);
     if (c.bucket !== "deterministic" || !c.filled) {

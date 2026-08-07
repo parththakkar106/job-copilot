@@ -383,6 +383,23 @@ export const WORKDAY = {
       "formField-fieldOfStudy", "formField-gradeAverage",
       "formField-firstYearAttended", "formField-lastYearAttended",
     ],
+
+    // NOT QUESTIONS. The resume upload is owned by the attach path and no answer could
+    // satisfy it, but it renders as a formField- wrapper and so reached the taxonomy pass
+    // as "unanswered" — which paused the entire run for input on a field that had just
+    // been filled successfully. Its wrapper arrives with an EMPTY name
+    // (data-automation-id="formField-"), so the known-core-ids list cannot exclude it.
+    //
+    // Two overlapping tests because neither alone holds: the file input disappears once
+    // the upload completes and Workday swaps in a file chip, and the container ids are
+    // tenant-stable but unverified beyond Adobe.
+    skipContaining: ['input[type=file]',
+                     '[data-automation-id="attachments-FileUpload"]',
+                     '[data-automation-id="file-upload-drop-zone"]',
+                     '[data-automation-id="file-upload-input-ref"]'],
+    // Last-resort backstop, matched against the wrapper's label. The prompt text outlives
+    // the widget's own DOM, which is what makes it the reliable signal here.
+    skipLabelPattern: /upload either|drop files|select files|\b\d+\s*MB max\b/i,
   },
 
   // ── promptTree: the widget that needs CDP ───────────────────────────────────

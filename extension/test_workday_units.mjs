@@ -138,6 +138,38 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   delete globalThis.location;
 }
 
+// ── the resume upload is not a question ──────────────────────────────────────
+// It renders as a formField- wrapper, so the taxonomy pass saw it as unanswered and paused
+// the whole run for input on a field that had just been filled successfully. Its wrapper
+// has an EMPTY name (data-automation-id="formField-"), so knownCoreIds cannot exclude it.
+{
+  const cq = WORKDAY.customQuestion;
+  // The exact label from the live report, chip text and all.
+  const LIVE = "Upload either DOC, DOCX, HTML, PDF, or TXT file types (5MB max)" +
+               "Parth_Resume_d.pdf loadingParth_Resume_d.pdf129.27 KB";
+
+  ok(cq.skipLabelPattern.test(LIVE), "THE REGRESSION: the live upload label is skipped");
+  ok(cq.skipLabelPattern.test("Drop files here"), "the drop-zone prompt is skipped");
+  ok(cq.skipLabelPattern.test("Attach a file (10 MB max)"), "other size limits are skipped");
+
+  // It must stay narrow. These are real questions and skipping one would silently drop it
+  // from the pause list, which is how a required field gets left blank.
+  ok(!cq.skipLabelPattern.test("Have you been employed by Adobe in the past?"),
+     "a tenant question is not skipped");
+  ok(!cq.skipLabelPattern.test("What are your salary expectations?"),
+     "a salary question is not skipped");
+  ok(!cq.skipLabelPattern.test("Are you legally authorized to work in the United States?"),
+     "a work-authorization question is not skipped");
+  ok(!cq.skipLabelPattern.test("Please upload your portfolio URL"),
+     "a question that merely says 'upload' is not skipped");
+
+  // The DOM test has to survive the upload completing: Workday swaps the file input for a
+  // chip, so input[type=file] alone stops matching exactly when it matters.
+  ok(cq.skipContaining.includes('input[type=file]'), "the input is matched while it exists");
+  ok(cq.skipContaining.some(s => s.includes("attachments-FileUpload")),
+     "the container is matched once the input is gone");
+}
+
 // ── which page am I on, and is it the last one ───────────────────────────────
 // Both were number-based and both were wrong, found in one live run: the autofill flow
 // counts its upload page as step 1, so My Information arrived as "step 2 of 7". The driver
