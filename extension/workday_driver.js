@@ -905,16 +905,27 @@ export async function pickBySearch(ctx, wrapperSel, term) {
   if (submit) await rpc({ type: "CDP_KEY", key: submit });
 
   // Results arrive from the server, so wait for them to settle rather than reading once.
-  let opts = [], prev = -1;
-  for (let i = 0; i < 12; i++) {
+  //
+  // "No Items." IS THE LOADING STATE as well as the empty one — the panel shows it from
+  // the moment it opens until the response lands. Measured, the response took ~1.5s; my
+  // first cut called it empty after 1.2s, so the first skill squeaked through and the next
+  // seven were reported "not offered" despite every one of them existing. Give the server
+  // real time, and require the empty state to PERSIST before believing it.
+  let opts = [], prev = -1, emptyReads = 0;
+  for (let i = 0; i < 20; i++) {
     await sleep(300);
     if (input.value !== term) return { ok: false, reason: `search box holds "${input.value}"` };
     opts = allRows(pt);
-    if (opts.length && opts.length === prev) break;
-    if (!opts.length && showsEmptyState(pt) && i >= 3) return { empty: true, ok: false };
+    if (opts.length) {
+      if (opts.length === prev) break;                       // settled
+      emptyReads = 0;
+    } else if (showsEmptyState(pt)) {
+      // ~2.7s of an unchanging empty panel, not a single glance at one.
+      if (++emptyReads >= 9) return { empty: true, ok: false };
+    }
     prev = opts.length;
   }
-  if (!opts.length) return { empty: true, ok: false };
+  if (!opts.length) return { empty: true, ok: false, reason: "no results within 6s" };
 
   const txt = (o) => (o.innerText || "").trim();
   const hit = matchSearchResult(term, opts, txt);
@@ -972,7 +983,7 @@ async function fillSkills(ctx, report, wanted) {
                                  : await pickPromptTree(ctx, sel, [[skill]]);
 
     if (res.empty) {
-      missing.push(skill);
+      missing.push(`${skill}: ${res.reason || "no results"}`);
       // An empty vocabulary is a property of the TENANT, not of the term, so the third
       // miss in a row tells us nothing the second did not. Adobe returns "No Items." for
       // every term including a single letter.
@@ -988,14 +999,16 @@ async function fillSkills(ctx, report, wanted) {
     // Verify against the field's own count. A click that highlights without committing is
     // the failure mode this widget specialises in.
     if (res.ok && selectedCount(wrap, pt) > before) { set.push(res.value || skill); continue; }
-    missing.push(skill);
+    // Say WHY, per skill. Reporting seven different failures as one "not offered" hid the
+    // fact that every one of those skills exists and the wait was simply too short.
+    missing.push(`${skill}: ${res.ok ? "clicked but the count did not move" : (res.reason || "no match")}`);
     if (!res.ok && res.reason && !set.length && missing.length >= giveUp) {
-      report.push(["skills", `FAILED ${res.reason} — gave up after ${missing.join(", ")}`]);
+      report.push(["skills", `FAILED — gave up after ${missing.join("; ")}`]);
       return;
     }
   }
   report.push(["skills", (set.length ? `set ${set.join(", ")}` : "set none") +
-                         (missing.length ? ` (not offered: ${missing.join(", ")})` : "")]);
+                         (missing.length ? ` | missed ${missing.join("; ")}` : "")]);
 }
 
 // Step 2. All of it is required: work history, education AND a resume.
@@ -1172,10 +1185,14 @@ async function fillMyExperience(ctx, report) {
       // Workday renders "<name>|<size>|Successfully Uploaded!" — assert on that rather
       // than trusting the change event, which fires whether or not the upload took.
       const box = document.querySelector(exp.resume.container);
-      const ok = attached && box && exp.resume.successText.test(box.innerText || "");
-      report.push(["resume", ok ? `attached (${track && track.tag})`
-                                : `FAILED ${attached ? "no success text" : "input rejected the file"} ` +
-                                  JSON.stringify(describeFileInputs(exp))]);
+      // THE FORM'S OWN CONFIRMATION DECIDES. "Successfully Uploaded!" in the container is
+      // the page telling us it took the file; what the input element says afterwards is a
+      // detail of how the uploader cleans up. Requiring both called a successful upload a
+      // failure once already.
+      const uploaded = box && exp.resume.successText.test(box.innerText || "");
+      report.push(["resume", uploaded ? `attached (${track && track.tag})`
+                                      : `FAILED ${attached ? "no success text" : "input rejected the file"} ` +
+                                        JSON.stringify(describeFileInputs(exp))]);
     } catch (e) {
       report.push(["resume", `FAILED ${e.message}`]);
     }

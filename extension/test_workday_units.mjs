@@ -1354,5 +1354,36 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
      "a box that would not clear is reported, not typed over");
 }
 
+// ── an uploader that consumes the file is not a rejection ────────────────────
+// Workday's change handler runs synchronously, takes the file and resets input.files, so
+// reading the length AFTER dispatch reported a rejection for an upload that had already
+// succeeded — the container said "successfully uploaded" in the same breath.
+{
+  const attachSrc = readFileSync(new URL("./attach.js", import.meta.url), "utf8");
+  const fn = attachSrc.slice(attachSrc.indexOf("export function attachFile"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  ok(body.indexOf("files.length === 1") < body.indexOf("dispatchEvent"),
+     "acceptance is read before the events fire, not after");
+
+  // And the driver believes the form's own confirmation over the input element.
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  ok(/const uploaded = box && exp\.resume\.successText\.test/.test(drvSrc),
+     "success is the container's confirmation");
+  ok(!/const ok = attached && box/.test(drvSrc),
+     "and no longer requires the input to agree as well");
+}
+
+// The empty panel is also the LOADING panel, so it has to persist before it is believed.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("async function pickBySearch"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  ok(/emptyReads\s*>=\s*9/.test(body), "an empty result needs repeated confirmation");
+  // Measured: the server took ~1.5s. A budget under that reports every skill as missing.
+  const iters = Number((body.match(/for \(let i = 0; i < (\d+); i\+\+\)/) || [])[1]);
+  const gap = Number((body.match(/await sleep\((\d+)\)/) || [])[1]);
+  ok(iters * gap >= 4000, `the search budget (${iters * gap}ms) clears the measured ~1.5s round-trip`);
+}
+
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);

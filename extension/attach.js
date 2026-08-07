@@ -21,10 +21,16 @@ export function attachFile(inputEl, file) {
   const dt = new DataTransfer();
   dt.items.add(file);
   inputEl.files = dt.files;
+  // CHECK BEFORE DISPATCHING. The question this answers is "did the input accept the
+  // file", and after the events it is no longer being asked: Workday's change handler runs
+  // synchronously, consumes the file and resets input.files to empty, so reading the
+  // length afterwards returned 0 and reported a rejection for an upload that had in fact
+  // succeeded — the container said "successfully uploaded" in the very same breath.
+  const accepted = inputEl.files.length === 1;
   // Some uploaders listen on input, others on change — fire both, bubbling.
   inputEl.dispatchEvent(new Event("input", { bubbles: true }));
   inputEl.dispatchEvent(new Event("change", { bubbles: true }));
-  return inputEl.files.length === 1;
+  return accepted;
 }
 
 // The visible filename an employer sees: drop the internal version suffix and collapse the
