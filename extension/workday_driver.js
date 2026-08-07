@@ -30,8 +30,37 @@ export function currentStep(adapter) {
   if (!el) return null;
   const m = (el.innerText || "").match(adapter.multiStep.stepTextPattern);
   if (!m) return null;
-  return { n: Number(m[1]), of: Number(m[2]),
-           name: (el.innerText || "").split("\n").pop().trim() };
+  const name = (el.innerText || "").split("\n").pop().trim();
+
+  // THE ENTRY PAGES CARRY THE SAME PROGRESS BAR. Observed live: /apply/autofillWithResume
+  // reports "step 1 of 6" with the name "Autofill with Resume" — so a bare number match
+  // says we are on My Information while the page is still asking for the PDF. The driver
+  // then ran step 1's fill against it and reported "country: FAILED no listbox button",
+  // which reads like a broken selector rather than the wrong page entirely.
+  //
+  // The NAME is the only thing that distinguishes them, since the number is 1 either way.
+  const entryNames = (adapter.entry && adapter.entry.routePageNames) || [];
+  if (entryNames.some(n => n.toLowerCase() === name.toLowerCase())) return null;
+
+  return { n: Number(m[1]), of: Number(m[2]), name };
+}
+
+// Which route page we are parked on, read from the URL. Workday navigates to
+// /apply/<routeKey> after the modal, so pressing Fill again lands here rather than on the
+// advert — and the Apply button is long gone by then.
+export function currentRoutePage(adapter) {
+  const m = String(location.pathname).match(/\/apply\/([A-Za-z]+)\b/);
+  if (!m) return null;
+  const seg = m[1].toLowerCase();
+  const routes = adapter.entry.routes;
+  // The URL segment is Workday's automation-id, which is NOT always our key for it: the
+  // manual route is keyed "manual" here and appears as /apply/applyManually. Match on both
+  // so the naming choice in this file cannot desync from the live URL.
+  return Object.keys(routes).find(k => {
+    if (k.toLowerCase() === seg) return true;
+    const aid = String(routes[k]).match(/data-automation-id="([^"]+)"/);
+    return !!aid && aid[1].toLowerCase() === seg;
+  }) || null;
 }
 
 // Wait for the step number to CHANGE from `from`. Workday re-renders in place, so polling
@@ -291,9 +320,17 @@ export function attachedTrackTag(ctx) {
   const { adapter } = ctx;
   const box = document.querySelector(adapter.experience.resume.container);
   const text = box ? (box.innerText || "").trim() : "";
-  if (!text || !/\.pdf\b/i.test(text)) return { present: false, tag: null, text };
+  if (!text || !/\.pdf\b/i.test(text)) return { present: false, letter: null, text };
   const m = text.match(adapter.experience.resume.attachedNamePattern);
-  return { present: true, tag: m ? m[1].toLowerCase() : null, text };
+  return { present: true, letter: m ? m[1].toLowerCase() : null, text };
+}
+
+// The attachment names a LETTER; the track carries a tag. Compare on the initial, which is
+// the only thing the two representations share.
+export function attachmentMatchesTrack(attached, track) {
+  if (!attached || !attached.present || !attached.letter) return false;
+  const tag = track && track.tag ? String(track.tag).toLowerCase() : "";
+  return !!tag && attached.letter === tag[0];
 }
 
 async function removeAttachment(ctx) {
@@ -379,8 +416,8 @@ async function fillMyExperience(ctx, report) {
   // answer on the form can be right while the wrong CV hangs off it, which is precisely
   // the contradiction the four tracks exist to avoid.
   const already = attachedTrackTag(ctx);
-  if (already.tag && track && already.tag === track.tag) {
-    report.push(["resume", `kept the attached ${already.tag} CV`]);
+  if (attachmentMatchesTrack(already, track)) {
+    report.push(["resume", `kept the attached ${track.tag} CV`]);
     return;
   }
   if (already.present) {
@@ -388,7 +425,8 @@ async function fillMyExperience(ctx, report) {
     // carrying two CVs is worse than one carrying the wrong CV.
     const removed = await removeAttachment(ctx);
     report.push(["resume-replace",
-                 `${already.tag || "an unrecognised"} CV was attached, need ${track && track.tag}` +
+                 `${already.letter ? `a "_${already.letter}" CV` : "an unrecognised file"} ` +
+                 `was attached, need ${track && track.tag}` +
                  (removed ? " — removed it" : " — COULD NOT REMOVE IT, upload skipped")]);
     if (!removed) return;
   }
@@ -636,6 +674,17 @@ function offeredRoutes(adapter) {
   });
 }
 
+// A real wizard step, not a route page wearing the same progress bar. currentStep already
+// rejects the entry names, so this waits on the thing we actually mean.
+async function waitForWizard(ctx, timeoutMs = 30000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    if (currentStep(ctx.adapter)) return true;
+    await sleep(400);
+  }
+  return false;
+}
+
 async function waitFor(sel, timeoutMs, step = 300) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
@@ -655,14 +704,61 @@ export function needsSignIn(adapter) {
   return s.markers.some(m => document.querySelector(m));
 }
 
+// The autofill route wants the PDF before it will build anything. Attach the track's file
+// through the SAME helper the other three adapters use, then wait for the parse: it
+// rebuilds the form when it lands, so anything written before that is discarded.
+async function uploadAndSettle(ctx, entry) {
+  const { adapter, attachResume, track } = ctx;
+  const up = adapter.entry.resumeUpload;
+
+  const input = await waitFor(up.input, 12000);
+  if (!input) {
+    return { ...entry, ok: false, stage: "resume-upload",
+             error: "the autofill route never showed a file input" };
+  }
+  try {
+    await attachResume(input, track);
+  } catch (err) {
+    return { ...entry, ok: false, stage: "resume-upload",
+             error: `could not attach the ${track && track.tag} resume: ${err && err.message || err}` };
+  }
+  entry.attached = track && track.tag;
+
+  const settled = await waitFor(up.settleSelector, up.settleTimeoutMs);
+  if (!settled) {
+    return { ...entry, ok: false, stage: "resume-parse",
+             error: "the resume was attached but the form never came back from parsing" };
+  }
+  return { ...entry, ok: true };
+}
+
 // Get from the advert to step 1. Returns {ok, route, ...} and never types into the form.
 export async function enterApplyFlow(ctx) {
-  const { adapter, rpc, attachResume, track } = ctx;
+  const { adapter, rpc, track } = ctx;
   const e = adapter.entry;
 
   // Already inside the wizard (he clicked Apply himself, or a re-fill). Nothing to do —
   // and clicking Apply again from in here would be a different button entirely.
   if (currentStep(adapter)) return { ok: true, route: "already-in-flow", entered: false };
+
+  // PARKED ON A ROUTE PAGE. The modal navigates to /apply/<route>, so a second Fill starts
+  // here, not on the advert — and there is no Apply button to click any more. Resume from
+  // wherever that route got to rather than reporting the missing button, which is what
+  // happened live and read like a broken selector.
+  const parked = currentRoutePage(adapter);
+  if (parked) {
+    const entry = { ok: true, route: parked, entered: true, resumed: true,
+                    why: `resumed on the '${parked}' page` };
+    if (parked === "autofillWithResume") {
+      const up = await uploadAndSettle(ctx, entry);
+      if (!up.ok) return up;
+      Object.assign(entry, up);
+    }
+    const arrived = await waitForWizard(ctx);
+    return arrived ? entry
+                   : { ...entry, ok: false, stage: "wizard",
+                       error: `parked on the '${parked}' page and no step marker appeared` };
+  }
 
   if (needsSignIn(adapter)) {
     return { ok: false, stage: "signin",
@@ -706,37 +802,13 @@ export async function enterApplyFlow(ctx) {
                   tenant: decided ? decided.tenant : null,
                   unrecordedHistory: !!pick.unrecordedHistory };
 
-  // The autofill route wants the PDF before it will build anything. Attach the track's
-  // file through the SAME helper the other three adapters use, then wait for the parse:
-  // it rebuilds the form when it lands, so anything written before that is discarded.
   if (pick.route === "autofillWithResume") {
-    const up = adapter.entry.resumeUpload;
-    const input = await waitFor(up.input, 12000);
-    if (!input) {
-      return { ...entry, ok: false, stage: "resume-upload",
-               error: "the autofill route never showed a file input" };
-    }
-    try {
-      await attachResume(input, track);
-    } catch (err) {
-      return { ...entry, ok: false, stage: "resume-upload",
-               error: `could not attach the ${track.tag} resume: ${err && err.message || err}` };
-    }
-    entry.attached = track.tag;
-    const settled = await waitFor(up.settleSelector, up.settleTimeoutMs);
-    if (!settled) {
-      return { ...entry, ok: false, stage: "resume-parse",
-               error: "the resume was attached but the form never came back from parsing" };
-    }
+    const up = await uploadAndSettle(ctx, entry);
+    if (!up.ok) return up;
   }
 
-  // Both routes end in the wizard. Wait for a progress bar rather than a URL change —
-  // the URL is the same on every step and does not move here either.
-  const t0 = Date.now();
-  while (Date.now() - t0 < 30000) {
-    if (currentStep(adapter)) return entry;
-    await sleep(400);
-  }
+  // Both routes end in the wizard.
+  if (await waitForWizard(ctx)) return entry;
   return { ...entry, ok: false, stage: "wizard",
            error: `took the '${pick.route}' route but no step marker ever appeared` };
 }

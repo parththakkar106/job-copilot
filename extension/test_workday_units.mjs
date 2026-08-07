@@ -106,6 +106,38 @@ eq(currentStep(WORKDAY), null, "currentStep null off an apply page");
 globalThis.document = mkDoc("no step marker here");
 eq(currentStep(WORKDAY), null, "currentStep null when the text has no step number");
 
+// THE ENTRY PAGES WEAR THE SAME PROGRESS BAR. Verified live 2026-08-07: the URL
+// /apply/autofillWithResume reports "step 1 of 6" named "Autofill with Resume", so a
+// number-only match said My Information while the page was still asking for the PDF. The
+// driver filled step 1 against it and reported "country: FAILED no listbox button" —
+// indistinguishable from a broken selector. The name is the only thing that differs.
+globalThis.document = mkDoc("current step 1 of 6\nAutofill with Resume");
+eq(currentStep(WORKDAY), null, "THE REGRESSION: the autofill upload page is not step 1");
+globalThis.document = mkDoc("current step 1 of 6\nUse My Last Application");
+eq(currentStep(WORKDAY), null, "nor is the clone page");
+globalThis.document = mkDoc("current step 1 of 6\nApply Manually");
+eq(currentStep(WORKDAY), null, "nor is the manual entry page");
+// ...and the real step 1 still reads as step 1.
+globalThis.document = mkDoc("current step 1 of 6\nMy Information");
+eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected");
+
+// Which route page we are parked on, read from the URL — a second Fill starts there, not
+// on the advert, and by then the Apply button is gone.
+{
+  const currentRoutePage = eval(`(${extract("currentRoutePage")})`);
+  const at = (path) => { globalThis.location = { pathname: path }; return currentRoutePage(WORKDAY); };
+  eq(at("/en-US/external_experienced/job/San-Francisco/Sr-Research-Engineer_R170796/apply/autofillWithResume"),
+     "autofillWithResume", "recognises the autofill page from the real URL");
+  eq(at("/x/job/y/apply/useMyLastApplication"), "useMyLastApplication", "recognises the clone page");
+  // Our key for this route is "manual" but Workday's URL segment is its automation-id,
+  // "applyManually". Matching keys alone silently missed it.
+  eq(at("/x/job/y/apply/applyManually"), "manual",
+     "the URL segment is the automation-id, not our key for the route");
+  eq(at("/x/job/y"), null, "the advert is not a route page");
+  eq(at("/x/job/y/apply/somethingElse"), null, "an unknown route key is not invented");
+  delete globalThis.location;
+}
+
 // ── date parsing (the MMYYYY the trusted-typing path sends) ──────────────────
 const parseDate = (iso) => {
   const m = String(iso || "").match(/^(\d{4})-(\d{1,2})/);
@@ -274,24 +306,51 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
     return attachedTrackTag({ adapter: WORKDAY });
   };
 
-  eq(box("Parth_Resume_ai.pdf|182KB|Successfully Uploaded!").tag, "ai",
-     "reads the track off our own filename");
-  eq(box("Parth_Resume_quant.pdf|182KB|Successfully Uploaded!").tag, "quant",
-     "a longer tag parses too");
-  ok(box("Parth_Resume_ai.pdf|182KB|Successfully Uploaded!").present,
+  const attachmentMatchesTrack = eval(`(${extract("attachmentMatchesTrack")})`);
+
+  // THE FILENAME CARRIES A LETTER, NOT THE TAG. cleanResumeName collapses "ds" to "d" on
+  // the way out, so the real attachment reads Parth_Resume_d.pdf. A pattern expecting the
+  // tag itself matches nothing, and comparing "d" to "ds" never agrees — which would have
+  // replaced the attachment on every run forever. Caught by a live report showing
+  // resumeChoice {tag:"ds", file:"Parth_Resume_d.pdf"}.
+  eq(box("Parth_Resume_d.pdf|182KB|Successfully Uploaded!").letter, "d",
+     "reads the single-letter track off our own filename");
+  eq(box("Parth_Resume_a.pdf|182KB|Successfully Uploaded!").letter, "a",
+     "every track initial parses");
+  ok(box("Parth_Resume_d.pdf|182KB|Successfully Uploaded!").present,
      "a named PDF counts as present");
+
+  ok(attachmentMatchesTrack(box("Parth_Resume_d.pdf|1KB|Successfully Uploaded!"), { tag: "ds" }),
+     "the d file satisfies the ds track");
+  ok(attachmentMatchesTrack(box("Parth_Resume_q.pdf|1KB|Successfully Uploaded!"), { tag: "quant" }),
+     "the q file satisfies the quant track");
+  ok(!attachmentMatchesTrack(box("Parth_Resume_q.pdf|1KB|Successfully Uploaded!"), { tag: "ai" }),
+     "the WHOLE POINT: a quant CV does not satisfy an AI role");
+  ok(!attachmentMatchesTrack(box(""), { tag: "ds" }), "nothing attached never matches");
+  ok(!attachmentMatchesTrack(box("resume_final.pdf|1KB|x"), { tag: "ds" }),
+     "an unreadable filename never matches");
+  ok(!attachmentMatchesTrack(box("Parth_Resume_d.pdf|1KB|x"), {}),
+     "no track means no match, rather than a crash");
+
+  // The scheme only works because the four initials are distinct. A fifth track sharing
+  // one would silently make two CVs interchangeable.
+  {
+    const tags = ["quant", "ds", "tech", "ai"];
+    const initials = new Set(tags.map(t => t[0]));
+    eq(initials.size, tags.length, "the four resume tracks have distinct initials");
+  }
 
   // Nothing attached at all — the ordinary cold path.
   ok(!box("").present, "an empty container has no attachment");
   ok(!box("Drop files here").present, "prompt text is not an attachment");
-  eq(box("").tag, null, "no attachment has no track");
+  eq(box("").letter, null, "no attachment has no track");
 
   // A file we cannot identify must NOT read as a match. It is someone's older naming
   // scheme or a file uploaded outside this tool, and a redundant upload is far cheaper
   // than shipping the wrong CV.
   const unknown = box("resume_final_v3.pdf|200KB|Successfully Uploaded!");
   ok(unknown.present, "an unrecognised file is still an attachment");
-  eq(unknown.tag, null, "an unrecognised file yields no track, so it will be replaced");
+  eq(unknown.letter, null, "an unrecognised file yields no track, so it will be replaced");
 
   // The adapter must keep the replace path honest about being unproven.
   ok(WORKDAY.experience.resume.removeVerified === false,

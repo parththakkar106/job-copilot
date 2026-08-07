@@ -73,6 +73,13 @@ export const WORKDAY = {
     // Either way Workday does the bulk of the typing and the driver reconciles after.
     routePolicy: "core.apply_log.workday_route",
 
+    // VERIFIED LIVE 2026-08-07. After the modal, Workday navigates to /apply/<routeKey>
+    // and that page renders the SAME six-step progress bar, reporting "step 1 of 6" with
+    // the route's own name. Without these, step detection reads the upload page as My
+    // Information and fills a form that is not there yet.
+    routePageNames: ["Autofill with Resume", "Use My Last Application",
+                     "Apply Manually", "Apply with LinkedIn"],
+
     // Tried in order when the decided route is not on offer. `manual` is last because it
     // is the only one that types six steps from nothing.
     routePreference: ["useMyLastApplication", "autofillWithResume", "manual"],
@@ -300,7 +307,12 @@ export const WORKDAY = {
       // (see cleanResumeName), so the track that is currently attached is readable straight
       // off the container text — for anything we uploaded, which is every clone source from
       // now on.
-      attachedNamePattern: /_([a-z]{2,6})\.pdf\b/i,
+      // ONE LETTER, not the tag. cleanResumeName() collapses the track tag to its initial
+      // on the way out ("ds" -> Parth_Resume_d.pdf), so the filename never contains the
+      // tag itself and a pattern demanding two or more characters matches nothing. The
+      // four tags have distinct initials (q/d/t/a), which is what makes this readable at
+      // all — asserted in the tests so a fifth track cannot quietly collide.
+      attachedNamePattern: /_([a-z])\.pdf\b/i,
       // UNVERIFIED. Replacing an attachment needs Workday's own remove control; a second
       // upload may otherwise append rather than replace, leaving BOTH CVs on the form.
       removeButton: '[data-automation-id="delete-file"]',
