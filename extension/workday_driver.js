@@ -215,20 +215,47 @@ export async function setDate(ctx, wrapperSel, iso) {
   if (!wrap) return { ok: false, reason: "date field not found" };
   const m = String(iso || "").match(/^(\d{4})-(\d{1,2})/);
   if (!m) return { ok: false, reason: `unparseable date ${JSON.stringify(iso)} (want YYYY-MM)` };
-  const digits = String(m[2]).padStart(2, "0") + m[1];   // MMYYYY
+
+  const mm = String(m[2]).padStart(2, "0"), yyyy = m[1];
 
   const month = wrap.querySelector(d.month);
+  const year = wrap.querySelector(d.year);
   if (!month) return { ok: false, reason: "no month section" };
+  if (!year) return { ok: false, reason: "no year section" };
   bringIntoView(wrap);
-  const r = month.getBoundingClientRect();
-  await rpc({ type: "CDP_CLICK",
-              x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
-  await sleep(250);
-  await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
-  await sleep(200);
-  await rpc({ type: "CDP_TYPE", text: digits });        // auto-advances month -> year
-  await sleep(500);
-  return { ok: true, value: digits };
+
+  // DRIVE EACH SECTION, DO NOT TRUST AUTO-ADVANCE. Typing all six digits into the month
+  // section and letting the widget carry the rest into the year produced "MM/2005" plus
+  // "Invalid Date: 05/" on a real form — the year took the tail and the month kept
+  // nothing. Clicking each section and typing only its own digits removes the guess.
+  const section = async (el, text, erase) => {
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) return false;
+    await rpc({ type: "CDP_CLICK",
+                x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
+    await sleep(200);
+    await rpc({ type: "CDP_ERASE", times: erase });
+    await sleep(150);
+    await rpc({ type: "CDP_TYPE", text });
+    await sleep(300);
+    return true;
+  };
+
+  // AND VERIFY. This used to return ok:true unconditionally, so the report said "set" for
+  // two dates that were showing validation errors on screen — the worst kind of wrong,
+  // because it moves on and blames the next step.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!await section(month, mm, 3) || !await section(year, yyyy, 5)) {
+      return { ok: false, reason: "a date section has no rect (row detached?)" };
+    }
+    await sleep(300);
+    const gotM = String(month.value || "").trim().padStart(2, "0");
+    const gotY = String(year.value || "").trim();
+    if (gotM === mm && gotY === yyyy) return { ok: true, value: `${mm}/${yyyy}` };
+  }
+  return { ok: false,
+           reason: `did not commit — reads "${String(month.value || "MM")}/` +
+                   `${String(year.value || "YYYY")}", wanted ${mm}/${yyyy}` };
 }
 
 // ── steps ────────────────────────────────────────────────────────────────────
@@ -379,27 +406,42 @@ async function fillMyExperience(ctx, report) {
   const exp = adapter.experience;
   const history = dig(profile, "work_history") || [];
 
-  // HOW MANY ROWS ALREADY EXIST. The autofill route arrives with Workday's own parse of
-  // the PDF, so the jobs are usually already there. Clicking Add Another per entry
-  // regardless would append blank duplicates after the parsed ones.
-  const existingRows = document.querySelectorAll(exp.work.jobTitle).length;
-  if (existingRows) report.push(["work", `${existingRows} row(s) already parsed from the CV`]);
+  // MAKE THE ROWS FIRST, then fill them. Doing it inside the fill loop meant row 0 was
+  // handled before any row existed — it was silently skipped, and everything shifted by
+  // one. The parse may have supplied rows already (autofill) or none at all (manual), so
+  // top up to one row per history entry either way.
+  let rows = document.querySelectorAll(exp.work.jobTitle).length;
+  if (rows) report.push(["work", `${rows} row(s) already on the form`]);
+  while (rows < history.length) {
+    const add = document.querySelector(exp.work.addAnother);
+    if (!add) break;
+    add.click();
+    await sleep(1200);
+    const now = document.querySelectorAll(exp.work.jobTitle).length;
+    if (now <= rows) break;              // the button did not add one; stop rather than spin
+    rows = now;
+  }
+  if (rows < history.length) {
+    report.push(["work", `only ${rows} of ${history.length} row(s) could be created — ` +
+                         `the rest of the history is NOT on this form`]);
+  }
 
-  for (let i = 0; i < history.length; i++) {
+  for (let i = 0; i < Math.min(history.length, rows); i++) {
     const job = history[i];
-    if (i >= existingRows && i > 0) {
-      const add = document.querySelector(exp.work.addAnother);
-      if (!add) { report.push([`work[${i}]`, "SKIPPED no Add Another button"]); break; }
-      add.click();
-      await sleep(1200);
-    }
     const scope = (sel) => nthWrapper(sel, i);
 
     for (const [domKey, profKey] of Object.entries(exp.fieldMap)) {
       if (!(domKey in exp.work)) continue;
       const wrapper = scope(exp.work[domKey]);
-      if (!wrapper) continue;
       const val = job[profKey];
+      if (!wrapper) {
+        // Say so. A silently skipped field is how row 0 vanished from the last run
+        // without a single line in the report to show for it.
+        if (val != null && val !== "" && val !== "FILL_ME") {
+          report.push([`work[${i}].${domKey}`, "FAILED field not present in this row"]);
+        }
+        continue;
+      }
 
       if (domKey === "currentlyWorkHere") {
         const cb = wrapper.querySelector('input[type=checkbox]');
@@ -640,9 +682,14 @@ function clickChoiceByText(wrapper, value) {
 
 // Repeating sections reuse the same automation-id per row, so index into them rather than
 // trusting the row's own id (Workday's carries an opaque counter: workExperience-11--...).
+// STRICT. This used to fall back to all[0] when index i did not exist, which is how the
+// second job got written into the first row: with no rows on arrival, work[0] found
+// nothing and was skipped, then work[1] added a row, asked for index 1, and was handed
+// index 0 — leaving the form claiming an old job was the current one. Handing back a
+// DIFFERENT row than the one asked for is far worse than handing back nothing, because
+// nothing is reported and a wrong row is not.
 function nthWrapper(selector, i) {
-  const all = [...document.querySelectorAll(selector)];
-  return all[i] || all[0] || null;
+  return [...document.querySelectorAll(selector)][i] || null;
 }
 
 // setDate takes a selector; give it a stable one for an element we already hold.

@@ -138,6 +138,104 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   delete globalThis.location;
 }
 
+// ── setDate verifies, instead of assuming ────────────────────────────────────
+// It used to type all six digits into the MONTH section and trust the widget to carry the
+// year across, then return ok:true unconditionally. On a real form that produced
+// "MM/2005" with "Invalid Date: 05/" while the report cheerfully said "set" — the worst
+// kind of wrong, because the run moves on and blames the next step.
+{
+  // extract() slices from "function", dropping `async`, which will not eval with await.
+  const extractAsync = (name) => {
+    const i = src.search(new RegExp(`async function ${name}\\s*\\(`));
+    let depth = 0, j = src.indexOf("{", i);
+    for (; j < src.length; j++) {
+      if (src[j] === "{") depth++;
+      else if (src[j] === "}" && --depth === 0) break;
+    }
+    return src.slice(i, j + 1);
+  };
+  // setDate closes over the module's `sleep`. Bind a zero-delay one so the tests do not
+  // pay the widget's real settle waits.
+  const setDate = eval(`(() => { const sleep = () => Promise.resolve();
+                                 return ${extractAsync("setDate")}; })()`);
+
+  // A date widget with two sections. `commit` decides how faithfully it accepts typing,
+  // which is the whole variable here.
+  const mkWidget = (commit) => {
+    const month = { value: "", tag: "month", getBoundingClientRect: () => ({ left: 0, top: 10, width: 20, height: 10 }) };
+    const year  = { value: "", tag: "year",  getBoundingClientRect: () => ({ left: 0, top: 30, width: 20, height: 10 }) };
+    const wrap = { querySelector: (s) => (s === WORKDAY.date.month ? month : s === WORKDAY.date.year ? year : null) };
+    globalThis.document = { querySelector: (s) => (s === "#w" ? wrap : null) };
+    let focused = null;
+    const rpc = async (msg) => {
+      if (msg.type === "CDP_CLICK") focused = msg.y < 20 ? month : year;
+      if (msg.type === "CDP_ERASE" && focused) focused.value = "";
+      if (msg.type === "CDP_TYPE" && focused) commit(focused, msg.text);
+      return { ok: true };
+    };
+    return { ctx: { adapter: WORKDAY, rpc, bringIntoView: () => {} }, month, year };
+  };
+
+  // A widget that behaves: each section keeps what it was given.
+  {
+    const { ctx, month, year } = mkWidget((el, text) => { el.value = text; });
+    const res = await setDate(ctx, "#w", "2024-01");
+    ok(res.ok, "a committing widget reports success");
+    eq(month.value, "01", "the month section got only the month");
+    eq(year.value, "2024", "the year section got only the year");
+  }
+
+  // THE LIVE FAILURE: the month never keeps anything, the year does.
+  {
+    const { ctx } = mkWidget((el, text) => { if (el.tag === "year") el.value = text; });
+    const res = await setDate(ctx, "#w", "2005-05");
+    ok(!res.ok, "THE REGRESSION: an uncommitted month is a FAILURE, not a silent success");
+    ok(/wanted 05\/2005/.test(res.reason), "the reason says what was wanted");
+    ok(/MM|reads/.test(res.reason), "and what the field actually reads");
+  }
+
+  // A single-digit month must be padded, or "1" never equals "01" and it retries forever.
+  {
+    const { ctx, month } = mkWidget((el, text) => { el.value = text; });
+    const res = await setDate(ctx, "#w", "2024-9");
+    ok(res.ok, "a single-digit ISO month still commits");
+    eq(month.value, "09", "and is zero-padded");
+  }
+
+  // Structural refusals, before any typing.
+  {
+    globalThis.document = { querySelector: () => null };
+    const res = await setDate({ adapter: WORKDAY, rpc: async () => ({}), bringIntoView() {} }, "#gone", "2024-01");
+    ok(!res.ok, "a missing wrapper fails");
+  }
+  {
+    const { ctx } = mkWidget((el, text) => { el.value = text; });
+    const res = await setDate(ctx, "#w", "January 2024");
+    ok(!res.ok, "a display-format date is refused rather than mangled");
+  }
+  globalThis.document = { querySelector: () => null };
+}
+
+// ── repeating rows are addressed strictly by index ───────────────────────────
+// nthWrapper used to fall back to all[0] when index i did not exist. With no rows on
+// arrival, work[0] found nothing and was skipped silently, then work[1] added a row, asked
+// for index 1, and was handed index 0 — so an OLD job was written into the only row and
+// the form claimed it was the current one. Handing back a different row than the one asked
+// for is worse than handing back nothing: nothing gets reported, a wrong row does not.
+{
+  const nthWrapper = eval(`(${extract("nthWrapper")})`);
+  const rows = [{ id: "row0" }, { id: "row1" }];
+  globalThis.document = { querySelectorAll: () => rows };
+
+  eq(nthWrapper("x", 0).id, "row0", "index 0 is row 0");
+  eq(nthWrapper("x", 1).id, "row1", "index 1 is row 1");
+  eq(nthWrapper("x", 2), null, "THE REGRESSION: a missing index is null, never row 0");
+
+  globalThis.document = { querySelectorAll: () => [] };
+  eq(nthWrapper("x", 0), null, "no rows at all is null");
+  eq(nthWrapper("x", 1), null, "and still null for later indices");
+}
+
 // ── step readiness: the progress bar moves before the page renders ───────────
 // Live, step 3 came back with "no Add Another button", "no listbox button" and "file input
 // not found" all at once. That is not three broken selectors, it is one empty page read
