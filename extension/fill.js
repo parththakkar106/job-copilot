@@ -1189,6 +1189,13 @@ async function runFill(autoSubmit = false, opts = {}) {
         tenant: (location.hostname.match(/^([a-z0-9-]+)\.wd\d+\./i) || [])[1] || null,
       });
       Object.assign(report, wd);
+      report.track = track.tag;
+
+      // Log here too. The single LOG_REPORT at the bottom of runFill is past the early
+      // return above, so without this the Workday path writes NOTHING to
+      // fill_reports.jsonl — and since the adapter needs the debugger, that log is the
+      // only way to see what a run did without stealing the tab's CDP client from it.
+      try { await rpc({ type: "LOG_REPORT", report }); } catch (_) { /* bridge down: skip */ }
       return report;
     }
 
