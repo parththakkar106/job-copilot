@@ -489,6 +489,116 @@ async function removeAttachment(ctx) {
   return false;
 }
 
+// A SEARCHABLE multiselect — the Field of Study shape. Same container as the referral
+// prompt tree, but the option set is every discipline there is, and pickPromptTree finds
+// rows by SCROLLING a virtualised list: fine for a short two-level tree, hopeless against
+// a list this long. Type first, then pick from what the search returns.
+//
+// Verified live 2026-08-07 that this field is a multiSelectContainer with a text input
+// inside and no listbox button — which is exactly the shape that reads as "text" to naive
+// probing, where typing fills the search box and commits nothing.
+export async function pickSearchableMultiselect(ctx, wrapperSel, value) {
+  const { adapter, rpc, bringIntoView } = ctx;
+  const pt = adapter.promptTree;
+  const wrap = document.querySelector(wrapperSel);
+  if (!wrap) return { ok: false, reason: "field not found" };
+
+  bringIntoView(wrap);
+  const box = wrap.querySelector("input");
+  if (!box) return { ok: false, reason: "no search input in the multiselect" };
+  const r0 = box.getBoundingClientRect();
+  if (!r0.width && !r0.height) return { ok: false, reason: "the search input has no rect" };
+
+  await rpc({ type: "CDP_CLICK",
+              x: Math.round(r0.left + r0.width / 2), y: Math.round(r0.top + r0.height / 2) });
+  await sleep(600);
+  await rpc({ type: "CDP_ERASE", times: 40 });      // whatever a previous attempt typed
+  await sleep(150);
+  await rpc({ type: "CDP_TYPE", text: String(value) });
+
+  // The search is server-side on some tenants, so give it room rather than assuming the
+  // list is client-side and instant.
+  const rows = () => [...document.querySelectorAll(`${pt.portal} ${pt.row}`)];
+  const want = String(value).trim().toLowerCase();
+  let hit = null;
+  for (let i = 0; i < 20 && !hit; i++) {
+    await sleep(250);
+    hit = rows().find(x => (x.innerText || "").trim().toLowerCase() === want)
+       || rows().find(x => (x.innerText || "").trim().toLowerCase().startsWith(want));
+  }
+  if (!hit) {
+    return { ok: false, reason: `no option matched "${value}"`,
+             sample: rows().slice(0, 8).map(x => (x.innerText || "").trim()) };
+  }
+
+  // Same rule as the prompt tree's leaves: the row commits only when the RADIO is hit,
+  // clicking the text merely highlights it.
+  const r = hit.getBoundingClientRect();
+  await rpc({ type: "CDP_CLICK",
+              x: Math.round(r.left + (pt.radioOffsetFromLeft ?? 22)),
+              y: Math.round(r.top + r.height / 2) });
+  await sleep(900);
+
+  const committed = wrap.querySelector(pt.selected);
+  const text = (wrap.innerText || "").trim();
+  if (committed || pt.committedText.test(text)) {
+    return { ok: true, value: committed ? (committed.innerText || "").trim() : String(value) };
+  }
+  return { ok: false, reason: "clicked the option but nothing committed" };
+}
+
+// WHAT KIND OF CONTROL IS THIS. Order matters and is not cosmetic: a prompt tree contains
+// a text input, so checking for an input first reports "text", and typing into it fills a
+// SEARCH BOX and commits nothing — the field then reads as filled and the step bounces on
+// Next. That exact trap already cost a round on "How Did You Hear About Us?".
+function widgetKindOf(adapter, wrapper) {
+  if (!wrapper) return null;
+  if (wrapper.querySelector(adapter.dropdown.control)) return "listbox";
+  if (wrapper.matches?.(adapter.promptTree.field) || wrapper.querySelector(adapter.promptTree.field)) {
+    return "promptTree";
+  }
+  if (wrapper.querySelector("input,textarea")) return "text";
+  return null;
+}
+
+// One education field, reconciled. Shape is detected rather than configured because these
+// differ per tenant — a degree is a listbox on Adobe and free text elsewhere.
+async function fillEducationField(ctx, report, key, sel, value) {
+  const { adapter } = ctx;
+  const label = `education.${key}`;
+  if (value == null || value === "" || value === "FILL_ME") return;   // nothing to assert
+
+  const wrapper = document.querySelector(sel);
+  if (!wrapper) { report.push([label, "SKIPPED not on this form"]); return; }
+
+  const kind = widgetKindOf(adapter, wrapper);
+  if (!kind) { report.push([label, "FAILED unrecognised control"]); return; }
+
+  const current = readFieldValue(ctx, { control: kind, selectors: [sel] });
+  const d = reconcileDecision(kind, current, value, adapter);
+  if (d.action !== "write") {
+    report.push([label, d.action === "keep" ? `kept "${String(current).trim().slice(0, 30)}"`
+                                            : `skipped: ${d.why}`]);
+    return;
+  }
+
+  if (kind === "listbox") {
+    const res = await pickListbox(ctx, sel, value);
+    report.push([label, res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
+  } else if (kind === "promptTree") {
+    // Search first — a discipline list is far too long to scroll. Fall back to the
+    // two-level walker only if the search finds nothing, since a tenant may render this
+    // as a categorised tree rather than a flat searchable set.
+    let res = await pickSearchableMultiselect(ctx, sel, value);
+    if (!res.ok) res = await pickPromptTree(ctx, sel, [String(value)]);
+    report.push([label, res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
+  } else {
+    const el = wrapper.querySelector("input,textarea");
+    setTextNative(el, String(value));
+    report.push([label, "set"]);
+  }
+}
+
 // Step 2. All of it is required: work history, education AND a resume.
 // Filled from the STREAM-RESOLVED profile so the text matches the attached PDF.
 async function fillMyExperience(ctx, report) {
@@ -598,24 +708,22 @@ async function fillMyExperience(ctx, report) {
     }
   }
 
-  // Education — degree is a short fixed listbox and profile.education.degree_level
-  // matches its options verbatim ("Bachelors", NOT "Bachelor's Degree").
+  // Education. Three of the six configured fields were never filled — field of study and
+  // both year boxes — and the three that were got written blind, overwriting whatever the
+  // CV parse had already put there.
   const ed = exp.education;
-  const school = dig(profile, "education.school");
-  if (school) {
-    const el = fieldInput(ed.school);
-    if (el) { setTextNative(el, school); report.push(["education.school", "set"]); }
-  }
-  const degree = dig(profile, "education.degree_level");
-  if (degree) {
-    const res = await pickListbox(ctx, ed.degree, degree);
-    report.push(["education.degree", res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
-  }
-  const gpa = dig(profile, "education.gpa");
-  if (gpa) {
-    const el = fieldInput(ed.gpa);
-    if (el) { setTextNative(el, String(gpa)); report.push(["education.gpa", "set"]); }
-  }
+  const year = (v) => { const m = String(v == null ? "" : v).match(/\b(19|20)\d{2}\b/); return m ? m[0] : null; };
+
+  await fillEducationField(ctx, report, "school", ed.school, dig(profile, "education.school"));
+  // degree_level matches the listbox options verbatim ("Bachelors", NOT "Bachelor's Degree").
+  await fillEducationField(ctx, report, "degree", ed.degree, dig(profile, "education.degree_level"));
+  await fillEducationField(ctx, report, "fieldOfStudy", ed.fieldOfStudy, dig(profile, "education.major"));
+  await fillEducationField(ctx, report, "gpa", ed.gpa, dig(profile, "education.gpa"));
+  // Only the graduation year is knowable from the profile. start_date is optional and
+  // absent for most people, so a missing first year is reported rather than invented —
+  // guessing it by subtracting a course length would be fabricating a fact about someone.
+  await fillEducationField(ctx, report, "firstYear", ed.firstYear, year(dig(profile, "education.start_date")));
+  await fillEducationField(ctx, report, "lastYear", ed.lastYear, year(dig(profile, "education.graduation_date")));
 
   // Resume — required. Reuses fill.js's DataTransfer attach so there is one implementation.
   //

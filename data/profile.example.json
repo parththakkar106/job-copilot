@@ -74,7 +74,9 @@
     "degree_level": "FILL_ME",
     "major": "FILL_ME",
     "gpa": "FILL_ME",
-    "graduation_date": "FILL_ME"
+    "graduation_date": "FILL_ME",
+    "_start_date_note": "OPTIONAL. Workday's education block has a 'From' year alongside the graduation year, and nothing else in this profile can supply it — a course length is not a fact about you, so it is never inferred. Leave it out and that box stays empty for you to fill; set it (YYYY or YYYY-MM) and it is filled like any other field.",
+    "start_date": ""
   },
 
   "preferences": {

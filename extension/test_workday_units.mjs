@@ -303,6 +303,40 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   globalThis.document = { querySelector: () => null };
 }
 
+// ── education: what kind of control is this? ─────────────────────────────────
+// Measured live on the real step 3: schoolName / gradeAverage / lastYearAttended are plain
+// text, degree has a listbox button, and fieldOfStudy is a multiSelectContainer with a text
+// input inside and NO listbox button. That last shape is the trap — probing for an input
+// first calls it "text", and typing into it fills a SEARCH BOX and commits nothing, so the
+// field reads as filled and the step bounces on Next.
+{
+  const widgetKindOf = eval(`(${extract("widgetKindOf")})`);
+  const mk = (opts) => ({
+    matches: () => false,
+    querySelector: (sel) => {
+      if (sel === WORKDAY.dropdown.control) return opts.listbox ? {} : null;
+      if (sel === WORKDAY.promptTree.field) return opts.multiselect ? {} : null;
+      if (sel === "input,textarea") return opts.input ? {} : null;
+      return null;
+    },
+  });
+
+  // A multiselect always contains an input, so ORDER is what makes this right.
+  eq(widgetKindOf(WORKDAY, mk({ multiselect: true, input: true })), "promptTree",
+     "THE TRAP: a multiselect containing an input is NOT a text field");
+  eq(widgetKindOf(WORKDAY, mk({ input: true })), "text", "a bare input is text");
+  eq(widgetKindOf(WORKDAY, mk({ listbox: true, input: true })), "listbox",
+     "a listbox button wins over the input it contains");
+  eq(widgetKindOf(WORKDAY, mk({})), null, "an unrecognised control is null, not guessed at");
+  eq(widgetKindOf(WORKDAY, null), null, "a missing wrapper is null");
+
+  // The adapter must still name all six education fields, since three of them went
+  // unfilled for want of being wired up rather than for want of a selector.
+  for (const k of ["school", "degree", "fieldOfStudy", "gpa", "firstYear", "lastYear"]) {
+    ok(WORKDAY.experience.education[k], `adapter: education.${k} has a selector`);
+  }
+}
+
 // ── a row is a row, not the i-th node of one field type ──────────────────────
 // Taken from a real form: row 1 is a CURRENT job, so Workday removed its End Date
 // entirely; row 2 has ended and does have one. The page therefore holds two Job Titles and
