@@ -987,46 +987,63 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
   const popup = (labels) => ({ opts: labels.map(opt),
                                querySelectorAll: function () { return this.opts; } });
 
-  // The country popup is still on screen when State is opened; State's own list arrives
-  // 600ms later. The SAME NAME sits in both lists, which is what made this silent — a
-  // wrong-list click looked like an ordinary successful match.
-  const mk = (openLate) => {
+  // The country popup is still on screen when State is opened. The SAME NAME sits in both
+  // lists, which is what made this silent — a wrong-list click looked like an ordinary
+  // successful match.
+  const mk = ({ ariaControls }) => {
     const country = popup(["United States of America", "Northland", "Germany"]);
     const state = popup(["Florida", "Northland", "Hawaii"]);
-    let live = [country], t = 0;
-    const btn = { innerText: "Select One", click() { t++; } };
+    state.id = "stateList";
+    const btn = { innerText: "Select One", click() { btn.innerText = "clicked"; },
+                  getAttribute: (a) => (ariaControls && a === "aria-controls" ? "stateList" : null) };
     globalThis.document = {
       querySelector: (s) => (s.includes("button") ? btn : null),
-      querySelectorAll: () => (openLate && t === 0 ? live : (live = [country, state])),
+      querySelectorAll: () => [country, state],          // both on screen at once
+      getElementById: (id) => (id === "stateList" ? state : null),
     };
     return { country, state, btn };
   };
 
   const run = async () => {
     const pick = pickListbox;
-    let { country, state } = mk(true);
+    // A combobox names the list it controls, so the answer is exact — no heuristic.
+    let { country, state } = mk({ ariaControls: true });
     const res = await pick({ adapter: WORKDAY }, "#state", "Northland");
-    ok(res.ok, "State still gets set");
+    ok(res.ok, "State gets set");
+    eq(res.scope, "own", "the button's own list is what was read");
     eq(country.opts.find(o => o.innerText === "Northland").clicked, 0,
-       "the previous field's option is never clicked");
+       "the other field's identically-named option is never clicked");
     eq(state.opts.find(o => o.innerText === "Northland").clicked, 1,
        "this field's own option is the one clicked");
+
+    // Without the attribute the lists cannot be told apart. Skipping costs an unfilled
+    // field; guessing cost a wrong country on a real application.
+    ({ country, state } = mk({ ariaControls: false }));
+    const res0 = await pick({ adapter: WORKDAY }, "#state", "Northland");
+    ok(!res0.ok, "an ambiguous read is refused rather than guessed");
+    eq(country.opts.find(o => o.innerText === "Northland").clicked, 0,
+       "and nothing in the other list is touched");
 
     // A list that populates progressively must not be judged on its first non-empty read.
     // Live: a US state list was caught mid-flight at 36 entries and the state reported
     // missing, though the entry arrived a moment later.
     {
-      const country = popup(["United States of America"]);
+      const closing = popup(["United States of America"]);
       const growing = popup([]);
-      const btn2 = { innerText: "Select One", click() {} };
+      const btn2 = { innerText: "Select One", getAttribute: () => null,
+                     click() { closing.opts = []; btn2.innerText = "Wyoming"; } };
       let reads = 0;
       globalThis.document = {
         querySelector: () => btn2,
+        getElementById: () => null,
         querySelectorAll: () => {
-          // Arrives in chunks; the wanted entry is in the last one.
-          if (++reads === 2) growing.opts = ["Alabama", "Alaska"].map(opt);
-          if (reads >= 3) growing.opts = ["Alabama", "Alaska", "Wyoming"].map(opt);
-          return [country, growing];
+          // Arrives in chunks once open; the wanted entry is in the last one.
+          if (!closing.opts.length) {
+            reads++;
+            if (reads === 2) growing.opts = ["Alabama", "Alaska"].map(opt);
+            if (reads >= 3) growing.opts = ["Alabama", "Alaska", "Wyoming"].map(opt);
+          }
+          return [closing, growing];
         },
       };
       const res3 = await pick({ adapter: WORKDAY }, "#state", "Wyoming");
@@ -1034,14 +1051,36 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
       eq(growing.opts.find(o => o.innerText === "Wyoming").clicked, 1, "and the late entry is clicked");
     }
 
+    // A click that selects nothing must not be reported as success. Live, this said
+    // `state | set Select One` — the placeholder, i.e. an empty field called filled.
+    {
+      const list = popup([]);
+      const btn3 = { innerText: "Select One", getAttribute: () => null,
+                     click() { list.opts = ["Wyoming"].map(opt); } };   // opens on click
+      globalThis.document = { querySelector: () => btn3, getElementById: () => null,
+                              querySelectorAll: () => [list] };
+      const res4 = await pick({ adapter: WORKDAY }, "#state", "Wyoming");
+      ok(!res4.ok, "a field still showing its placeholder is not set");
+      eq(res4.reason, "clicked the option but the field stayed empty", "and says so plainly");
+    }
+
+    // No list at all is a timing failure, and named as one rather than as vocabulary.
+    {
+      const btn4 = { innerText: "Select One", getAttribute: () => null, click() {} };
+      globalThis.document = { querySelector: () => btn4, getElementById: () => null,
+                              querySelectorAll: () => [] };
+      const res5 = await pick({ adapter: WORKDAY }, "#state", "Wyoming");
+      ok(!res5.ok, "a list that never opens is a failure");
+      eq(res5.reason, "list never populated", "named as timing, not vocabulary");
+    }
+
     // Nothing new ever appears: refuse rather than fall back to the stale list.
-    ({ country, state } = mk(false));
+    ({ country } = mk({ ariaControls: false }));
     globalThis.document.querySelectorAll = () => [country];
     const res2 = await pick({ adapter: WORKDAY }, "#state", "Northland");
     ok(!res2.ok, "a list that never arrives is a failure, not a wrong click");
-    eq(res2.reason, "list never populated", "and it is named as timing, not vocabulary");
     eq(country.opts.find(o => o.innerText === "Northland").clicked, 0,
-       "still nothing clicked in the stale list");
+       "still nothing clicked in the other field's list");
   };
   await run();
 }

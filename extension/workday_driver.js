@@ -111,22 +111,37 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
   const btn = document.querySelector(`${wrapperSel} ${dd.control}`);
   if (!btn) return { ok: false, reason: "no listbox button" };
 
+  // WHICH LIST BELONGS TO THIS BUTTON. A combobox names the listbox it controls, so when
+  // the attribute is there the question has an exact answer and no heuristic is needed.
+  const ownList = () => {
+    const id = btn.getAttribute && (btn.getAttribute("aria-controls") || btn.getAttribute("aria-owns"));
+    return id && document.getElementById ? document.getElementById(id) : null;
+  };
   const readOpts = () => {
+    const own = ownList();
+    const boxes = own ? [own] : [...document.querySelectorAll(dd.optionScope)];
     const out = [];
-    for (const b of document.querySelectorAll(dd.optionScope)) out.push(...b.querySelectorAll(dd.option));
+    for (const b of boxes) out.push(...b.querySelectorAll(dd.option));
     return out.filter(o => !o.matches(dd.excludeOption) &&
                            !dd.placeholderText.test((o.innerText || "").trim()));
   };
 
   // WHOSE OPTIONS ARE THESE? Option lists render in a shared body-level portal, so a
   // document-wide read cannot tell this field's list from the PREVIOUS field's list that
-  // has not been torn down yet. That is not hypothetical: reading with no settle wait
-  // picked up the still-open Country popup while opening State, matched the state's name
-  // against a COUNTRY of the same name, and clicked it — which changes the country on the
-  // application and reshapes the entire address form. Several US state names are also
-  // country names, so this fails silently rather than loudly.
-  // Anything already on screen before the click belongs to someone else.
-  const stale = new Set(readOpts());
+  // has not been torn down yet. Reading one field's list while another's was still open
+  // matched the wanted state against a COUNTRY of the same name and clicked it, changing
+  // the country on a live application. Several US state names are also country names, so
+  // it failed silently rather than loudly.
+  //
+  // With aria-controls above, that is settled exactly. WITHOUT it, fall back to the
+  // invariant that one list is open at a time and wait for the previous one to go.
+  // Excluding options by node identity was the first attempt at this and it does not
+  // hold: Workday RECYCLES option nodes between lists, so a state rendered into a node
+  // the country list had used looks stale and vanishes from the read — that is how a
+  // 50-state list reported "no option matched (of 36)".
+  const scoped = !!ownList();
+  if (!scoped) for (let i = 0; i < 10 && readOpts().length; i++) await sleep(250);
+  const leftOpen = scoped ? [] : readOpts();
   btn.click();
 
   const want = String(wanted).trim().toLowerCase();
@@ -144,11 +159,18 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
   let opts = [], hit = null, prev = -1;
   for (let i = 0; i < 14; i++) {
     await sleep(250);
-    opts = readOpts().filter(o => !stale.has(o));
+    opts = readOpts();
     hit = match(opts);
     if (hit) break;
     if (opts.length && opts.length === prev) break;      // settled without the answer
     prev = opts.length;
+  }
+
+  // If the previous list never closed, this one cannot be told apart from it. Skipping
+  // costs an unfilled field; guessing cost a wrong country on a real application.
+  if (leftOpen.length && opts.some(o => leftOpen.includes(o))) {
+    btn.click();
+    return { ok: false, wanted, reason: "another field's list was still open" };
   }
 
   if (!hit) {
@@ -161,7 +183,15 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
   }
   hit.click();
   await sleep(600);
-  return { ok: true, value: (btn.innerText || "").trim() };
+
+  // VERIFY. Returning btn.innerText as the value assumed the click worked, and once
+  // reported `state | set Select One` — the placeholder, i.e. nothing selected at all.
+  // A report that says "set" when the field is empty is worse than one that says failed.
+  const now = (btn.innerText || "").trim();
+  if (dd.placeholderText.test(now) || !now) {
+    return { ok: false, wanted, reason: "clicked the option but the field stayed empty" };
+  }
+  return { ok: true, value: now, scope: scoped ? "own" : "document" };
 }
 
 // Workday's HIERARCHICAL PROMPT — the widget that forced needsCDP back on.
