@@ -2,26 +2,31 @@
   "manifest_version": 3,
   "name": "Job Pipeline Autofill",
   "version": "0.1.0",
-  "description": "Tier-0 deterministic fill for Greenhouse/Lever/Ashby application forms from the shared data layer. Never submits.",
-
-  "permissions": ["activeTab", "tabs", "scripting", "storage", "debugger", "alarms"],
-
-  "background": { "service_worker": "background.js" },
-
+  "description": "Tier-0 deterministic fill for Greenhouse/Lever/Ashby/Workday application forms from the shared data layer. Never submits.",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "scripting",
+    "storage",
+    "debugger",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "host_permissions": [
     "https://boards.greenhouse.io/*",
     "https://job-boards.greenhouse.io/*",
     "https://*.greenhouse.io/embed/job_app*",
     "https://jobs.lever.co/*",
     "https://jobs.ashbyhq.com/*",
+    "https://*.myworkdayjobs.com/*",
     "ws://127.0.0.1/*"
   ],
-
   "action": {
     "default_title": "Fill this application",
     "default_popup": "popup.html"
   },
-
   "content_scripts": [
     {
       "matches": [
@@ -29,24 +34,36 @@
         "https://job-boards.greenhouse.io/*",
         "https://*.greenhouse.io/embed/job_app*",
         "https://jobs.lever.co/*",
-        "https://jobs.ashbyhq.com/*"
+        "https://jobs.ashbyhq.com/*",
+        "https://*.myworkdayjobs.com/*"
       ],
-      "js": ["fill.js"],
+      "js": [
+        "fill.js"
+      ],
       "run_at": "document_idle"
     }
   ],
-
   "web_accessible_resources": [
     {
       "resources": [
-        "profile.json", "taxonomy.json", "resumes/*",
-        "classify.js", "attach.js", "resume_pick.js",
-        "adapters/greenhouse.js", "adapters/lever.js", "adapters/ashby.js"
+        "profile.json",
+        "taxonomy.json",
+        "resumes/*",
+        "classify.js",
+        "attach.js",
+        "resume_pick.js",
+        "adapters/greenhouse.js",
+        "adapters/lever.js",
+        "adapters/ashby.js",
+        "adapters/workday.js",
+        "workday_driver.js",
+        "stream.js"
       ],
       "matches": [
         "https://*.greenhouse.io/*",
         "https://jobs.lever.co/*",
-        "https://jobs.ashbyhq.com/*"
+        "https://jobs.ashbyhq.com/*",
+        "https://*.myworkdayjobs.com/*"
       ]
     }
   ]

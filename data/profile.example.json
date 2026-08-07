@@ -13,7 +13,9 @@
       "state": "FILL_ME",
       "state_full": "FILL_ME",
       "zip": "FILL_ME",
-      "country": "United States"
+      "country": "United States",
+      "_country_full_note": "Workday's country dropdown has 251 options and matches on exact text, where the US reads 'United States of America'. It also pre-selects a country from your IP, so this is set explicitly on every fill rather than left at its default.",
+      "country_full": "United States of America"
     },
     "_location_display_note": "How a single-box location field should read. Many ATS location pickers search server-side on what is typed, so use the form their dropdown expects, e.g. 'City, State, Country'.",
     "location_display": "FILL_ME"
@@ -37,10 +39,33 @@
   },
 
   "employment": {
+    "_note": "Kept for the single-value taxonomy rules ('current employer', 'current title'). The full list lives in work_history below; these should mirror work_history[0].",
     "current_employer": "FILL_ME",
     "current_title": "FILL_ME",
     "current_start": "FILL_ME"
   },
+
+  "_work_history_note": "Required by Workday, which will not advance past its 'My Experience' step without a full work history. Greenhouse/Lever/Ashby never ask for this, which is why it did not exist before.",
+  "_by_stream_note": "OPTIONAL per-resume-track wording. Each resume (quant/ds/tech/ai) describes the same jobs in a different vocabulary, so the form must match the PDF attached to it or the pair reads as embellishment. Put ONLY the keys that differ inside by_stream.<tag>; anything absent falls through to the default written alongside it. Resolved once per application by core.profile.resolve_stream(), keyed on the tag pick_resume() already chose. Employer, title, dates and location are FACTS — never vary them by stream.",
+  "work_history": [
+    {
+      "employer": "FILL_ME",
+      "title": "FILL_ME",
+      "location": "FILL_ME",
+      "start": "FILL_ME",
+      "_date_note": "YYYY-MM. Workday's date control is a split month/year spinner, so the pipeline needs the parts, not a display string like 'January 2024'.",
+      "end": null,
+      "_end_note": "null means current. Tick `current` instead of inventing an end date — Workday removes its End Date field entirely when 'I currently work here' is checked.",
+      "current": true,
+      "description": "FILL_ME",
+      "by_stream": {
+        "quant": { "description": "FILL_ME" },
+        "ds":    { "description": "FILL_ME" },
+        "tech":  { "description": "FILL_ME" },
+        "ai":    { "description": "FILL_ME" }
+      }
+    }
+  ],
 
   "education": {
     "_school_note": "Use the school's full formal name and avoid parentheticals/acronyms. ATS school pickers run a server-side search on exactly this string, and a bracketed acronym returns zero matches — see the type-to-search notes in extension/fill.js.",

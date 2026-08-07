@@ -16,7 +16,7 @@ exactly what the scraper produces — mark it with the same company/title/locati
 scraper showed you (or use --from-queue to copy them straight from the queue).
 """
 from __future__ import annotations
-import argparse, json, sys
+import argparse, json, re, sys
 from datetime import date
 from pathlib import Path
 
@@ -37,6 +37,60 @@ def load() -> list[dict]:
 
 def save(rows: list[dict]):
     APPLIED.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
+
+# --------------------------------------------------------- Workday tenants
+# Workday's apply modal offers "Use My Last Application", which clones a previous
+# submission to the SAME TENANT and skips most of the 6-step wizard. That is the whole
+# economics of Workday for us: 143 dream-tier jobs sit across only 11 tenants, and step 2
+# alone wants full work history + education + resume. Applying manually once per tenant and
+# cloning the rest is far cheaper than filling 143 wizards.
+#
+# The route therefore depends on a fact we already record: has this tenant been applied to
+# before? applied.json has no `ats` field (46 rows, all None), so the tenant is recovered
+# from the URL host instead. Adding a field would only help rows written from here on.
+
+WORKDAY_HOST = re.compile(
+    r"//(?P<tenant>[a-z0-9][a-z0-9-]*)\.(?P<pod>wd\d+)\.myworkdayjobs\.com/", re.I)
+
+
+def workday_tenant(url: str | None) -> str | None:
+    """'https://adobe.wd5.myworkdayjobs.com/external_experienced/job/...' -> 'adobe'.
+
+    Returns None for any non-Workday URL. The tenant, not the company name, is the unit
+    of account: a Workday login and its saved applications are per-tenant, and company
+    names drift between the tracker and the board ("Bank of America" vs "BofA").
+    """
+    if not url:
+        return None
+    m = WORKDAY_HOST.search(url)
+    return m.group("tenant").lower() if m else None
+
+
+def applied_workday_tenants(rows: list[dict] | None = None) -> set[str]:
+    """Tenants with at least one recorded application — i.e. where cloning is available."""
+    rows = load() if rows is None else rows
+    return {t for t in (workday_tenant(r.get("url")) for r in rows) if t}
+
+
+def workday_route(url: str, rows: list[dict] | None = None) -> dict:
+    """Which entry route to take on a Workday posting: clone a past application, or fill fresh.
+
+    Returns {tenant, route, reason}. `route` is a key of the adapter's `entry.routes`.
+    Deliberately NOT a hard rule the driver must obey blindly — "Use My Last Application"
+    copies the PREVIOUS answers, including its resume track, so cloning across a stream
+    boundary would attach the quant PDF to an AI role. The caller still has to check the
+    stream matches before taking the clone; see the adapter's entry.clonePolicy.
+    """
+    tenant = workday_tenant(url)
+    if not tenant:
+        return {"tenant": None, "route": "manual", "reason": "not a Workday URL"}
+    seen = applied_workday_tenants(rows)
+    if tenant in seen:
+        return {"tenant": tenant, "route": "useMyLastApplication",
+                "reason": f"prior application recorded for tenant '{tenant}'"}
+    return {"tenant": tenant, "route": "manual",
+            "reason": f"no prior application for tenant '{tenant}' — nothing to clone"}
 
 
 def cmd_add(a, rows):

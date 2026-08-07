@@ -21,11 +21,12 @@
 // from the extension bundle (all are web_accessible_resources).
 async function loadDeps() {
   const url = (p) => chrome.runtime.getURL(p);
-  const [classifyMod, ghMod, leverMod, ashbyMod, pickMod, attachMod] = await Promise.all([
+  const [classifyMod, ghMod, leverMod, ashbyMod, wdMod, pickMod, attachMod] = await Promise.all([
     import(url("classify.js")),
     import(url("adapters/greenhouse.js")),
     import(url("adapters/lever.js")),
     import(url("adapters/ashby.js")),
+    import(url("adapters/workday.js")),
     import(url("resume_pick.js")),
     import(url("attach.js")),
   ]);
@@ -33,7 +34,7 @@ async function loadDeps() {
     classify: classifyMod.classify,
     dig: classifyMod.dig,
     render: classifyMod.render,
-    adapters: [ghMod.GREENHOUSE, leverMod.LEVER, ashbyMod.ASHBY],
+    adapters: [ghMod.GREENHOUSE, leverMod.LEVER, ashbyMod.ASHBY, wdMod.WORKDAY],
     pickResume: pickMod.pickResume,
     attachResume: attachMod.attachResume,
     cleanResumeName: attachMod.cleanResumeName,
@@ -1167,6 +1168,29 @@ async function runFill(autoSubmit = false, opts = {}) {
     const company = (opts.company || "").trim() || pageCompany();
     report.company = company;
     report.url = location.href;
+
+    // Workday is a 6-step wizard on a URL that never changes, so everything below — one
+    // page, one pass, one report — does not apply to it. Hand the whole flow to the step
+    // driver, which reuses these same primitives (CDP, classify, attachResume) so there is
+    // still one implementation of each. See workday_driver.js.
+    if (adapter.multiStep) {
+      const { runWorkday } = await import(chrome.runtime.getURL("workday_driver.js"));
+      const { resolveStream } = await import(chrome.runtime.getURL("stream.js"));
+
+      // Pick the resume track FIRST, then resolve the profile through that same tag. The
+      // four resumes describe the same jobs in four vocabularies, so filling from the raw
+      // profile would type quant wording onto a form carrying the AI PDF.
+      const track = pickResume(opts.field || report.company || "", opts.jd || "", profile);
+      const streamed = resolveStream(profile, track.tag);
+
+      const wd = await runWorkday({
+        adapter, tax, classify, dig, render, attachResume, rpc, bringIntoView,
+        profile: streamed, track, company,
+        tenant: (location.hostname.match(/^([a-z0-9-]+)\.wd\d+\./i) || [])[1] || null,
+      });
+      Object.assign(report, wd);
+      return report;
+    }
 
     // Attach the debugger ONLY when the adapter's dropdowns need trusted clicks
     // (Greenhouse). Lever/Ashby honor synthesized events, so no debugger banner appears.

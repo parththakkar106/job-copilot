@@ -10,9 +10,21 @@
 //          null          -> no rule matched, escalate to Tier 1
 
 // Resolve a dotted value_key like 'identity.address.city' against profile.json.
+// A numeric segment indexes a list ('work_history.0.employer') — kept in step with
+// profile.py dig(), which the parity test enforces. Note `part in cur` would "work" on
+// an array by accident (index in array is true), but negative indices and the bounds
+// check would not, so the list case is handled explicitly in both ports.
 export function dig(profile, dotted) {
   let cur = profile;
   for (const part of dotted.split(".")) {
+    if (Array.isArray(cur)) {
+      if (!/^-?\d+$/.test(part)) return null;
+      let i = Number(part);
+      if (i < 0) i += cur.length;
+      if (i < 0 || i >= cur.length) return null;
+      cur = cur[i];
+      continue;
+    }
     if (cur === null || typeof cur !== "object" || !(part in cur)) return null;
     cur = cur[part];
   }

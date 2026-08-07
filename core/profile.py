@@ -37,9 +37,23 @@ def load_taxonomy() -> dict:
 
 
 def dig(profile: dict, dotted: str):
-    """Resolve a dotted value_key like 'identity.address.city' against profile.json."""
+    """Resolve a dotted value_key like 'identity.address.city' against profile.json.
+
+    A numeric segment indexes a list ('work_history.0.employer'). Before work_history
+    existed the profile was all dicts, so a numeric segment silently resolved to None —
+    which reads in taxonomy.yaml exactly like a correctly-spelled key for a field the
+    user has not filled in yet. Keep the two cases distinguishable.
+    """
     cur = profile
     for part in dotted.split("."):
+        if isinstance(cur, list):
+            if not part.lstrip("-").isdigit():
+                return None
+            i = int(part)
+            if not (-len(cur) <= i < len(cur)):
+                return None
+            cur = cur[i]
+            continue
         if not isinstance(cur, dict) or part not in cur:
             return None
         cur = cur[part]
@@ -113,6 +127,64 @@ def pick_resume(field_text: str, jd_text: str = "", profile: dict | None = None)
         best_score = 0
     return {"tag": best["tag"], "local_path": best["local_path"],
             "current_file": best["current_file"], "score": best_score}
+
+
+def resolve_stream(profile: dict, tag: str) -> dict:
+    """Collapse every `by_stream` block in the profile down to one track's wording.
+
+    The four resumes describe the SAME two jobs in four different vocabularies — the
+    quant PDF sells a MILP solver, the AI one sells a ReAct agent, and they are the same
+    work. So a form filled from a stream-blind profile contradicts the PDF stapled to it,
+    which is exactly the kind of mismatch a recruiter reads as embellishment.
+
+    The fix is to make the stream a decision taken ONCE, at the top of an application —
+    `pick_resume` already takes it to choose the PDF — and then resolve the profile
+    through that same tag before anything downstream looks at it. Everything after this
+    point (classify, dig, the extension's fill) sees a plain profile with plain string
+    values and needs no knowledge that streams exist.
+
+    A `by_stream` block holds only the keys that actually differ; anything absent falls
+    through to the sibling default, so employer/title/dates stay written once. Those are
+    facts and must NOT vary by stream — only emphasis may.
+    """
+    if isinstance(profile, dict):
+        out = {}
+        overrides = profile.get("by_stream") or {}
+        chosen = overrides.get(tag) or {}
+        for k, v in profile.items():
+            if k == "by_stream":
+                continue                       # consumed, never leaks into the result
+            out[k] = resolve_stream(v, tag)
+        for k, v in chosen.items():
+            out[k] = _merge(out.get(k), resolve_stream(v, tag))
+        return out
+    if isinstance(profile, list):
+        return [resolve_stream(v, tag) for v in profile]
+    return profile
+
+
+def _merge(base, override):
+    """Overlay `override` on `base`, recursing into dicts.
+
+    A dict override MERGES rather than replaces. Overriding one key of a block must not
+    delete the rest of it — `by_stream.quant.identity.first_name` shadows exactly that
+    name and leaves the address, links and everything else standing. Plain replacement
+    looks correct on a one-key fixture and quietly empties the block in production.
+
+    Lists replace wholesale: there is no honest way to merge two ordered sequences (index
+    alignment is a guess), so a stream that wants a different list writes the whole list.
+    """
+    if isinstance(base, dict) and isinstance(override, dict):
+        out = dict(base)
+        for k, v in override.items():
+            out[k] = _merge(out.get(k), v)
+        return out
+    return override
+
+
+def stream_tags(profile: dict) -> list[str]:
+    """The stream tags the profile actually defines (the resume track tags)."""
+    return [t["tag"] for t in profile.get("resume_tracks", [])]
 
 
 def find_fillme(profile: dict, prefix: str = "") -> list[str]:
