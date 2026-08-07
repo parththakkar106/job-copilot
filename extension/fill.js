@@ -1192,7 +1192,12 @@ async function runFill(autoSubmit = false, opts = {}) {
         tenant: (location.hostname.match(/^([a-z0-9-]+)\.wd\d+\./i) || [])[1] || null,
       });
       Object.assign(report, wd);
-      report.track = track.tag;
+      // The SAME key the single-page path uses (see resumeChoice below). One name for one
+      // fact: logApplied reads exactly one place to record which CV an application used,
+      // and a Workday-only alias would be the one it silently missed.
+      report.resumeChoice = { tag: track.tag,
+                              file: cleanResumeName(track.current_file, track.tag),
+                              overridden: false };
 
       // Log here too. The single LOG_REPORT at the bottom of runFill is past the early
       // return above, so without this the Workday path writes NOTHING to
@@ -2352,7 +2357,13 @@ function mountPanel() {
     // the URL isn't in today's queue.
     const res = await rpc({ type: "LOG_APPLIED", record: {
       company: r.company || pageCompany(), title: r.role || pageRole(), location: "",
-      url: location.href, ...(opts.byHand ? { by_hand: true } : {}) } });
+      url: location.href,
+      // WHICH CV went out. Never recorded before, across every application — which is what
+      // made Workday's "use my last application" unusable: the clone guard asks what track
+      // the previous submission used and nothing could answer. Omitted rather than sent
+      // empty on the by-hand path, where no fill ran and there is genuinely no answer.
+      ...((r.resumeChoice || {}).tag ? { resume_track: r.resumeChoice.tag } : {}),
+      ...(opts.byHand ? { by_hand: true } : {}) } });
     if (res && res.ok && !res.queued) log("📌 Logged as applied — the queue won't offer this again.", "ok");
     else if (res && res.queued) log("📌 Bridge is off — the record is parked and will log itself when it's back.", "ok");
     else log("Couldn't log it (bridge off?) — run apply_log.py so it isn't applied to twice.", "warn");

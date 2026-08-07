@@ -95,6 +95,38 @@ def run():
         assert triage.set_applied_status("ghost", "rejected", ap3) is False, "unknown key"
         checks += 1
 
+    # ── resume_track: which CV an application actually went out with ───────────────────
+    # append_applied builds a FIXED row and drops anything it does not name, which is how
+    # this fact went unrecorded across 46 applications and left Workday's clone guard with
+    # nothing to check.
+    with tempfile.TemporaryDirectory() as tmp:
+        ap = _write(tmp, "applied.json", [])
+
+        assert triage.append_applied(
+            {"dedup_key": "w1", "company": "Adobe", "title": "Sr Research Engineer",
+             "url": "https://adobe.wd5.myworkdayjobs.com/x/job/y", "resume_track": "ai"}, ap)
+        row = triage.load_applied(ap)[0]
+        assert row["resume_track"] == "ai", row; checks += 1
+
+        # Absent, not empty. A reader must be able to tell "went out with the quant CV"
+        # from "nobody recorded it" — the clone guard reconciles instead of guessing on the
+        # second, and an empty string would read as a real answer.
+        assert triage.append_applied(
+            {"dedup_key": "w2", "company": "Beta", "title": "SWE", "url": "https://x/w2"}, ap)
+        row2 = [r for r in triage.load_applied(ap) if r["dedup_key"] == "w2"][0]
+        assert "resume_track" not in row2, row2; checks += 1
+        assert triage.append_applied(
+            {"dedup_key": "w3", "company": "Beta", "title": "SWE", "url": "https://x/w3",
+             "resume_track": ""}, ap)
+        row3 = [r for r in triage.load_applied(ap) if r["dedup_key"] == "w3"][0]
+        assert "resume_track" not in row3, "an empty track is not an answer"; checks += 1
+
+        # The rows written before the field existed must stay readable and unmodified.
+        for r in triage.load_applied(ap):
+            assert set(r) >= {"dedup_key", "company", "title", "location", "url",
+                              "status", "applied"}, r
+        checks += 1
+
     print(f"triage: {checks}/{checks} checks passed")
 
 

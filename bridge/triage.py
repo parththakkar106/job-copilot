@@ -104,6 +104,14 @@ def append_applied(record: dict, applied_path: Path | str = APPLIED_PATH) -> boo
             "status": record.get("status") or "applied",
             "applied": record.get("applied") or date.today().isoformat(),
         }
+        # Which resume track this application went out with. OPTIONAL and omitted when
+        # unknown, so the rows written before this existed stay valid and a reader can tell
+        # "filled with the quant CV" apart from "nobody recorded it" — a distinction the
+        # Workday clone guard depends on, since it must fall back to reconciling rather
+        # than trust a default. Never invent one: a wrong track here staples the wrong PDF
+        # to every future clone of this application.
+        if record.get("resume_track"):
+            row["resume_track"] = record["resume_track"]
         rows.append(row)
         p.write_text(json.dumps(rows, indent=2), encoding="utf-8")
         return True
