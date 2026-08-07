@@ -459,8 +459,13 @@ const labelOf = (el) => (el && el._label) || "";
 // read the literal "embed" as the tenant.
 {
   const co = (href, title = "") => {
+    // Spread the parsed URL rather than picking fields by hand. The stub used to carry
+    // only {href, pathname}, so the moment pageCompany read location.hostname every case
+    // died on `undefined.match` — a harness gap masquerading as a source bug.
     const u = new URL(href);
-    return makePageCompany({ href, pathname: u.pathname }, { title })();
+    return makePageCompany({ href, pathname: u.pathname, hostname: u.hostname,
+                             host: u.host, origin: u.origin, search: u.search },
+                           { title })();
   };
 
   // The canonical boards keep the first-path-segment rule.
@@ -470,6 +475,15 @@ const labelOf = (el) => (el && el._label) || "";
      "ashby board still reads the tenant slug");
   ok(co("https://jobs.lever.co/scale-ai/abc") === "Scale Ai",
      "lever slug is title-cased across the hyphen");
+
+  // Workday inverts the rule: tenant in the subdomain, careers-site name in path[0].
+  // Unfixed this read "External Experienced" for all 33 Adobe roles — and unlike the
+  // Embed bug it is not only cosmetic, since pickResume() scores this string to choose
+  // the resume track the entire Workday fill is then resolved through.
+  ok(co("https://adobe.wd5.myworkdayjobs.com/external_experienced/job/San-Francisco/Sr-Research-Engineer_R170796") === "Adobe",
+     "Workday reads the company from the tenant subdomain, not path[0]");
+  ok(co("https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers/job/Remote/Eng_R1") === "Crowdstrike",
+     "a tenant whose path segment repeats the name still resolves from the subdomain");
 
   // THE regression: the embed rewrite background.js emits for proxied career domains.
   ok(co("https://job-boards.greenhouse.io/embed/job_app?for=discord&token=7869543") === "Discord",

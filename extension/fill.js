@@ -1142,7 +1142,10 @@ async function runFill(autoSubmit = false, opts = {}) {
   try {
     const deps = await loadDeps();
     const { profile, tax } = await loadData();
-    const { adapters, classify, pickResume, attachResume, cleanResumeName } = deps;
+    // dig/render are only read by the Workday branch below, but they must be destructured
+    // here with the rest: the branch builds one ctx object literal, so a name missing from
+    // this line is a ReferenceError that kills the whole fill before it touches the page.
+    const { adapters, classify, dig, render, pickResume, attachResume, cleanResumeName } = deps;
 
     const adapter = adapters.find(a => a.urlPatterns.some(re => re.test(location.href)));
     if (!adapter) { report.errors.push("no adapter matched this URL"); return report; }
@@ -1998,6 +2001,15 @@ function pageCompany() {
     if (m) return m[1].trim();
     return "";   // better empty than "Embed" — the drafter omits an empty company
   }
+
+  // Workday breaks the first-path-segment rule in the other direction: the tenant is the
+  // SUBDOMAIN (adobe.wd5.myworkdayjobs.com) and the first path segment is the careers-site
+  // name — "external_experienced", "crowdstrikecareers". The generic rule below therefore
+  // named every Adobe role "External Experienced", which is the "Embed" failure again, and
+  // it costs more here than a bad essay: this value is what pickResume() scores to choose
+  // the resume track, and the whole Workday fill is then resolved through that track.
+  const wd = location.hostname.match(/^([a-z0-9-]+)\.wd\d+\.myworkdayjobs\.com$/i);
+  if (wd) return titleCase(wd[1]);
 
   const slug = (location.pathname.split("/").filter(Boolean)[0] || "").trim();
   return titleCase(slug);
