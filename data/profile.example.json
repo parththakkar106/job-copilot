@@ -81,6 +81,17 @@
     "start_date": ""
   },
 
+  "_skills_note": "OPTIONAL. Workday's 'Type to Add Skills' is a fixed vocabulary, not free text, so these are matched against its list and the ones it does not offer are reported rather than forced. Put ONLY skills that are on the resume being attached — the form and the PDF are read side by side, and a skill on one but not the other reads as padding. Never add a skill because a posting asked for it. Per-track lists work exactly like work_history's by_stream: anything absent falls through to `list`. Only the first `maxSkills` (8) are entered, since each one costs a full walk of the vocabulary.",
+  "skills": {
+    "list": [],
+    "by_stream": {
+      "quant": { "list": [] },
+      "ds":    { "list": [] },
+      "tech":  { "list": [] },
+      "ai":    { "list": [] }
+    }
+  },
+
   "preferences": {
     "_target_roles_note": "Free text, used to ground Claude-drafted essay answers (bridge/drafter.py). Say what you are aiming FOR, e.g. 'backend and platform engineering roles in the US'.",
     "target_roles": "FILL_ME",

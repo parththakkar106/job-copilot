@@ -1133,5 +1133,89 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
   eq(whatIsAt(434, 116, withRadio), null, "a DOM without elementFromPoint does not block the click");
 }
 
+// ── an empty attachment box is evidence; a missing one is not ────────────────
+// The step-2 shortcut trusted "we uploaded at entry" over what was on screen, and the
+// live form showed that section EMPTY while the report said "already uploaded at entry".
+// That submits an application with no CV on it, so the two cases must be distinguishable.
+{
+  const attachedTrackTag = eval(`(${extract("attachedTrackTag")})`);
+  const ctx = { adapter: WORKDAY };
+  const doc = (box) => { globalThis.document = { querySelector: () => box }; };
+
+  doc(null);
+  eq(attachedTrackTag(ctx).container, false, "no attachment area is not an observation");
+
+  doc({ innerText: "Drop files here\nSelect files" });
+  const empty = attachedTrackTag(ctx);
+  eq(empty.present, false, "an empty box has nothing attached");
+  eq(empty.container, true, "...and having seen the box, that is evidence");
+
+  doc({ innerText: "Parth_Resume_d.pdf|84KB|Successfully Uploaded!" });
+  const full = attachedTrackTag(ctx);
+  eq(full.present, true, "a named PDF is an attachment");
+  eq(full.letter, "d", "and its track letter is read from the filename");
+  eq(full.container, true, "the box was seen either way");
+}
+
+// ── skills: a toggle must not be clicked when it is already open ─────────────
+// Skills fills a multi-select one value at a time, so the panel is already open on the
+// second call. An unconditional opener click closes it — the exact shape that had Field
+// of Study reporting "no row matched" against a list that was no longer there.
+{
+  const asyncSrc2 = (name) => {
+    const i = src.search(new RegExp(`async function ${name}\\s*\\(`));
+    let depth = 0, j = src.indexOf("{", i);
+    for (; j < src.length; j++) {
+      if (src[j] === "{") depth++;
+      else if (src[j] === "}" && --depth === 0) break;
+    }
+    return src.slice(i, j + 1);
+  };
+
+  // Only the opening decision is under test; the walk itself needs a real virtualised list.
+  const openerFor = (expandedAttr, rowsOnScreen) => {
+    let clicks = 0;
+    const opener = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 30 }),
+                     getAttribute: () => expandedAttr };
+    globalThis.document = {
+      querySelector: () => ({ querySelector: () => opener, innerText: "Skills" }),
+      querySelectorAll: () => rowsOnScreen,
+    };
+    return { opener, clicks: () => clicks, rpc: async () => { clicks++; } };
+  };
+
+  const pick = eval(`(() => { const sleep = () => Promise.resolve();
+    const scrollerFor = () => null;
+    const committedValue = () => null;
+    const describePromptRow = () => ({});
+    const clickPointFor = () => null;
+    const whatIsAt = () => null;
+    const nearest = () => [];
+    return ${asyncSrc2("pickPromptTree")}; })()`);
+
+  const ctx = (h) => ({ adapter: WORKDAY, rpc: h.rpc, bringIntoView: () => {} });
+
+  // Panel already ours and open: do not touch the toggle.
+  let h = openerFor("true", [{ innerText: "Python" }]);
+  await pick(ctx(h), "#skills", [["Nothing"]]);
+  eq(h.clicks(), 0, "an already-open panel is not toggled shut");
+
+  // Ours and shut: open it.
+  h = openerFor("false", []);
+  await pick(ctx(h), "#skills", [["Nothing"]]);
+  eq(h.clicks(), 1, "a closed panel is opened");
+
+  // No aria-expanded and rows on screen: they may be another field's. Refuse.
+  h = openerFor(null, [{ innerText: "Belgium" }]);
+  const res = await pick(ctx(h), "#skills", [["Nothing"]]);
+  ok(!res.ok, "an unattributable open panel is refused");
+  eq(h.clicks(), 0, "and nothing is clicked while it is ambiguous");
+
+  // No aria-expanded and a clear screen is safe to open.
+  h = openerFor(null, []);
+  await pick(ctx(h), "#skills", [["Nothing"]]);
+  eq(h.clicks(), 1, "a clear screen is opened as before");
+}
+
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);

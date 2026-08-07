@@ -285,12 +285,29 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
   const opener = wrap.querySelector("input") || wrap.querySelector(pt.field) || wrap;
   const r0 = opener.getBoundingClientRect();
   if (!r0.width && !r0.height) return { ok: false, reason: "opener has no rect" };
-  await rpc({ type: "CDP_CLICK",
-              x: Math.round(r0.left + r0.width / 2), y: Math.round(r0.top + r0.height / 2) });
-  await sleep(900);
 
   const rows = () => [...document.querySelectorAll(`${pt.portal} ${pt.row}`)];
   const rowText = (el) => (el.innerText || "").trim();
+
+  // OPEN IT ONLY IF IT IS SHUT. The opener is a TOGGLE, so a multi-select being filled one
+  // value at a time — Skills — leaves the panel open and a second unconditional click
+  // closes it. That is the exact shape that made Field of Study report "no row matched"
+  // against a list that was no longer there.
+  //
+  // "Rows are on screen" is not enough to conclude they are OURS: a neighbouring field's
+  // panel would look identical, and acting on another field's list is the mistake that
+  // changed a country on a live application. aria-expanded says whose panel it is; without
+  // it, only an empty screen is safe to interpret.
+  const expanded = opener.getAttribute && opener.getAttribute("aria-expanded");
+  const mine = expanded === "true";
+  if (!mine) {
+    if (expanded === null && rows().length) {
+      return { ok: false, reason: "a panel is open and nothing says it is this field's" };
+    }
+    await rpc({ type: "CDP_CLICK",
+                x: Math.round(r0.left + r0.width / 2), y: Math.round(r0.top + r0.height / 2) });
+    await sleep(900);
+  }
   let lastHit = null, lastTarget = null;
 
   for (let depth = 0; depth < path.length; depth++) {
@@ -679,10 +696,15 @@ function resolveSourcePath(ctx, field, value) {
 export function attachedTrackTag(ctx) {
   const { adapter } = ctx;
   const box = document.querySelector(adapter.experience.resume.container);
-  const text = box ? (box.innerText || "").trim() : "";
-  if (!text || !/\.pdf\b/i.test(text)) return { present: false, letter: null, text };
+  // "No attachment" and "no attachment area to look in" are different facts and were
+  // being collapsed into present:false. The step-2 shortcut below turns on that
+  // difference, so it has to be reported: a visible-and-empty container is EVIDENCE of
+  // nothing attached, whereas a missing container is merely the absence of evidence.
+  if (!box) return { present: false, letter: null, text: "", container: false };
+  const text = (box.innerText || "").trim();
+  if (!text || !/\.pdf\b/i.test(text)) return { present: false, letter: null, text, container: true };
   const m = text.match(adapter.experience.resume.attachedNamePattern);
-  return { present: true, letter: m ? m[1].toLowerCase() : null, text };
+  return { present: true, letter: m ? m[1].toLowerCase() : null, text, container: true };
 }
 
 // The attachment names a LETTER; the track carries a tag. Compare on the initial, which is
@@ -770,6 +792,47 @@ async function fillEducationField(ctx, report, key, sel, value, alternates = [])
     setTextNative(el, String(value));
     report.push([label, "set"]);
   }
+}
+
+// Skills — a multi-select over a fixed vocabulary, filled one value at a time.
+//
+// Every value is one the applicant listed on the resume being attached, resolved by
+// stream so the form agrees with the PDF. Nothing here is inferred from a job description:
+// adding a skill because the posting asked for it would be writing a claim about someone
+// on the strength of what the employer wanted to hear.
+//
+// The list's size is UNMEASURED. Field of Study turned out to be 320 entries with a dead
+// search box, and the walker handles that; if a tenant's skill vocabulary runs to
+// thousands this will report misses rather than find them, and the fix is a search path
+// built against a measurement — not a second strategy guessed at now, which is how the
+// last one broke the widget it was meant to help.
+async function fillSkills(ctx, report, wanted) {
+  const { adapter } = ctx;
+  const sel = adapter.experience.skills;
+  if (!sel || !document.querySelector(sel)) return;      // not on this tenant's form
+  const list = (wanted || []).map(s => String(s).trim()).filter(Boolean);
+  if (!list.length) { report.push(["skills", "SKIPPED none in profile"]); return; }
+
+  const wrap = document.querySelector(sel);
+  const already = committedValue(wrap, adapter.promptTree);
+  if (already) { report.push(["skills", `kept ${already}`]); return; }   // reconcile, as everywhere
+
+  const cap = adapter.experience.maxSkills || 8;
+  const set = [], missed = [];
+  for (const skill of list.slice(0, cap)) {
+    const res = await pickPromptTree(ctx, sel, [[skill]]);
+    if (res.ok) { set.push(skill); continue; }
+    missed.push(skill);
+    // Stop after two consecutive failures with nothing landing: either the vocabulary is
+    // wrong or the widget is not cooperating, and hammering a stateful control is how it
+    // ends up in a state nothing recovers from.
+    if (missed.length >= 2 && !set.length) {
+      report.push(["skills", `FAILED ${res.reason} — gave up after ${missed.join(", ")}`]);
+      return;
+    }
+  }
+  report.push(["skills", `${set.length ? `set ${set.join(", ")}` : "set none"}` +
+                         (missed.length ? ` (not offered: ${missed.join(", ")})` : "")]);
 }
 
 // Step 2. All of it is required: work history, education AND a resume.
@@ -900,6 +963,9 @@ async function fillMyExperience(ctx, report) {
   await fillEducationField(ctx, report, "firstYear", ed.firstYear, year(dig(profile, "education.start_date")));
   await fillEducationField(ctx, report, "lastYear", ed.lastYear, year(dig(profile, "education.graduation_date")));
 
+  // `profile` here is already stream-resolved, so skills.list is the attached CV's own set.
+  await fillSkills(ctx, report, dig(profile, "skills.list"));
+
   // Resume — required. Reuses fill.js's DataTransfer attach so there is one implementation.
   //
   // Before uploading, check what is ALREADY attached. A clone brings the previous
@@ -911,12 +977,17 @@ async function fillMyExperience(ctx, report) {
     report.push(["resume", `kept the attached ${track.tag} CV`]);
     return;
   }
-  // The autofill route already uploaded this exact track on the way in — that upload is
-  // what built this page. Workday does not necessarily surface it in the step-2 container,
-  // so "no attachment visible" here is not evidence there is none, and re-uploading got
-  // the file rejected. Trust what we did over what we can see.
-  if (!already.present && ctx.entryAttached && track && ctx.entryAttached === track.tag) {
-    report.push(["resume", `already uploaded at entry (${track.tag})`]);
+  // The autofill route uploaded this track on the way in, and that upload is what built
+  // this page — but it does NOT leave the file attached here. Confirmed on the live form:
+  // this section was empty while the report claimed "already uploaded at entry", so the
+  // application would have been submitted with no CV on it.
+  //
+  // The shortcut survives only for the case it was actually written for: a container we
+  // cannot see at all, where "nothing attached" was never observed. If the section IS on
+  // screen and empty, that is evidence, and evidence beats what we remember doing.
+  if (!already.present && !already.container &&
+      ctx.entryAttached && track && ctx.entryAttached === track.tag) {
+    report.push(["resume", `uploaded at entry (${track.tag}); no attachment area on this step`]);
     return;
   }
   if (already.present) {

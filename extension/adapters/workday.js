@@ -320,7 +320,13 @@ export const WORKDAY = {
     // them verbatim. Verified list: GED, High School, Associates, Bachelors, Masters,
     // Doctorate, JD. Note it is NOT "Bachelor's Degree" — do not "helpfully" expand it.
     degreeOptions: ["GED", "High School", "Associates", "Bachelors", "Masters", "Doctorate", "JD"],
+    // "Type to Add Skills" — a promptTree multi-select, filled one value at a time from
+    // the stream-resolved profile so the form agrees with the attached CV.
     skills: '[data-automation-id="formField-skills"]',
+    // Each skill costs a full walk of the vocabulary, and the field is optional on every
+    // tenant seen so far. A handful of accurate skills beats an exhaustive list that
+    // takes a minute to enter.
+    maxSkills: 8,
     linkedin: '[data-automation-id="formField-linkedInAccount"]',
     resume: {
       // REQUIRED. Standard input[type=file], so attach.js's DataTransfer injection applies
