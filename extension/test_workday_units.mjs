@@ -885,5 +885,59 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
   ok(!needsSignIn(WORKDAY), "no Apply button and no marker is a different failure, not this one");
 }
 
+// ── the virtualised prompt list: finding the scroller, and failing usefully ──
+// Both of these are why Field of Study silently missed. Neither is exotic logic, but both
+// are invisible at runtime — the symptom is an empty field and a report naming whatever
+// rows happened to be on screen when the walker gave up.
+{
+  const nearest = eval(`(${extract("nearest")})`);
+
+  // The real case: Adobe offers 320 disciplines and none is "Computer Science".
+  const adobeC = ["Comparative Literature", "Computer and Information Science",
+                  "Computer Engineering", "Computer Graphics", "Computer Systems Analysis",
+                  "Rural Sociology", "Russian", "Scandinavian Studies"];
+  const near = nearest(["Computer Science"], adobeC);
+  ok(near.length > 0, "a missing major still names candidates");
+  ok(near.every(t => /computer/i.test(t)), "candidates share a word with what was wanted");
+  ok(!near.includes("Russian"), "where scrolling happened to stop is not a candidate");
+
+  // The old report said "saw: Risk Management, Rural Sociology, Russian" — true, useless.
+  eq(nearest(["Computer Science"], ["Rural Sociology", "Russian", "Risk Management"]), [],
+     "nothing similar reports nothing rather than noise");
+  // "and"/"of" would match everything; short words must not score.
+  eq(nearest(["History of Art"], ["Bank of England Studies"]), [],
+     "short connecting words do not make a match");
+  ok(nearest(["Computer Science"], adobeC, 2).length === 2, "the candidate list is capped");
+}
+{
+  const scrollerFor = eval(`(${extract("scrollerFor")})`);
+  // Shape measured live: the portal itself does not scroll and neither does any direct
+  // child — the ReactVirtualized grid holding the overflow is four levels down.
+  const node = (name, ch, sh, kids = []) => ({ name, clientHeight: ch, scrollHeight: sh, kids });
+  const grid = node("grid", 220, 10240);
+  const portal = node("portal", 39, 39, [node("a", 39, 39, [node("b", 0, 220, [grid])])]);
+  const flat = (n) => n.kids.flatMap(k => [k, ...flat(k)]);
+  for (const n of [portal, ...flat(portal)]) n.querySelectorAll = () => flat(n);
+  globalThis.document = { querySelector: () => portal };
+
+  eq(scrollerFor("x").name, "grid", "the scroller is found however deep it sits");
+  // Node "b" above is not invented: the live ancestor chain really does have a ch=0/sh=220
+  // wrapper sitting between the grid and the portal, and it precedes the grid in document
+  // order — so "scrollHeight > clientHeight" alone picks it and every scroll is a no-op.
+
+  const shallow = node("p", 100, 900, []);
+  shallow.querySelectorAll = () => [];
+  globalThis.document = { querySelector: () => shallow };
+  eq(scrollerFor("x").name, "p", "a portal that scrolls itself is used directly");
+
+  globalThis.document = { querySelector: () => null };
+  eq(scrollerFor("x"), null, "no portal is not a scroller");
+
+  // A budget that cannot reach the end of the measured list is the 86%-and-stop bug.
+  const viewports = 10240 / 220;
+  ok(WORKDAY.promptTree.maxScrolls > viewports / 0.75,
+     "the scroll budget covers the measured 320-option list at the 0.75 overlap");
+}
+
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);

@@ -73,6 +73,8 @@
     "degree": "FILL_ME",
     "degree_level": "FILL_ME",
     "major": "FILL_ME",
+    "_major_alternates_note": "OPTIONAL fallbacks, tried in order when `major` is not offered. ATS field-of-study pickers are fixed vocabularies, not free text, and a perfectly ordinary major may simply be absent — Adobe's Workday list has 320 entries and no 'Computer Science'. Which substitute is TRUE is a claim about your degree, so it is read from here and never guessed. Leave empty and the field is surfaced for you, with the closest options the walker saw named in the report.",
+    "major_alternates": [],
     "gpa": "FILL_ME",
     "graduation_date": "FILL_ME",
     "_start_date_note": "OPTIONAL. Workday's education block has a 'From' year alongside the graduation year, and nothing else in this profile can supply it — a course length is not a fact about you, so it is never inferred. Leave it out and that box stays empty for you to fill; set it (YYYY or YYYY-MM) and it is filled like any other field.",

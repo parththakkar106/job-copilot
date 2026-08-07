@@ -153,11 +153,32 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
 function scrollerFor(portalSel) {
   const portal = document.querySelector(portalSel);
   if (!portal) return null;
-  const canScroll = (e) => e && e.scrollHeight > e.clientHeight + 5;
+  // A collapsed wrapper reports scrollHeight >> clientHeight === 0 and looks scrollable by
+  // arithmetic alone; the live chain has one sitting directly above the real grid. Scrolling
+  // it moves nothing. Require a viewport with actual height.
+  const canScroll = (e) => e && e.clientHeight >= 40 && e.scrollHeight > e.clientHeight + 5;
   if (canScroll(portal)) return portal;
-  for (const child of portal.querySelectorAll(":scope > *")) if (canScroll(child)) return child;
+  // Search DESCENDANTS, not just direct children. On the multiSelectContainer shape the
+  // element with the overflow is a ReactVirtualized grid four levels down; checking only
+  // one level finds a 39px-tall wrapper that reports scrollHeight === clientHeight, and
+  // every scroll against it is a no-op the loop reads as "bottom reached".
+  for (const el of portal.querySelectorAll("*")) if (canScroll(el)) return el;
   if (canScroll(portal.parentElement)) return portal.parentElement;
   return portal;                       // nothing obviously scrollable: try it anyway
+}
+
+// What to say when nothing matched. The last few rows on screen are near-useless — they
+// are wherever scrolling stopped, which is why an earlier failure reported "Risk
+// Management, Rural Sociology, Russian" for a search for Computer Science. Rows sharing a
+// word with what was wanted are what a human needs to see to fix the profile.
+export function nearest(wants, seen, limit = 6) {
+  const words = new Set(wants.join(" ").toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 3));
+  const score = (t) => {
+    const ws = t.toLowerCase().split(/[^a-z0-9]+/);
+    return ws.filter(w => words.has(w)).length;
+  };
+  return seen.map(t => [score(t), t]).filter(([s]) => s > 0)
+             .sort((a, b) => b[0] - a[0]).slice(0, limit).map(([, t]) => t);
 }
 
 export async function pickPromptTree(ctx, wrapperSel, path) {
@@ -179,26 +200,46 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
   const rowText = (el) => (el.innerText || "").trim();
 
   for (let depth = 0; depth < path.length; depth++) {
-    const want = String(path[depth]).trim().toLowerCase();
+    // A level may offer ALTERNATES: the profile's own wording plus fallbacks, tried in
+    // order. This is not fuzzy matching — every candidate is one the human wrote down.
+    // Adobe's 320-entry Field of Study list has no "Computer Science" at all, so a
+    // vocabulary gap is a normal outcome here, not a bug to paper over with a guess.
+    const wants = (Array.isArray(path[depth]) ? path[depth] : [path[depth]])
+      .map(v => String(v).trim()).filter(Boolean);
     const isLeaf = depth === path.length - 1;
 
     // The list is virtualized: only rendered rows exist in the DOM, so a target further
-    // down needs scrolling before it can be found at all.
+    // down needs scrolling before it can be found at all. Everything scrolled past is
+    // remembered, both to match alternates that appeared earlier and to name near-misses
+    // if nothing matches.
+    const seen = [];
     let hit = null;
-    for (let scroll = 0; scroll < (pt.maxScrolls || 40); scroll++) {
-      hit = rows().find(x => rowText(x).toLowerCase() === want)
-         || rows().find(x => rowText(x).toLowerCase().startsWith(want));
+    for (let scroll = 0; scroll < (pt.maxScrolls || 120); scroll++) {
+      for (const r of rows()) {
+        const t = rowText(r);
+        if (!seen.includes(t)) seen.push(t);
+      }
+      for (const want of wants) {
+        const w = want.toLowerCase();
+        hit = rows().find(x => rowText(x).toLowerCase() === w)
+           || rows().find(x => rowText(x).toLowerCase().startsWith(w));
+        if (hit) break;
+      }
       if (hit) break;
       const list = scrollerFor(pt.portal);
       if (!list) break;
       const before = list.scrollTop;
-      list.scrollTop += list.clientHeight || 200;
+      // Overlap deliberately. A full-viewport jump advances by exactly the number of rows
+      // rendered, so a row straddling the boundary can fall between two frames and never
+      // be queryable. Measured on Adobe's list: 220px viewport, 32px rows — 6.875 rows
+      // visible, which does not divide evenly.
+      list.scrollTop += Math.max(40, Math.round((list.clientHeight || 200) * 0.75));
       await sleep(250);
       if (list.scrollTop === before) break;         // bottom reached
     }
     if (!hit) {
       return { ok: false, reason: `no row matched at depth ${depth}`,
-               wanted: path[depth], sample: rows().slice(0, 8).map(rowText) };
+               wanted: wants, sawCount: seen.length, near: nearest(wants, seen) };
     }
 
     const r = hit.getBoundingClientRect();
@@ -520,7 +561,7 @@ function widgetKindOf(adapter, wrapper) {
 
 // One education field, reconciled. Shape is detected rather than configured because these
 // differ per tenant — a degree is a listbox on Adobe and free text elsewhere.
-async function fillEducationField(ctx, report, key, sel, value) {
+async function fillEducationField(ctx, report, key, sel, value, alternates = []) {
   const { adapter } = ctx;
   const label = `education.${key}`;
   if (value == null || value === "" || value === "FILL_ME") return;   // nothing to assert
@@ -552,9 +593,16 @@ async function fillEducationField(ctx, report, key, sel, value) {
     // then the fallback clicked the opener again, which toggled the already-open panel
     // shut — so the walker reported "no row matched" against a list that was not there.
     // Two strategies against a stateful widget are not free.
-    const res = await pickPromptTree(ctx, sel, [String(value)]);
-    report.push([label, res.ok ? `set ${res.value}`
-                               : `FAILED ${res.reason}${res.sample ? ` (saw: ${res.sample.slice(0, 4).join(", ")})` : ""}`]);
+    //
+    // The candidate list is the profile's own wording plus any alternates the human wrote
+    // down for it. These vocabularies are tenant-specific and often have no entry for a
+    // perfectly ordinary answer — Adobe's 320-option Field of Study list contains no
+    // "Computer Science" — but which substitute is TRUE is a fact about the applicant, so
+    // it is read from the profile and never inferred here.
+    const res = await pickPromptTree(ctx, sel, [[String(value), ...alternates]]);
+    report.push([label, res.ok ? `set ${res.value}` : `FAILED ${res.reason}` +
+      (res.near && res.near.length ? ` — closest of ${res.sawCount} options: ${res.near.join(", ")}`
+                                   : res.sawCount ? ` (saw ${res.sawCount} options, none similar)` : "")]);
   } else {
     const el = wrapper.querySelector("input,textarea");
     setTextNative(el, String(value));
@@ -680,7 +728,9 @@ async function fillMyExperience(ctx, report) {
   await fillEducationField(ctx, report, "school", ed.school, dig(profile, "education.school"));
   // degree_level matches the listbox options verbatim ("Bachelors", NOT "Bachelor's Degree").
   await fillEducationField(ctx, report, "degree", ed.degree, dig(profile, "education.degree_level"));
-  await fillEducationField(ctx, report, "fieldOfStudy", ed.fieldOfStudy, dig(profile, "education.major"));
+  await fillEducationField(ctx, report, "fieldOfStudy", ed.fieldOfStudy,
+                           dig(profile, "education.major"),
+                           dig(profile, "education.major_alternates") || []);
   await fillEducationField(ctx, report, "gpa", ed.gpa, dig(profile, "education.gpa"));
   // Only the graduation year is knowable from the profile. start_date is optional and
   // absent for most people, so a missing first year is reported rather than invented —
