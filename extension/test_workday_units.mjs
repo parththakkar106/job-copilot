@@ -303,6 +303,56 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   globalThis.document = { querySelector: () => null };
 }
 
+// ── a row is a row, not the i-th node of one field type ──────────────────────
+// Taken from a real form: row 1 is a CURRENT job, so Workday removed its End Date
+// entirely; row 2 has ended and does have one. The page therefore holds two Job Titles and
+// exactly ONE End Date, at index 0. Indexing each field type independently asked for End
+// Date index 1, found nothing, and reported "field not present in this row" about a field
+// that was visible and empty on screen.
+{
+  const workRowScope = eval(`(${extract("workRowScope")})`);
+  const EXP = { work: WORKDAY.experience.work };
+
+  // Minimal DOM: a container holding two row nodes, each with its own fields.
+  const mk = (fieldSels) => {
+    const row = { parentElement: null };
+    // Field wrappers are real nodes whose parentElement is the row — that chain is what
+    // the climb walks.
+    const fields = fieldSels.map(sel => ({ sel, parentElement: row }));
+    row.querySelectorAll = (sel) => fields.filter(f => f.sel === sel);
+    row.querySelector = (sel) => row.querySelectorAll(sel)[0] || null;
+    return row;
+  };
+  const T = EXP.work.jobTitle, E = EXP.work.endDate;
+  const row1 = mk([T]);                 // current job: no End Date
+  const row2 = mk([T, E]);              // ended job: has one
+  const rows = [row1, row2];
+  const container = {
+    parentElement: null,
+    querySelectorAll(sel) { return rows.flatMap(r => r.querySelectorAll(sel)); },
+    querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+  };
+  row1.parentElement = container;
+  row2.parentElement = container;
+  globalThis.document = container;
+
+  // Sanity: the page really is the awkward shape this is about.
+  eq(container.querySelectorAll(T).length, 2, "two rows on the page");
+  eq(container.querySelectorAll(E).length, 1, "but only one End Date between them");
+
+  const s1 = workRowScope(EXP, 0), s2 = workRowScope(EXP, 1);
+  ok(s1 === row1, "row 0 resolves to the first row, not to the container");
+  ok(s2 === row2, "row 1 resolves to the second row");
+  // The climb must stop before an ancestor that spans both rows, or every row would
+  // resolve to the container and see the other row's fields.
+  ok(s1 !== container && s2 !== container, "the climb stops short of the shared ancestor");
+
+  // THE REGRESSION: the second row's End Date is found even though it is the FIRST (and
+  // only) End Date on the page.
+  ok(s2.querySelector(E), "row 1's End Date is reachable through its own row");
+  eq(s1.querySelector(E), null, "and row 0 correctly has none");
+}
+
 // ── repeating rows are addressed strictly by index ───────────────────────────
 // nthWrapper used to fall back to all[0] when index i did not exist. With no rows on
 // arrival, work[0] found nothing and was skipped silently, then work[1] added a row, asked

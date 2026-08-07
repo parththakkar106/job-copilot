@@ -518,10 +518,38 @@ async function fillMyExperience(ctx, report) {
 
   for (let i = 0; i < Math.min(history.length, rows); i++) {
     const job = history[i];
-    const scope = (sel) => nthWrapper(sel, i);
+    // Scope every lookup to THIS row. Falls back to positional indexing only if the row
+    // container cannot be derived, which keeps the old behaviour for fields that do exist
+    // once per row rather than failing outright.
+    const rowEl = workRowScope(exp, i);
+    const scope = (sel) => (rowEl ? rowEl.querySelector(sel) : nthWrapper(sel, i));
+
+    // SETTLE "I currently work here" BEFORE ANYTHING ELSE IN THE ROW. Ticking it REMOVES
+    // the End Date field from the DOM, so it decides whether a field the loop is about to
+    // write even exists. It sits last in fieldMap, and object key order is far too fragile
+    // a thing to hang a destructive DOM change on.
+    //
+    // It must also be able to UNTICK. The parse arrived with this ticked on a job that
+    // ended years ago, and code that only ever ticks left it that way: End Date stayed
+    // absent, reported as "field not present in this row", and the form claimed both jobs
+    // were current. Reconciling in one direction only is not reconciling.
+    const curWrap = scope(exp.work.currentlyWorkHere);
+    if (curWrap) {
+      const cb = curWrap.querySelector('input[type=checkbox]');
+      const want = !!job.current;
+      if (cb && cb.checked !== want) {
+        cb.click();
+        await sleep(900);
+        report.push([`work[${i}].currentlyWorkHere`,
+                     want ? "ticked" : "unticked — the parse had this job as current"]);
+      } else if (cb) {
+        report.push([`work[${i}].currentlyWorkHere`, `kept ${cb.checked ? "ticked" : "unticked"}`]);
+      }
+    }
 
     for (const [domKey, profKey] of Object.entries(exp.fieldMap)) {
       if (!(domKey in exp.work)) continue;
+      if (domKey === "currentlyWorkHere") continue;   // settled above, on purpose
       const wrapper = scope(exp.work[domKey]);
       const val = job[profKey];
       if (!wrapper) {
@@ -780,6 +808,27 @@ function clickChoiceByText(wrapper, value) {
 
 // Repeating sections reuse the same automation-id per row, so index into them rather than
 // trusting the row's own id (Workday's carries an opaque counter: workExperience-11--...).
+// THE ROW, not the i-th node of one field type. Indexing each field independently across
+// the whole page only works if every row has every field, and they do not: ticking "I
+// currently work here" REMOVES that row's End Date from the DOM. With a current first job
+// and an ended second one, the page holds two Job Title wrappers but only ONE End Date —
+// the second row's, sitting at index 0. Asking for index 1 found nothing and reported "field
+// not present in this row" for a field that was on screen and empty.
+//
+// Derived by climbing from the row's Job Title until the ancestor would swallow a second
+// row, so it needs no new selector for a container whose automation-id carries an opaque
+// counter (workExperience-11--...).
+function workRowScope(exp, i) {
+  const title = [...document.querySelectorAll(exp.work.jobTitle)][i];
+  if (!title) return null;
+  let node = title;
+  while (node.parentElement &&
+         node.parentElement.querySelectorAll(exp.work.jobTitle).length === 1) {
+    node = node.parentElement;
+  }
+  return node;
+}
+
 // STRICT. This used to fall back to all[0] when index i did not exist, which is how the
 // second job got written into the first row: with no rows on arrival, work[0] found
 // nothing and was skipped, then work[1] added a row, asked for index 1, and was handed
