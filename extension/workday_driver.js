@@ -465,6 +465,14 @@ async function fillQuestions(ctx, report, needsInput) {
   for (const w of wrappers) {
     const aid = w.getAttribute("data-automation-id");
     if (known.has(aid)) continue;
+
+    // A FILE UPLOAD IS NOT A QUESTION. The attach path owns it, and no answer exists that
+    // could satisfy it. Live, the resume widget came through here as an unanswered
+    // question — label "Upload either DOC, DOCX, HTML, PDF, or TXT file types (5MB
+    // max)Parth_Resume_d.pdf loading..." — and paused the whole run for input on a field
+    // that had just been filled successfully.
+    if (w.querySelector('input[type=file]')) continue;
+
     const label = extractLabel(w, adapter);
     if (!label) continue;
 
@@ -672,6 +680,31 @@ function offeredRoutes(adapter) {
     const el = document.querySelector(routes[k]);
     return !!el && el.getAttribute("aria-disabled") !== "true" && !el.disabled;
   });
+}
+
+// WHICH step this is, by name. The number is not stable: the autofill route counts its
+// upload page as step 1, so the same My Information page is step 1 on one flow and step 2
+// of 7 on another. Names are matched loosely because tenants reword them slightly.
+export function stepKind(adapter, step) {
+  const name = String((step && step.name) || "").toLowerCase().replace(/[^a-z]+/g, "");
+  if (!name) return null;
+  for (const [kind, aliases] of Object.entries(adapter.multiStep.stepKinds || {})) {
+    if (aliases.some(a => name.includes(String(a).toLowerCase().replace(/[^a-z]+/g, "")))) {
+      return kind;
+    }
+  }
+  return null;
+}
+
+// Are we on the page whose footer button SUBMITS? Derived from the progress bar's own
+// "step N of M" rather than a hardcoded number, because the step count varies with the
+// entry route — this flow reported 7 steps, and a hardcoded 6 both stops one page early
+// and, on any flow with fewer steps, would be a guess about where Submit lives. The
+// adapter's submitStep stays as a floor so a missing/garbled total cannot open the gate.
+export function isFinalStep(adapter, step) {
+  if (!step) return true;                       // unknown position: never advance
+  if (Number.isFinite(step.of) && step.of > 0) return step.n >= step.of;
+  return step.n >= adapter.multiStep.submitStep;
 }
 
 // A real wizard step, not a route page wearing the same progress bar. currentStep already
@@ -889,15 +922,21 @@ export async function runWorkday(ctx) {
       if (!step) return { ok: false, adapter: "workday", error: "no progress bar — not on an apply flow page", report };
 
       // Never advance off Review: on step 6 the footer button IS submit.
-      if (step.n >= adapter.multiStep.submitStep) {
+      if (isFinalStep(adapter, step)) {
         steps.push({ n: step.n, name: step.name, action: "stopped" });
         return { ok: true, adapter: "workday", stoppedAt: step, report, needsInput, steps,
                  note: "Reached Review. Submitting is deliberately left to you." };
       }
 
       const before = needsInput.length;
-      if (step.n === 1) await fillMyInformation(ctx, report);
-      else if (step.n === 2) await fillMyExperience(ctx, report);
+      // DISPATCH ON THE NAME, NEVER THE NUMBER. Verified live: the autofill flow counts
+      // its upload page as step 1, so My Information is step 2 of 7 — and dispatching on
+      // the number ran the work-history filler against the My Information page, which
+      // reported three missing selectors that were all simply on a different page.
+      // The number depends on the entry route; the name does not.
+      const which = stepKind(adapter, step);
+      if (which === "myInformation") await fillMyInformation(ctx, report);
+      else if (which === "myExperience") await fillMyExperience(ctx, report);
       // Steps 1 and 2 also carry tenant questions (Adobe puts a required "Have you been
       // employed by Adobe in the past?" on step 1), so the taxonomy pass runs on EVERY
       // step, not just 3-5. knownCoreIds keeps it off the fields already set above.

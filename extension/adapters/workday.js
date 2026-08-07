@@ -164,7 +164,23 @@ export const WORKDAY = {
 
     // On step 6 the footer button is SUBMIT, not advance. The driver must never click
     // `pageFooterNextButton` blind — check the active step first.
+    // A FLOOR, not the answer. The real "am I on the submit page" test is n >= of, read
+    // off the progress bar — the step COUNT depends on the entry route, and the autofill
+    // flow was measured live at 7 steps with My Information at 2. This only guards the
+    // case where the total is missing or unparseable.
     submitStep: 6,
+
+    // Pages are identified by NAME, never by number, for the same reason. Matched loosely
+    // (letters only, substring) because tenants reword them: "My Experience" appears as
+    // "Experience" and "My Information" as "Personal Information" on some boards.
+    stepKinds: {
+      myInformation: ["My Information", "Personal Information", "Contact Information"],
+      myExperience: ["My Experience", "Experience", "Work Experience"],
+      questions: ["Application Questions", "Questions"],
+      disclosures: ["Voluntary Disclosures", "Disclosures"],
+      selfIdentify: ["Self Identify", "Identification", "Disability"],
+      review: ["Review", "Summary"],
+    },
 
     steps: [
       { n: 1, name: "My Information",        page: '[data-automation-id="applyFlowMyInfoPage"]', verified: true },

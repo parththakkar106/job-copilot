@@ -138,6 +138,50 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   delete globalThis.location;
 }
 
+// ── which page am I on, and is it the last one ───────────────────────────────
+// Both were number-based and both were wrong, found in one live run: the autofill flow
+// counts its upload page as step 1, so My Information arrived as "step 2 of 7". The driver
+// dispatched on the number and ran the work-history filler against the My Information
+// page, reporting three missing selectors that were simply on another page entirely.
+{
+  const stepKind = eval(`(${extract("stepKind")})`);
+  const isFinalStep = eval(`(${extract("isFinalStep")})`);
+
+  eq(stepKind(WORKDAY, { n: 1, name: "My Information" }), "myInformation",
+     "step 1 of a manual flow is My Information");
+  eq(stepKind(WORKDAY, { n: 2, name: "My Information" }), "myInformation",
+     "THE REGRESSION: so is step 2 of an autofill flow — the name decides, not the number");
+  eq(stepKind(WORKDAY, { n: 3, name: "My Experience" }), "myExperience",
+     "experience is found at whatever number it lands on");
+  eq(stepKind(WORKDAY, { n: 4, name: "Application Questions" }), "questions", "questions");
+  eq(stepKind(WORKDAY, { n: 7, name: "Review" }), "review", "review");
+
+  // Tenants reword these, so matching is loose on purpose.
+  eq(stepKind(WORKDAY, { n: 1, name: "Personal Information" }), "myInformation",
+     "a reworded information page still resolves");
+  eq(stepKind(WORKDAY, { n: 2, name: "Work Experience" }), "myExperience",
+     "a reworded experience page still resolves");
+  eq(stepKind(WORKDAY, { n: 2, name: "Something Unknown" }), null,
+     "an unrecognised page is null, so only the generic taxonomy pass runs on it");
+  eq(stepKind(WORKDAY, { n: 2, name: "" }), null, "an empty name is not guessed at");
+
+  // THE SAFETY PROPERTY. On the last page the footer button is Submit, not Next, so
+  // getting this wrong is the difference between filling a form and sending one.
+  ok(isFinalStep(WORKDAY, { n: 7, of: 7, name: "Review" }), "7 of 7 is final");
+  ok(isFinalStep(WORKDAY, { n: 6, of: 6, name: "Review" }), "6 of 6 is final");
+  ok(!isFinalStep(WORKDAY, { n: 6, of: 7, name: "Self Identify" }),
+     "6 of 7 is NOT final — the hardcoded 6 stopped a page early here");
+  ok(!isFinalStep(WORKDAY, { n: 2, of: 7, name: "My Information" }), "early steps advance");
+  ok(isFinalStep(WORKDAY, { n: 8, of: 7, name: "?" }), "past the end still counts as final");
+
+  // Fail CLOSED. An unreadable position must never be treated as "safe to press Next".
+  ok(isFinalStep(WORKDAY, null), "no step at all is treated as final, never advanced past");
+  ok(isFinalStep(WORKDAY, { n: 6, of: 0, name: "Review" }),
+     "a garbled total falls back to the adapter floor rather than advancing blindly");
+  ok(isFinalStep(WORKDAY, { n: 6, name: "Review" }),
+     "a missing total falls back to the floor too");
+}
+
 // ── date parsing (the MMYYYY the trusted-typing path sends) ──────────────────
 const parseDate = (iso) => {
   const m = String(iso || "").match(/^(\d{4})-(\d{1,2})/);
