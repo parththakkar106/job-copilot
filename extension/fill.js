@@ -2447,6 +2447,13 @@ function looksLikeAppForm() {
   if (/(?:\/\/|\.)greenhouse\.io\/embed\/job_app/i.test(h)) return true;
   if (/(?:\/\/|\.)jobs\.lever\.co\//i.test(h)) return true;
   if (/(?:\/\/|\.)jobs\.ashbyhq\.com\//i.test(h)) return true;
+  // Workday qualifies on the URL alone and CANNOT fall through to the DOM checks below:
+  // its wizard is built from data-automation-id divs, with no <form> carrying a file or
+  // email input, so every one of those checks fails on the page we most need the panel on.
+  // The posting page qualifies too. Nothing useful can be filled there yet — the entry
+  // flow (Apply -> route modal) is not automated — but Fill answers with a plain "not on
+  // an apply flow page", which beats no panel at all and is where entry automation lands.
+  if (/\.myworkdayjobs\.com\//i.test(h)) return true;
   // Inline embed on a custom host: require a form that actually carries applicant fields
   // (a bare #grnhse_app container wrapping the iframe lives on the parent page too, so it
   // is not enough on its own).

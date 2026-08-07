@@ -489,4 +489,43 @@ const labelOf = (el) => (el && el._label) || "";
      "an unresolvable embed company must be empty, never 'Embed'");
 }
 
+// ── looksLikeAppForm: the gate that decides whether the panel exists at all ─────────────
+// Untested until it silently swallowed a whole ATS. Workday shipped with a manifest match,
+// a content script and an adapter, and no panel ever appeared, because this gate listed
+// only the three original hosts. A mount gate that says no is indistinguishable from a
+// broken adapter from the outside, so every supported host is pinned here.
+{
+  const fn = extract("looksLikeAppForm");
+  // The DOM fallbacks must NOT be what rescues a supported host — that is exactly the trap
+  // Workday fell into — so every case runs with a document that finds nothing, which makes
+  // each assertion below a statement about the URL clauses alone.
+  // looksLikeAppForm reads the ambient `location`/`document`, so bind them as globals.
+  const mounts = (href) => {
+    globalThis.location = { href };
+    globalThis.document = { querySelector: () => null };
+    return eval(`(${fn})`)();
+  };
+
+  ok(mounts("https://adobe.wd5.myworkdayjobs.com/external_experienced/job/San-Francisco/Sr-Research-Engineer_R170796"),
+     "a Workday posting page mounts the panel");
+  ok(mounts("https://adobe.wd5.myworkdayjobs.com/en-US/external_experienced/apply/applyManually"),
+     "THE REGRESSION: the Workday apply wizard has no <form>, so it must qualify on URL alone");
+  ok(mounts("https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers/job/USA-Remote/Engineer_R12345"),
+     "any Workday tenant qualifies, not just the one the adapter was probed against");
+
+  ok(mounts("https://job-boards.greenhouse.io/block/jobs/5369941008"), "greenhouse board still mounts");
+  ok(mounts("https://boards.greenhouse.io/embed/job_app?for=asana&token=99"), "the legacy embed still mounts");
+  ok(mounts("https://jobs.lever.co/scale-ai/abc"), "lever still mounts");
+  ok(mounts("https://jobs.ashbyhq.com/ramp/1a2b3c"), "ashby still mounts");
+
+  // The gate's other job: keep a force-injected panel off wrapper pages and stray iframes.
+  ok(!mounts("https://www.asana.com/jobs/apply/12345"),
+     "a wrapper career page with no applicant fields must NOT mount");
+  // Leading dot AND a trailing slash are both load-bearing: this host contains the exact
+  // string ".myworkdayjobs.com" and is still not Workday.
+  ok(!mounts("https://adobe.myworkdayjobs.com.evil.example/apply/applyManually"),
+     "a suffix-lookalike host must not match — the clause needs the slash after .com");
+  delete globalThis.location; delete globalThis.document;
+}
+
 console.log(`fill units: ${n}/${n} checks passed`);
