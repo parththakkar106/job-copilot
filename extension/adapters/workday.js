@@ -454,11 +454,16 @@ export const WORKDAY = {
     row: '[data-automation-id="menuItem"]',
     rowText: '[data-automation-id="promptOption"]',
     selected: '[data-automation-id="selectedItem"]',
-    // Click target within the row. Measured live: the row spanned x=410..754 and the
-    // radio sat at x=432, i.e. ~22px in from the row's LEFT edge. Offset from the left,
-    // not the centre — the panel width varies with the longest option text, so a
-    // centre-relative offset drifts off the radio on a narrower field.
+    // A leaf commits only when its RADIO is hit; clicking the row text merely highlights.
     clickTarget: "radio",
+    // The row's control, resolved from the DOM. The live diagnostic showed each leaf
+    // carries a real input[data-automation-id="radioBtn"] with aria-checked, so its
+    // position can be asked for rather than assumed.
+    rowControl: '[data-automation-id="radioBtn"],input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"]',
+    // FALLBACK ONLY, for a shape that hides its input behind a styled span and gives it no
+    // box. Measured live: the row spanned x=410..754 with the radio at x=432, i.e. ~22px
+    // in from the row's LEFT edge — offset from the left, not the centre, because the
+    // panel's width follows its longest option and a centre-relative offset drifts off.
     radioOffsetFromLeft: 22,
     needsCDP: true,
     levels: 2,

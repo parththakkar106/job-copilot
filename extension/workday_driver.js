@@ -129,21 +129,27 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
   const stale = new Set(readOpts());
   btn.click();
 
-  // Then poll, because a dependent list is refetched when its parent changes — setting
-  // Country reloads State, and this driver writes them back to back — so a fixed wait is
-  // a race. Seen live: identical run, State set once and "no option matched" the next.
-  let opts = [];
-  for (let i = 0; i < 12; i++) {
-    await sleep(300);
-    opts = readOpts().filter(o => !stale.has(o));
-    if (opts.length) break;
-  }
-
   const want = String(wanted).trim().toLowerCase();
   const txt = (o) => (o.innerText || "").trim();
-  const hit = opts.find(o => txt(o).toLowerCase() === want)
-           || opts.find(o => txt(o).toLowerCase().startsWith(want))
-           || opts.find(o => txt(o).toLowerCase().includes(want));
+  const match = (os) => os.find(o => txt(o).toLowerCase() === want)
+                     || os.find(o => txt(o).toLowerCase().startsWith(want))
+                     || os.find(o => txt(o).toLowerCase().includes(want));
+
+  // Then wait for the list to SETTLE, not merely to be non-empty. A dependent list is
+  // refetched when its parent changes — setting Country reloads State, and this driver
+  // writes them back to back — and it populates progressively. Stopping at the first
+  // non-empty read caught a US state list mid-flight at 36 entries and reported the
+  // state missing; the entry was real, it just had not arrived. Two reads of the same
+  // size mean it has stopped growing. Finding the answer ends the wait early.
+  let opts = [], hit = null, prev = -1;
+  for (let i = 0; i < 14; i++) {
+    await sleep(250);
+    opts = readOpts().filter(o => !stale.has(o));
+    hit = match(opts);
+    if (hit) break;
+    if (opts.length && opts.length === prev) break;      // settled without the answer
+    prev = opts.length;
+  }
 
   if (!hit) {
     btn.click();                                   // close, leave the field untouched
@@ -203,6 +209,41 @@ export function nearest(wants, seen, limit = 6) {
              .sort((a, b) => b[0] - a[0]).slice(0, limit).map(([, t]) => t);
 }
 
+// WHERE to click a row. The old answer was "22px in from the left edge", measured once on
+// one tenant's referral list. That is a constant standing in for a fact the DOM already
+// knows: leaves commit only when their radio is hit, and the radio is an element with a
+// position. Ask it. The offset survives only as a fallback for a control the browser gives
+// no box for (Workday hides the real input behind a styled span on some shapes), and a
+// row whose own box is empty is reported rather than clicked at (0,0).
+export function clickPointFor(row, pt, isLeaf) {
+  const box = (e) => (e ? e.getBoundingClientRect() : null);
+  const real = (r) => r && r.width > 0 && r.height > 0;
+  const rr = box(row);
+  if (!real(rr)) return null;
+
+  if (isLeaf) {
+    const ctrl = row.querySelector(pt.rowControl || 'input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"]');
+    const cr = box(ctrl);
+    if (real(cr)) return { x: Math.round(cr.left + cr.width / 2),
+                           y: Math.round(cr.top + cr.height / 2), via: "control" };
+    return { x: Math.round(rr.left + (pt.radioOffsetFromLeft ?? 22)),
+             y: Math.round(rr.top + rr.height / 2), via: "offset" };
+  }
+  return { x: Math.round(rr.left + rr.width / 2),
+           y: Math.round(rr.top + rr.height / 2), via: "row-centre" };
+}
+
+// Is the row actually the thing at that point? Returns null when the click will land, or a
+// short description of whatever is on top when it will not.
+export function whatIsAt(x, y, row) {
+  if (typeof document.elementFromPoint !== "function") return null;   // cannot check: allow
+  const top = document.elementFromPoint(x, y);
+  if (!top) return "nothing (point is off-screen)";
+  if (top === row || row.contains(top) || top.contains(row)) return null;
+  const id = top.getAttribute && top.getAttribute("data-automation-id");
+  return `<${top.tagName.toLowerCase()}${id ? ` ${id}` : ""}>`;
+}
+
 export async function pickPromptTree(ctx, wrapperSel, path) {
   const { adapter, rpc, bringIntoView } = ctx;
   const pt = adapter.promptTree;
@@ -220,7 +261,7 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
 
   const rows = () => [...document.querySelectorAll(`${pt.portal} ${pt.row}`)];
   const rowText = (el) => (el.innerText || "").trim();
-  let lastHit = null;
+  let lastHit = null, lastTarget = null;
 
   for (let depth = 0; depth < path.length; depth++) {
     // A level may offer ALTERNATES: the profile's own wording plus fallbacks, tried in
@@ -265,19 +306,49 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
                wanted: wants, sawCount: seen.length, near: nearest(wants, seen) };
     }
 
+    // CENTRE THE ROW IN ITS SCROLLER BEFORE CLICKING. A row is "found" as soon as it is
+    // rendered, but the renderer keeps a partially-visible row at the viewport edge in the
+    // DOM — and a click on the clipped half lands on whatever is drawn over it. Centring
+    // is also what makes the coordinates stable enough to hit-test below.
+    const list = scrollerFor(pt.portal);
+    if (list) {
+      const lr = list.getBoundingClientRect(), hr = hit.getBoundingClientRect();
+      const delta = (hr.top + hr.height / 2) - (lr.top + lr.height / 2);
+      if (Math.abs(delta) > 4) { list.scrollTop += delta; await sleep(300); }
+      // RE-FIND IT. Virtualised rows are recycled, so scrolling can hand the old node to a
+      // different option or unmount it entirely — the failure diagnostic caught exactly
+      // that, reporting a 0x0 rect for a row that had been reused underneath us. Holding a
+      // stale reference is how you click the wrong discipline.
+      const w0 = wants.map(v => v.toLowerCase());
+      hit = rows().find(x => w0.includes(rowText(x).toLowerCase()))
+         || rows().find(x => w0.some(w => rowText(x).toLowerCase().startsWith(w)))
+         || hit;
+    }
     lastHit = hit;
-    const r = hit.getBoundingClientRect();
-    // Leaves commit only when the RADIO is hit; category rows drill in from anywhere.
-    const x = isLeaf ? Math.round(r.left + (pt.radioOffsetFromLeft ?? 22))
-                     : Math.round(r.left + r.width / 2);
-    await rpc({ type: "CDP_CLICK", x, y: Math.round(r.top + r.height / 2) });
+
+    const target = clickPointFor(hit, pt, isLeaf);
+    if (!target) {
+      return { ok: false, reason: "row has no clickable box",
+               widget: describePromptRow(wrap, pt, hit) };
+    }
+    // ASK THE PAGE WHAT IS AT THAT POINT instead of assuming. A trusted click goes to
+    // whatever is topmost at the coordinate, so an overlay, a clipped edge or a stale rect
+    // silently sends it somewhere else — indistinguishable, after the fact, from a click
+    // that landed and did not commit. This is the check that turns that into a real error.
+    const blocker = whatIsAt(target.x, target.y, hit);
+    if (blocker) {
+      return { ok: false, reason: `click point is covered by ${blocker}`,
+               widget: { ...describePromptRow(wrap, pt, hit), target } };
+    }
+    await rpc({ type: "CDP_CLICK", x: target.x, y: target.y });
     await sleep(1100);
+    lastTarget = target;
   }
 
   const c = committedValue(wrap, pt);
   return c ? { ok: true, value: c }
            : { ok: false, reason: "clicked through but nothing committed",
-               widget: describePromptRow(wrap, pt, lastHit) };
+               widget: { ...describePromptRow(wrap, pt, lastHit), target: lastTarget } };
 }
 
 // Did the selection stick? Two signals, because one shape does not cover both users of
@@ -299,10 +370,13 @@ export function describePromptRow(wrap, pt, row) {
   const box = (e) => { const r = e.getBoundingClientRect();
     return { l: Math.round(r.left), t: Math.round(r.top),
              w: Math.round(r.width), h: Math.round(r.height) }; };
-  const out = { field: (wrap.innerText || "").trim().slice(0, 60),
-                clickedAt: pt.radioOffsetFromLeft ?? 22 };
+  const out = { field: (wrap.innerText || "").trim().slice(0, 60) };
   if (!row) return { ...out, row: "gone after click" };
   out.row = box(row);
+  // A 0x0 row means the list recycled the node between the click and this read, not that
+  // the row was invisible when clicked. Saying so saves the next reader the deduction.
+  if (!out.row.w && !out.row.h) out.recycled = true;
+  out.text = (row.innerText || "").trim().slice(0, 40);
   out.children = [...row.querySelectorAll("*")].slice(0, 12).map(e => ({
     tag: e.tagName.toLowerCase(),
     aid: e.getAttribute("data-automation-id"),

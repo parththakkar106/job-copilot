@@ -1012,6 +1012,28 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
     eq(state.opts.find(o => o.innerText === "Northland").clicked, 1,
        "this field's own option is the one clicked");
 
+    // A list that populates progressively must not be judged on its first non-empty read.
+    // Live: a US state list was caught mid-flight at 36 entries and the state reported
+    // missing, though the entry arrived a moment later.
+    {
+      const country = popup(["United States of America"]);
+      const growing = popup([]);
+      const btn2 = { innerText: "Select One", click() {} };
+      let reads = 0;
+      globalThis.document = {
+        querySelector: () => btn2,
+        querySelectorAll: () => {
+          // Arrives in chunks; the wanted entry is in the last one.
+          if (++reads === 2) growing.opts = ["Alabama", "Alaska"].map(opt);
+          if (reads >= 3) growing.opts = ["Alabama", "Alaska", "Wyoming"].map(opt);
+          return [country, growing];
+        },
+      };
+      const res3 = await pick({ adapter: WORKDAY }, "#state", "Wyoming");
+      ok(res3.ok, "a list still populating is waited out, not failed");
+      eq(growing.opts.find(o => o.innerText === "Wyoming").clicked, 1, "and the late entry is clicked");
+    }
+
     // Nothing new ever appears: refuse rather than fall back to the stale list.
     ({ country, state } = mk(false));
     globalThis.document.querySelectorAll = () => [country];
@@ -1022,6 +1044,54 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
        "still nothing clicked in the stale list");
   };
   await run();
+}
+
+// ── where to click a row, and whether the click will land ────────────────────
+// "22px in from the left" was a constant standing in for a fact the DOM already knows.
+// The live diagnostic showed the row carries a real input[radioBtn] with aria-checked,
+// so the position is available for the asking.
+{
+  const clickPointFor = eval(`(${extract("clickPointFor")})`);
+  const whatIsAt = eval(`(${extract("whatIsAt")})`);
+  const pt = WORKDAY.promptTree;
+
+  const rect = (l, t, w, h) => () => ({ left: l, top: t, width: w, height: h });
+  const mkRow = (rowBox, ctrlBox) => {
+    const ctrl = ctrlBox ? { getBoundingClientRect: rect(...ctrlBox), matches: () => true } : null;
+    return { getBoundingClientRect: rect(...rowBox),
+             querySelector: () => ctrl, contains: (e) => e === ctrl, _ctrl: ctrl };
+  };
+
+  // Row spans x=410..754 with its radio at 432 — the geometry the offset was derived from.
+  const withRadio = mkRow([410, 100, 344, 32], [426, 108, 16, 16]);
+  eq(clickPointFor(withRadio, pt, true), { x: 434, y: 116, via: "control" },
+     "a leaf is clicked on its actual control, not an offset");
+
+  // Some shapes hide the input behind a styled span and give it no box. The measured
+  // offset stays as the fallback rather than being deleted.
+  eq(clickPointFor(mkRow([410, 100, 344, 32], [0, 0, 0, 0]), pt, true).via, "offset",
+     "a control with no box falls back to the measured offset");
+  eq(clickPointFor(mkRow([410, 100, 344, 32], null), pt, true),
+     { x: 432, y: 116, via: "offset" }, "so does a row with no control at all");
+
+  // Category rows drill in from anywhere.
+  eq(clickPointFor(withRadio, pt, false).via, "row-centre", "a category row is clicked centrally");
+
+  // THE REGRESSION: a recycled row reports 0x0, and clicking its "centre" means clicking
+  // the top-left corner of the page. That is how a click silently goes nowhere.
+  eq(clickPointFor(mkRow([0, 0, 0, 0], null), pt, true), null,
+     "a recycled 0x0 row is reported, never clicked at (0,0)");
+
+  // Hit-testing: the click must reach the row.
+  const other = { tagName: "DIV", getAttribute: () => "overlayBackdrop", contains: () => false };
+  globalThis.document = { elementFromPoint: () => withRadio._ctrl };
+  eq(whatIsAt(434, 116, withRadio), null, "a point on the row's own control is clear");
+  globalThis.document = { elementFromPoint: () => other };
+  eq(whatIsAt(434, 116, withRadio), "<div overlayBackdrop>", "an overlay is named, not clicked through");
+  globalThis.document = { elementFromPoint: () => null };
+  ok(whatIsAt(434, 116, withRadio), "a point off-screen is a failure");
+  globalThis.document = {};
+  eq(whatIsAt(434, 116, withRadio), null, "a DOM without elementFromPoint does not block the click");
 }
 
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
