@@ -2266,8 +2266,8 @@ function mountPanel() {
       // remain. Best-effort: no match / bridge off simply falls through to asking normally.
       try {
         const saved = await rpc({ type: "PENDING_ANSWERS", url: location.href });
+        const key = s => norm(String(s || "").replace(/[✱*]/g, ""));
         if (saved && saved.found && saved.answers && Object.keys(saved.answers).length) {
-          const key = s => norm(String(s || "").replace(/[✱*]/g, ""));
           const byLabel = new Map(Object.entries(saved.answers).map(([k, v]) => [key(k), v]));
           const remaining = [];
           let applied = 0;
@@ -2280,13 +2280,29 @@ function mountPanel() {
           if (applied) log(`Restored ${applied} answer(s) you'd already saved.`, "ok");
           qs = remaining;
         }
+        // The drafts collect-time already wrote for the questions still open. Seeding them
+        // here (same label match, ask ids don't survive across fills) is what stops the panel
+        // buying a SECOND draft for an essay Claude has already written — see the keyed
+        // filter below, which now only asks for questions that arrived without one.
+        if (saved && saved.found && saved.drafts) {
+          const byDraft = new Map(Object.entries(saved.drafts).map(([k, v]) => [key(k), v]));
+          let seeded = 0;
+          for (const q of qs) {
+            const d = byDraft.get(key(q.label));
+            if (d && !q.draft) { q.draft = d; seeded++; }
+          }
+          if (seeded) log(`Reused ${seeded} draft(s) already written for this job.`, "ok");
+        }
       } catch (_) { /* bridge off or no saved record — ask cold, as before */ }
       if (!qs.length) { log("Nothing else needed — review it and hit Submit.", "ok"); }
       else {
         // Drafts are a bonus, not a dependency: the bank lives on disk behind the bridge, so
         // with the bridge down we simply ask cold rather than failing the fill.
         let drafts = {};
-        const keyed = qs.filter(q => q.answer_key || q.draft);
+        // Only what we don't already have. A question carrying a draft (seeded above from the
+        // pending record) is served; sending it would spend a fresh Claude call to rewrite
+        // text already on disk, and handle_drafts asks one question per call.
+        const keyed = qs.filter(q => q.answer_key && !q.draft);
         if (keyed.length) {
           const res = await rpc({ type: "DRAFTS_FOR", items: keyed, context: { company: r.company } });
           drafts = (res && res.drafts) || {};

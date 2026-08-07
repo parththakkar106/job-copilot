@@ -1554,19 +1554,29 @@ def _pending_by_url(url: str) -> dict | None:
 
 
 async def handle_pending_answers(msg, ws):
-    """Give the on-page panel the answers Parth already saved for THIS job, so re-filling a
-    parked form by hand doesn't make him re-type them. Match the job by URL, then return
-    {label: answer} for every resolved question. Best-effort — no match => found:false."""
+    """Give the on-page panel everything already saved for THIS job, so re-filling a parked
+    form by hand doesn't make him re-type — or re-buy — it. Match the job by URL, then return
+    {label: answer} for every resolved question AND {label: draft} for the still-open ones
+    that collect-time drafting already wrote. Without the drafts the panel sees a question
+    with no draft on it and pays Claude to write a second one; worse, it asks per question
+    while collect batched them, so a multi-essay job costs several calls for text we already
+    have. Only UNSEEN questions offer a draft: `answer == ""` is a deliberate blank, and
+    pushing the draft back at him would undo that decision. Best-effort — no match =>
+    found:false."""
     req_id = msg.get("reqId")
     url = (msg.get("url") or "").strip()
-    out = {"found": False, "answers": {}}
+    out = {"found": False, "answers": {}, "drafts": {}}
     try:
         rec = await asyncio.to_thread(_pending_by_url, url)
         if rec:
+            questions = rec.get("questions", [])
             answers = {q.get("label"): q.get("answer")
-                       for q in rec.get("questions", [])
+                       for q in questions
                        if q.get("answer") not in (None, "")}
-            out = {"found": True, "answers": answers,
+            drafts = {q.get("label"): q.get("draft")
+                      for q in questions
+                      if q.get("answer") is None and q.get("draft")}
+            out = {"found": True, "answers": answers, "drafts": drafts,
                    "resume_override": rec.get("resume_override") or None}
     except Exception as e:
         print(f"[pending_answers] {url!r} failed: {redact(e)}", file=sys.stderr)

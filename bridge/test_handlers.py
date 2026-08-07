@@ -179,6 +179,33 @@ def run():
         assert any("application link" in c for c in calls), calls; checks += 1
         B.CLIENTS.clear()
 
+        # 9) pending_answers: what the on-page panel gets back for a job it's re-filling.
+        # Answers AND drafts both ride along — a draft left on disk that the panel can't see
+        # is one Claude re-writes and re-charges for, which is the whole point of persisting
+        # it at collect time.
+        B.pending_mod.save({
+            "dedup_key": "k9", "company": "Acme", "title": "SWE", "url": "https://x/k9",
+            "created": "2026-01-01T00:00:00", "status": "awaiting",
+            "questions": [
+                {"id": "a1", "label": "Why us?", "answer": "because", "draft": "stale draft"},
+                {"id": "a2", "label": "What excites you?", "answer": None, "draft": "a paid-for draft"},
+                {"id": "a3", "label": "Salary?", "answer": None},
+                {"id": "a4", "label": "Anything else?", "answer": "", "draft": "unwanted"},
+            ],
+        }, pend_dir)
+        ws = FakeWS()
+        asyncio.run(B.handle_pending_answers({"reqId": "r11", "url": "https://x/k9/application"}, ws))
+        ans = ws.sent[0]["answers"]
+        assert ans["found"] is True, ans; checks += 1
+        assert ans["answers"] == {"Why us?": "because"}, ans["answers"]; checks += 1
+        # An answered question's draft is dead weight (its card never renders), and a
+        # deliberate blank ("") must NOT be handed its draft back — that would re-open a
+        # decision he already made.
+        assert ans["drafts"] == {"What excites you?": "a paid-for draft"}, ans["drafts"]; checks += 1
+        ws = FakeWS()
+        asyncio.run(B.handle_pending_answers({"reqId": "r12", "url": "https://nowhere/x"}, ws))
+        assert ws.sent[0]["answers"] == {"found": False, "answers": {}, "drafts": {}}; checks += 1
+
     print(f"handlers: {checks}/{checks} checks passed")
 
 
