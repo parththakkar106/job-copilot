@@ -102,6 +102,7 @@ import drafter as drafter_mod  # Tier-2 essay drafting via the Claude Code CLI
 # The shared pipeline modules live in core/ (data-layer tools, not bridge ones), so put the
 # repo root on the path before importing them. triage.py is a sibling and needs no help.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from core import apply_log as apply_log_mod  # Workday entry-route policy (reads applied.json)
 from core import bank as bank_mod
 from core import paths as paths_mod       # the one place that knows where anything lives
 from core import profile as profile_mod  # resume track tags + display names for /resume
@@ -1642,6 +1643,28 @@ async def handle_bank_touch(msg, ws):
     await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": {"ok": ok}}))
 
 
+async def handle_workday_route(msg, ws):
+    """Which entry route the extension should take on a Workday posting.
+
+    The question is "have we applied to this TENANT before", and only applied.json can
+    answer it. Answering here instead of porting the rule into the extension keeps ONE
+    implementation: a JS copy would drift the first time the tenant regex or the
+    applied-row shape changed, and it would drift silently — a wrong route does not throw,
+    it just fills a form the slow way or replays an application it should not have.
+
+    Never fatal. A failed lookup answers `manual`, which is the route that needs nothing
+    to be true, so a bridge problem costs speed rather than correctness.
+    """
+    req_id = msg.get("reqId")
+    url = (msg.get("url") or "").strip()
+    out = {"tenant": None, "route": "manual", "reason": "route lookup failed"}
+    try:
+        out = await asyncio.to_thread(apply_log_mod.workday_route, url)
+    except Exception as e:
+        print(f"[workday_route] {url!r} failed: {redact(e)}", file=sys.stderr)
+    await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
+
+
 async def handle_notify(msg, ws):
     """Post a one-off status line to Telegram (orchestrator progress). Reply over the
     answers channel so background.js's requestBridge resolves."""
@@ -1875,7 +1898,8 @@ async def ws_handler(ws):
                 "collect": handle_collect, "approved": handle_approved,
                 "drafts": handle_drafts, "bank_touch": handle_bank_touch,
                 "hold_job": handle_hold_job, "pending_answers": handle_pending_answers,
-                "list_all": handle_list_all, "set_state": handle_set_state}
+                "list_all": handle_list_all, "set_state": handle_set_state,
+                "workday_route": handle_workday_route}
     hb = asyncio.create_task(heartbeat(ws))
     try:
         async for raw in ws:

@@ -206,6 +206,46 @@ def run():
         asyncio.run(B.handle_pending_answers({"reqId": "r12", "url": "https://nowhere/x"}, ws))
         assert ws.sent[0]["answers"] == {"found": False, "answers": {}, "drafts": {}}; checks += 1
 
+        # 10) workday_route: the extension asks Python which entry route to take, so the
+        # "have we applied to this tenant" rule has exactly one implementation.
+        # Stub load() rather than the route function itself — the point is to test the real
+        # policy against fixture rows, and reading the live applied.json here would make the
+        # result depend on whichever applications Parth happens to have sent.
+        real_load = B.apply_log_mod.load
+        adobe = ("https://adobe.wd5.myworkdayjobs.com/external_experienced/job/"
+                 "San-Francisco/Sr-Research-Engineer_R170796")
+        try:
+            B.apply_log_mod.load = lambda: []
+            ws = FakeWS()
+            asyncio.run(B.handle_workday_route({"reqId": "r13", "url": adobe}, ws))
+            a = ws.sent[0]["answers"]
+            assert a["tenant"] == "adobe", a; checks += 1
+            assert a["route"] == "autofillWithResume", a; checks += 1
+
+            B.apply_log_mod.load = lambda: [{"dedup_key": "k", "url": adobe}]
+            ws = FakeWS()
+            asyncio.run(B.handle_workday_route({"reqId": "r14", "url": adobe}, ws))
+            assert ws.sent[0]["answers"]["route"] == "useMyLastApplication", ws.sent[0]; checks += 1
+
+            # A lookup that blows up must still answer. manual is the route that requires
+            # nothing to be true, so a bridge fault costs speed, never correctness.
+            def boom():
+                raise RuntimeError("applied.json unreadable")
+            B.apply_log_mod.load = boom
+            ws = FakeWS()
+            asyncio.run(B.handle_workday_route({"reqId": "r15", "url": adobe}, ws))
+            assert ws.sent[0]["answers"]["route"] == "manual", ws.sent[0]; checks += 1
+        finally:
+            B.apply_log_mod.load = real_load
+
+        # A handler the dispatch table does not name is unreachable, and every test above
+        # would still pass because they call it directly. The table is built inside the
+        # connection handler, so read the source to check the wiring.
+        import inspect
+        wiring = inspect.getsource(B)
+        assert '"workday_route": handle_workday_route' in wiring, "handler not dispatched"
+        checks += 1
+
     print(f"handlers: {checks}/{checks} checks passed")
 
 

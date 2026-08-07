@@ -74,13 +74,21 @@ def applied_workday_tenants(rows: list[dict] | None = None) -> set[str]:
 
 
 def workday_route(url: str, rows: list[dict] | None = None) -> dict:
-    """Which entry route to take on a Workday posting: clone a past application, or fill fresh.
+    """Which entry route to take on a Workday posting.
 
     Returns {tenant, route, reason}. `route` is a key of the adapter's `entry.routes`.
-    Deliberately NOT a hard rule the driver must obey blindly — "Use My Last Application"
-    copies the PREVIOUS answers, including its resume track, so cloning across a stream
-    boundary would attach the quant PDF to an AI role. The caller still has to check the
-    stream matches before taking the clone; see the adapter's entry.clonePolicy.
+
+    Never `manual` for a real Workday URL. Both automated routes get Workday itself to do
+    the bulk of the typing — a clone replays a past application, and the autofill route
+    parses the PDF we were going to attach anyway — and the driver then reconciles the
+    result against the chosen resume track, overwriting only what is missing or disagrees.
+    Filling six steps from an empty form is strictly more work for a worse result, so it
+    is the answer only when there is no Workday tenant to reason about at all.
+
+    A clone copies the PREVIOUS answers including its resume, so it can land the quant PDF
+    on an AI role. That used to be grounds for refusing to clone; it is now the reconcile
+    pass's job, which is a better place for it — the refusal made the clone path
+    unreachable, since nothing recorded which track a past application used.
     """
     tenant = workday_tenant(url)
     if not tenant:
@@ -89,8 +97,8 @@ def workday_route(url: str, rows: list[dict] | None = None) -> dict:
     if tenant in seen:
         return {"tenant": tenant, "route": "useMyLastApplication",
                 "reason": f"prior application recorded for tenant '{tenant}'"}
-    return {"tenant": tenant, "route": "manual",
-            "reason": f"no prior application for tenant '{tenant}' — nothing to clone"}
+    return {"tenant": tenant, "route": "autofillWithResume",
+            "reason": f"no prior application for tenant '{tenant}' — seed it from the resume"}
 
 
 def cmd_add(a, rows):
