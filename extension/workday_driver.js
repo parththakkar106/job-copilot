@@ -1751,6 +1751,15 @@ export async function runWorkday(ctx) {
   try {
     let guard = 0;
     while (guard++ < 10) {
+      // STOP BETWEEN STEPS, never mid-step. The panel's Stop was only ever read by the
+      // submit loop, so during a fill it did nothing at all — and this driver is the one
+      // that runs for a minute. Checked at the step boundary because abandoning halfway
+      // through a date spinner or an open prompt tree leaves the widget in a state the
+      // next run has to clean up.
+      if (ctx.shouldStop && ctx.shouldStop()) {
+        return { ok: true, adapter: "workday", stopped: true, report, needsInput, steps,
+                 note: "Stopped at your request. Whatever was filled is left as it is." };
+      }
       const step = currentStep(adapter);
       if (!step) return { ok: false, adapter: "workday", error: "no progress bar — not on an apply flow page", report };
 

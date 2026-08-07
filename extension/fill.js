@@ -1188,6 +1188,9 @@ async function runFill(autoSubmit = false, opts = {}) {
 
       const wd = await runWorkday({
         adapter, tax, classify, dig, render, attachResume, rpc, bringIntoView,
+        // Read the flag through a function, not by value: this run started before Stop was
+        // pressed, so anything captured up front is false forever.
+        shouldStop: () => PANEL_STOP,
         profile: streamed, track, company,
         tenant: (location.hostname.match(/^([a-z0-9-]+)\.wd\d+\./i) || [])[1] || null,
       });
@@ -2264,7 +2267,8 @@ function mountPanel() {
     setBusy(true); PANEL_STOP = false; qsEl.textContent = ""; optEl.textContent = ""; log("Filling…");
     try {
       const r = await runFill(false, { mode: "panel" });
-      log(`Filled ${r.filled.length}.`, "ok");
+      if (r.stopped) log(`Stopped. ${r.filled.length} field(s) were filled before that.`, "warn");
+      else log(`Filled ${r.filled.length}.`, "ok");
       // Ashby wipes freshly-clicked radios a few seconds after fill (the resume-parse
       // re-render). The click already reported "filled", so re-apply from intent once the
       // form settles — otherwise the preview shows blanks and looks broken. Non-blocking so
@@ -2398,7 +2402,15 @@ function mountPanel() {
     } catch (e) { log("submit error: " + ((e && e.message) || e), "err"); }
     setBusy(false);
   };
-  $("#stop").onclick = () => { PANEL_STOP = true; };
+  // Stop takes effect at the next safe boundary — between submit passes, or between
+  // Workday steps — so it is never instant. Say so, because a button that sets a flag and
+  // changes nothing on screen is indistinguishable from a button that does not work, which
+  // is exactly how this one read while the fill path ignored the flag entirely.
+  $("#stop").onclick = () => {
+    if (PANEL_STOP) return;
+    PANEL_STOP = true;
+    log("Stopping — finishing the current step first…", "warn");
+  };
 
   // "I filled part of this here but submitted it myself." Without this the role stays in the
   // queue and tomorrow's run applies to it a SECOND time (some ATSs reject that outright).

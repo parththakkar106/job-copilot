@@ -1317,5 +1317,27 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
   ok(WORKDAY.experience.skillsSearchSubmit === "Enter", "the adapter asks for it by name");
 }
 
+// ── Stop actually stops ──────────────────────────────────────────────────────
+// The panel's Stop flag was read only by the submit loop, so during a fill it did
+// nothing — and the Workday driver is the one that runs for a minute.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  ok(/ctx\.shouldStop\s*&&\s*ctx\.shouldStop\(\)/.test(drvSrc),
+     "the step loop asks whether to stop");
+  // It must be checked at the TOP of the loop, before the step is dispatched — stopping
+  // mid-widget leaves a date spinner or an open prompt tree for the next run to clean up.
+  const loop = drvSrc.slice(drvSrc.indexOf("while (guard++ < 10)"));
+  ok(loop.indexOf("shouldStop") < loop.indexOf("stepKind(adapter, step)"),
+     "and asks before dispatching the step, not during it");
+
+  const fillSrc = readFileSync(new URL("./fill.js", import.meta.url), "utf8");
+  // Passed as a FUNCTION: the run starts before Stop is pressed, so a captured value is
+  // false for the whole run.
+  ok(/shouldStop:\s*\(\)\s*=>\s*PANEL_STOP/.test(fillSrc),
+     "the flag is passed as a getter, not by value");
+  ok(/#stop"\)\.onclick[\s\S]{0,300}?log\(/.test(fillSrc),
+     "pressing Stop says something — a silent flag reads as a dead button");
+}
+
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);
