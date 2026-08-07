@@ -173,6 +173,16 @@ export const WORKDAY = {
     // Pages are identified by NAME, never by number, for the same reason. Matched loosely
     // (letters only, substring) because tenants reword them: "My Experience" appears as
     // "Experience" and "My Information" as "Personal Information" on some boards.
+    // The progress bar updates BEFORE the page behind it renders, so arriving at a step is
+    // not the same as the step being ready. Reading too early reports every control as
+    // missing — live, step 3 came back with "no Add Another button", "no listbox button"
+    // and "file input not found" simultaneously, which is not three broken selectors, it
+    // is one empty page. Where a step has a known container, wait for it.
+    stepPages: {
+      myInformation: '[data-automation-id="applyFlowMyInfoPage"]',
+      myExperience: '[data-automation-id="applyFlowMyExpPage"]',
+    },
+
     stepKinds: {
       myInformation: ["My Information", "Personal Information", "Contact Information"],
       myExperience: ["My Experience", "Experience", "Work Experience"],

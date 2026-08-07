@@ -379,9 +379,15 @@ async function fillMyExperience(ctx, report) {
   const exp = adapter.experience;
   const history = dig(profile, "work_history") || [];
 
+  // HOW MANY ROWS ALREADY EXIST. The autofill route arrives with Workday's own parse of
+  // the PDF, so the jobs are usually already there. Clicking Add Another per entry
+  // regardless would append blank duplicates after the parsed ones.
+  const existingRows = document.querySelectorAll(exp.work.jobTitle).length;
+  if (existingRows) report.push(["work", `${existingRows} row(s) already parsed from the CV`]);
+
   for (let i = 0; i < history.length; i++) {
     const job = history[i];
-    if (i > 0) {
+    if (i >= existingRows && i > 0) {
       const add = document.querySelector(exp.work.addAnother);
       if (!add) { report.push([`work[${i}]`, "SKIPPED no Add Another button"]); break; }
       add.click();
@@ -405,8 +411,24 @@ async function fillMyExperience(ctx, report) {
       }
       if (val == null || val === "" || val === "FILL_ME") continue;
 
-      if (domKey === "startDate" || domKey === "endDate") {
-        if (domKey === "endDate" && job.current) continue;   // field is gone by design
+      // Reconcile here too, and it matters MORE on this step than on step 1. Workday's
+      // parse has usually already filled these, and rewriting a date is the single most
+      // damaging thing this driver can do: a plain write displays without committing and
+      // poisons the section, so a needless overwrite of a correct date turns a working
+      // field into one that has to be cleared and retyped before it will validate.
+      const isDate = domKey === "startDate" || domKey === "endDate";
+      if (isDate && job.current && domKey === "endDate") continue;  // field is gone by design
+
+      const current = readWrapperValue(ctx, wrapper, isDate ? "date" : "text");
+      const d = reconcileDecision(isDate ? "date" : "text", current, val, adapter);
+      if (d.action !== "write") {
+        report.push([`work[${i}].${domKey}`,
+                     d.action === "keep" ? `kept "${String(current).trim().slice(0, 30)}"`
+                                         : `skipped: ${d.why}`]);
+        continue;
+      }
+
+      if (isDate) {
         const res = await setDate(ctx, cssPathOf(wrapper), val);
         report.push([`work[${i}].${domKey}`, res.ok ? "set" : `FAILED ${res.reason}`]);
       } else {
@@ -708,6 +730,21 @@ export function reconcileDecision(kind, current, intended, adapter) {
   return { action: "write", why: `differs (form had "${String(current).trim()}")` };
 }
 
+// Same idea as readFieldValue, for a wrapper we already hold rather than a configured
+// field — the repeating work-history rows are found by index, not by selector.
+function readWrapperValue(ctx, wrapper, kind) {
+  const { adapter } = ctx;
+  if (!wrapper) return null;
+  if (kind === "date") {
+    const mm = wrapper.querySelector(adapter.date.month);
+    const yy = wrapper.querySelector(adapter.date.year);
+    if (!mm || !yy || !mm.value || !yy.value) return null;
+    return `${mm.value}/${yy.value}`;
+  }
+  const el = wrapper.querySelector("input,textarea");
+  return el ? el.value : null;
+}
+
 // What the form currently holds for one configured field. null means "cannot tell", which
 // callers must treat as blank — writing over an unknown is recoverable, trusting one is not.
 function readFieldValue(ctx, f) {
@@ -802,6 +839,18 @@ export function isFinalStep(adapter, step) {
   if (!step) return true;                       // unknown position: never advance
   if (Number.isFinite(step.of) && step.of > 0) return step.n >= step.of;
   return step.n >= adapter.multiStep.submitStep;
+}
+
+// Wait for the step's page to actually exist before touching it. The progress bar moves
+// first, so without this the fillers run against an empty document and report every
+// control as missing — which reads as a pile of broken selectors rather than one early
+// read. Falls back to "any form field has rendered" for the steps with no known container.
+async function awaitStepReady(ctx, kind, timeoutMs = 20000) {
+  const { adapter } = ctx;
+  const marker = (adapter.multiStep.stepPages || {})[kind];
+  if (marker && await waitFor(marker, timeoutMs)) return true;
+  const any = await waitFor('[data-automation-id^="formField-"]', marker ? 4000 : timeoutMs);
+  return !!any;
 }
 
 // A real wizard step, not a route page wearing the same progress bar. currentStep already
@@ -1032,6 +1081,9 @@ export async function runWorkday(ctx) {
       // reported three missing selectors that were all simply on a different page.
       // The number depends on the entry route; the name does not.
       const which = stepKind(adapter, step);
+      if (!await awaitStepReady(ctx, which)) {
+        report.push([`step${step.n}`, `"${step.name}" never rendered any fields`]);
+      }
       if (which === "myInformation") await fillMyInformation(ctx, report);
       else if (which === "myExperience") await fillMyExperience(ctx, report);
       // Steps 1 and 2 also carry tenant questions (Adobe puts a required "Have you been

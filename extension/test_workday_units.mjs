@@ -138,6 +138,21 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   delete globalThis.location;
 }
 
+// ── step readiness: the progress bar moves before the page renders ───────────
+// Live, step 3 came back with "no Add Another button", "no listbox button" and "file input
+// not found" all at once. That is not three broken selectors, it is one empty page read
+// too early — and step 1 had already shown the same signature before it got a wait.
+{
+  ok(WORKDAY.multiStep.stepPages.myInformation, "adapter: My Information has a page marker");
+  ok(WORKDAY.multiStep.stepPages.myExperience, "adapter: My Experience has a page marker");
+  // The markers must correspond to the step kinds the dispatcher uses, or the wait silently
+  // does nothing for the step it was added for.
+  for (const kind of Object.keys(WORKDAY.multiStep.stepPages)) {
+    ok(kind in WORKDAY.multiStep.stepKinds,
+       `adapter: page marker "${kind}" names a real step kind`);
+  }
+}
+
 // ── derived answers: "have you worked here before?" ──────────────────────────
 // Required on every Workday tenant, and no static profile field can answer it — the right
 // answer depends on who is asking. The taxonomy resolves a fixed dotted path, so the only
