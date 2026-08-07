@@ -402,6 +402,20 @@ export const WORKDAY = {
     skipLabelPattern: /upload either|drop files|select files|\b\d+\s*MB max\b/i,
   },
 
+  // Questions whose correct answer depends on WHO IS ASKING, so no fixed profile field can
+  // hold it. The taxonomy resolves a static dotted path, so the only answer it could give
+  // here is a hardcoded "No" — a false statement the day he applies to a former employer,
+  // and one nothing would ever flag. Resolved from work_history instead; an undecidable
+  // case is asked rather than guessed.
+  //
+  // Observed live on Adobe (formField-candidateIsPreviousWorker, required, Yes/No radios).
+  // The wording varies by tenant, hence the pattern rather than an id.
+  derivedQuestions: [
+    { key: "priorEmployer",
+      pattern: /\b(have you|were you)\b.*\b(employed|worked)\b.*\b(here|us|for us|in the past|previously|before)\b|\bprevious(ly)? (employed|worked)\b.*\b(by|at|for)\b/i,
+      resolve: "priorEmployerAnswer" },
+  ],
+
   // ── promptTree: the widget that needs CDP ───────────────────────────────────
   // Workday's hierarchical prompt. Used by "How Did You Hear About Us?", Field of Study,
   // Skills. Everything about it is a trap:

@@ -138,6 +138,53 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   delete globalThis.location;
 }
 
+// ── derived answers: "have you worked here before?" ──────────────────────────
+// Required on every Workday tenant, and no static profile field can answer it — the right
+// answer depends on who is asking. The taxonomy resolves a fixed dotted path, so the only
+// answer it could give is a hardcoded "No", which is a false statement about a person the
+// day he applies to a former employer and one nothing would ever flag.
+{
+  // These share a module-level const and call each other, so evaluate them as one unit —
+  // extracting them singly leaves COMPANY_NOISE undefined at call time.
+  const noise = src.match(/const COMPANY_NOISE = [^;]+;/)[0];
+  const { sameCompany, companyCore, priorEmployerAnswer } = eval(
+    `(() => { ${noise}
+              ${extract("companyCore")}
+              ${extract("sameCompany")}
+              ${extract("priorEmployerAnswer")}
+              return { sameCompany, companyCore, priorEmployerAnswer }; })()`);
+  const dig = (p, k) => p[k];
+  const ask = (company, employers) =>
+    priorEmployerAnswer({ company, dig, profile: { work_history: employers.map(e => ({ employer: e })) } });
+
+  // Names never match exactly across systems.
+  ok(sameCompany("Adobe", "Adobe Inc."), "a legal suffix is not a different company");
+  ok(sameCompany("Adobe", "adobe"), "case is not a difference");
+  ok(sameCompany("Northwind Capital", "Northwind Capital & Co."), "punctuation and & are stripped");
+  ok(!sameCompany("Adobe", "Google"), "different companies stay different");
+  ok(!sameCompany("Adobe", ""), "an empty name never matches");
+  eq(companyCore("Acme Technologies, Inc."), "acme", "noise words are stripped to a core");
+
+  // Token containment, not substring — "co" or "ai" must not swallow everything.
+  ok(!sameCompany("AI", "Adobe"), "a short name does not match by letters");
+  ok(sameCompany("Adobe", "Adobe Systems"), "a longer form matches by whole words");
+
+  // THE ANSWER. "No" is the ordinary case and "Yes" is the one that must not be wrong.
+  eq(ask("Adobe", ["Northwind Capital", "Some Startup"]), "No",
+     "never worked there -> No");
+  eq(ask("Northwind Capital", ["Northwind Capital", "Some Startup"]), "Yes",
+     "THE CASE A HARDCODED 'No' WOULD GET WRONG: a former employer -> Yes");
+  eq(ask("Northwind Capital & Co.", ["Northwind Capital"]), "Yes",
+     "the Yes still lands when the asker's name is spelled differently");
+
+  // Undecidable must be ASKED, never guessed. A wrong answer here is a false statement on
+  // a signed application; a pause costs one tap.
+  eq(ask("", ["Northwind Capital"]), null, "an unknown asker is undecidable");
+  eq(ask("Adobe", []), null, "an empty work history is undecidable, NOT an automatic No");
+  eq(priorEmployerAnswer({ company: "Adobe", dig, profile: {} }), null,
+     "a profile with no work history at all is undecidable");
+}
+
 // ── the resume upload is not a question ──────────────────────────────────────
 // It renders as a formField- wrapper, so the taxonomy pass saw it as unanswered and paused
 // the whole run for input on a field that had just been filled successfully. Its wrapper

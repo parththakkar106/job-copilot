@@ -480,6 +480,52 @@ async function fillMyExperience(ctx, report) {
 // Anything the taxonomy will not answer deterministically is left for the human rather
 // than guessed; these are attestations and EEO, where a wrong auto-answer is a false
 // statement on a real application.
+// ── derived answers ──────────────────────────────────────────────────────────
+// Some questions have a correct answer that no static profile field can hold, because it
+// depends on WHICH company is asking. "Have you been employed by Adobe in the past?" is
+// the one that turns up on every Workday tenant, and it is required.
+//
+// The taxonomy cannot express this: a deterministic rule resolves a fixed dotted path, so
+// the only way to answer it there is a hardcoded "No" — which is a false statement about a
+// person the day he applies to a former employer, and nothing would ever catch it. Derive
+// it from work_history instead, which is the only honest source.
+
+// Company names never match exactly across systems: "Adobe" against "Adobe Inc.", a tenant
+// slug against a display name. Strip to comparable cores.
+const COMPANY_NOISE = /\b(inc|llc|ltd|limited|corp|corporation|co|plc|gmbh|sa|nv|group|holdings|technologies|technology|labs|the)\b/g;
+export function companyCore(s) {
+  return String(s == null ? "" : s).toLowerCase()
+    .replace(/[.,&'’()]/g, " ").replace(COMPANY_NOISE, " ")
+    .replace(/\s+/g, " ").trim();
+}
+
+export function sameCompany(a, b) {
+  const x = companyCore(a), y = companyCore(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // Token containment, not substring: "adobe" must not match "adobe systems research" by
+  // accident of letters, but should match it by words. Guards against short names like
+  // "co" or "ai" swallowing everything.
+  const xs = x.split(" ").filter(Boolean), ys = y.split(" ").filter(Boolean);
+  if (!xs.length || !ys.length) return false;
+  const shorter = xs.length <= ys.length ? xs : ys, longer = shorter === xs ? ys : xs;
+  return shorter.every(t => longer.includes(t));
+}
+
+// "Have you worked here before?" answered from work history. Returns null when it cannot
+// be decided, so the question falls through to being ASKED rather than guessed at.
+export function priorEmployerAnswer(ctx) {
+  const { profile, dig, company, tenant } = ctx;
+  const asking = String(company || tenant || "").trim();
+  if (!asking) return null;
+  const history = dig(profile, "work_history") || [];
+  if (!Array.isArray(history) || !history.length) return null;
+  const worked = history.some(e => e && sameCompany(e.employer, asking));
+  return worked ? "Yes" : "No";
+}
+
+const DERIVED = { priorEmployerAnswer };
+
 async function fillQuestions(ctx, report, needsInput) {
   const { adapter, profile, tax, classify, render, company } = ctx;
   const wrappers = [...document.querySelectorAll('[data-automation-id^="formField-"]')];
@@ -509,6 +555,23 @@ async function fillQuestions(ctx, report, needsInput) {
     const label = extractLabel(w, adapter);
     if (!label) continue;
     if (cq.skipLabelPattern && cq.skipLabelPattern.test(label)) continue;
+
+    // Derived answers run BEFORE the taxonomy, because the taxonomy structurally cannot
+    // produce them — and after the skips, so they never fire on a widget that is not a
+    // question. A null answer means undecidable and falls through to being asked.
+    const rule = (adapter.derivedQuestions || []).find(r => r.pattern.test(label));
+    if (rule) {
+      const answer = (DERIVED[rule.resolve] || (() => null))(ctx);
+      if (answer != null) {
+        const hit = clickChoiceByText(w, answer);
+        report.push([label.slice(0, 45), hit ? `set ${answer} (derived)`
+                                             : `FAILED no "${answer}" option`]);
+        if (!hit) needsInput.push({ aid, label, bucket: "choice-miss" });
+        continue;
+      }
+      // Undecidable: say so in the report, then let it be asked like anything else.
+      report.push([label.slice(0, 45), "could not derive — asking"]);
+    }
 
     const c = classify(label, company, profile, tax);
     if (c.bucket !== "deterministic" || !c.filled) {
