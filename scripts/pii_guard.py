@@ -133,6 +133,20 @@ SHAPE_PATTERNS: list[tuple[str, str]] = [
      r"(?i:skipped a live )[A-Z][A-Za-z]+ record|"
      r"(?i:\bthe real )[A-Z][A-Za-z]+ (?i:run|failure)\b",
      "application outcome"),
+
+    # A THIRD PARTY's LinkedIn profile. Everything else this guard protects is Parth's own
+    # data; outreach contacts are the one category that belongs to somebody else, which
+    # makes them the most important thing to keep out of a public repo and the only category
+    # nobody would think to check. A real slug reads `/in/firstname-lastname-a1b2c3`, so the
+    # shape is a hyphenated multi-part slug — not the bare `/in/foo` that appears in prose
+    # explaining the URL format.
+    #
+    # `example-` is reserved for invented fixtures, exactly as 555 and example.com are
+    # reserved above: core/contacts.py's selftest needs realistic profile URLs to test
+    # against, and mangling them until they stop looking real would stop them testing
+    # anything. Anything NOT so prefixed is presumed to be a person.
+    (r"linkedin\.com/in/(?!example-)[a-z0-9]+(?:-[a-z0-9]+){1,}",
+     "someone else's LinkedIn profile"),
 ]
 
 # Mutually exclusive answers to the same question. Nobody is both Male and Female, so a
@@ -395,6 +409,47 @@ def derive_company_stats() -> list[tuple[str, str]]:
     return out
 
 
+def derive_contact_patterns() -> list[tuple[str, str]]:
+    """Hunt the NAMES of real outreach contacts, read from outreach.json.
+
+    The shape check above catches a profile URL. It cannot catch a contact's NAME written
+    into a comment or a test fixture ("verified against <a real recruiter>"), because a name
+    has no shape — and unlike every other pattern here, these names are not in profile.json
+    to be derived from. They come from the one file under HOME that holds somebody else's
+    data rather than Parth's.
+
+    Full names only. A first name alone is far too common to hunt without flagging ordinary
+    prose, and this guard is bypassed the moment it cries wolf. Never fatal: no outreach
+    file, or an unreadable one, contributes nothing.
+    """
+    path = paths.OUTREACH
+    if not path.exists():
+        return []
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[pii-guard] could not read {path.name} ({e}); contact names not hunted",
+              file=sys.stderr)
+        return []
+    if isinstance(rows, dict):
+        rows = list(rows.values())
+    out: list[tuple[str, str]] = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("name") or "").strip()
+        # Two real parts, neither generic — the same bar derive_patterns applies to a school.
+        parts = [p for p in re.split(r"\s+", name) if len(p) > 2 and p.lower() not in GENERIC]
+        if len(parts) >= 2:
+            _add_ci(out, name, "an outreach contact's name", word=True)
+        url = str(r.get("profile_url") or "").strip()
+        if "/in/" in url:
+            slug = url.split("/in/", 1)[1].strip("/").split("?")[0]
+            if len(slug) > 3:
+                _add_ci(out, slug, "an outreach contact's profile")
+    return out
+
+
 def load_extra() -> list[tuple[str, str]]:
     """Extra regexes from `pii_extra.txt` in the data dir: one per line, # comments.
 
@@ -436,6 +491,7 @@ def build_patterns() -> tuple[list[tuple[str, str]], bool]:
             print(f"[pii-guard] could not read profile.json ({e}); shape checks only",
                   file=sys.stderr)
     pats += derive_company_stats()
+    pats += derive_contact_patterns()
     pats += load_extra()
     return pats, personal
 

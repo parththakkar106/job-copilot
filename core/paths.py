@@ -148,6 +148,10 @@ def is_configured() -> bool:
 OUT = STATE / "out"
 QUEUE = OUT / "queue.json"
 APPLIED = STATE / "applied.json"
+# Outreach contacts: OTHER PEOPLE's names, headlines and profile URLs, gathered from public
+# search results. Everything else under HOME is Parth's own data; this is the one file that
+# is somebody else's, which makes it the most important one to keep out of the checkout.
+OUTREACH = STATE / "outreach.json"
 RESUMES = STATE / "resumes"
 # Under HOME these sit together at the top level; without it they keep the exact places
 # they have always occupied under bridge/, so an existing checkout finds its own files.

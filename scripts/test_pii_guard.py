@@ -6,6 +6,7 @@ the guard would then flag its own test file.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -351,6 +352,57 @@ def main() -> int:
     finally:
         G.paths.COMPANIES_WRITE = orig
     checks += 1
+
+    # --- outreach contacts: SOMEBODY ELSE's data ----------------------------------------
+    # The only category this repo handles that does not belong to its author, and the only
+    # one nobody would think to check. Two halves: a shape rule for the profile URL, and a
+    # derived rule for the name (a name has no shape, and unlike everything else here these
+    # names are not in profile.json to be derived from).
+    shape = list(G.SHAPE_PATTERNS)
+    assert G.scan([("f.py", 1, 'url = "https://www.linkedin.com/in/dana-whitfield-4c1"')],
+                  shape), "a third-party profile URL must flag"
+    checks += 1
+    assert G.scan([("f.py", 1, "# via ca.linkedin.com/in/priya-n-8a2aa882")], shape), \
+        "the country subdomains are the same profile"
+    checks += 1
+    # `example-` is reserved for invented fixtures, exactly as 555 and example.com are.
+    # core/contacts.py's selftest needs realistic profile URLs to test its parser against,
+    # and mangling them until they stop looking real would stop them testing anything.
+    assert not G.scan([("f.py", 1, '"link": "https://www.linkedin.com/in/example-dana"')],
+                      shape), "the reserved fixture prefix must not flag"
+    checks += 1
+    # Prose explaining the URL format is not a person: a real slug is multi-part.
+    assert not G.scan([("f.py", 1, "profiles live under linkedin.com/in/<slug>")], shape), \
+        "a bare format example must not flag"
+    checks += 1
+
+    with tempfile.TemporaryDirectory() as td2:
+        op = Path(td2) / "outreach.json"
+        orig_out = G.paths.OUTREACH
+        try:
+            G.paths.OUTREACH = op
+            assert G.derive_contact_patterns() == [], "no outreach file is not fatal"
+            checks += 1
+            op.write_text(json.dumps([
+                {"name": "Dagny Halloran",
+                 "profile_url": "https://www.linkedin.com/in/dagny-halloran-77"},
+                {"name": "Bo", "profile_url": ""},          # one short part: too generic
+            ]), encoding="utf-8")
+            C = G.derive_contact_patterns()
+            assert G.scan([("f.py", 1, "# verified against Dagny Halloran's profile")], C), \
+                "a real contact's name must flag"
+            checks += 1
+            assert G.scan([("f.py", 1, "slug = 'dagny-halloran-77'")], C), \
+                "the slug alone must flag"
+            checks += 1
+            assert not G.scan([("f.py", 1, "let bo = 1;")], C), \
+                "a one-part name is too generic to hunt"
+            checks += 1
+            op.write_text("{ not json", encoding="utf-8")
+            assert G.derive_contact_patterns() == [], "a corrupt outreach file is not fatal"
+            checks += 1
+        finally:
+            G.paths.OUTREACH = orig_out
 
     print(f"pii_guard: {checks}/{checks} checks passed")
     return 0
