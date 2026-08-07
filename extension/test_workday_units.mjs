@@ -939,5 +939,27 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
      "the scroll budget covers the measured 320-option list at the 0.75 overlap");
 }
 
+// ── did the selection stick? ─────────────────────────────────────────────────
+// The single-select tree and the multi-select Field of Study report success differently,
+// and reading only the pill calls a working multi-select a failure.
+{
+  const committedValue = eval(`(${extract("committedValue")})`);
+  const pt = WORKDAY.promptTree;
+  const wrap = (text, pill) => ({ innerText: text, querySelector: () => pill });
+
+  eq(committedValue(wrap("How Did You Hear About Us?\nAdobe.com",
+                         { innerText: "Adobe.com" }), pt), "Adobe.com",
+     "a single-select commits via its pill");
+  eq(committedValue(wrap("Field of Study\n1 item selected", null), pt), "1 item selected",
+     "a multi-select commits via its own summary line");
+  ok(committedValue(wrap("Field of Study\n2 items selected", null), pt),
+     "the plural summary counts too");
+  eq(committedValue(wrap("Field of Study\n0 items selected", null), pt), null,
+     "zero selected is not a commit");
+  eq(committedValue(wrap("Field of Study", null), pt), null, "an untouched field is not a commit");
+  eq(committedValue(wrap("Field of Study", { innerText: "  " }), pt), null,
+     "an empty pill is not a commit");
+}
+
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);

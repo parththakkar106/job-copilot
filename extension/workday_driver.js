@@ -112,13 +112,24 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
   if (!btn) return { ok: false, reason: "no listbox button" };
 
   btn.click();
-  await sleep(700);
 
-  const boxes = [...document.querySelectorAll(dd.optionScope)];
+  const readOpts = () => {
+    const out = [];
+    for (const b of document.querySelectorAll(dd.optionScope)) out.push(...b.querySelectorAll(dd.option));
+    return out.filter(o => !o.matches(dd.excludeOption) &&
+                           !dd.placeholderText.test((o.innerText || "").trim()));
+  };
+
+  // POLL, do not sleep a fixed 700ms. Dependent lists are refetched when their parent
+  // changes — setting Country to United States of America reloads State — and this driver
+  // writes Country immediately before State, so a fixed wait is a race it will sometimes
+  // lose. Seen live: identical run, State set fine once and "no option matched" the next.
   let opts = [];
-  for (const b of boxes) opts.push(...b.querySelectorAll(dd.option));
-  opts = opts.filter(o => !o.matches(dd.excludeOption) &&
-                          !dd.placeholderText.test((o.innerText || "").trim()));
+  for (let i = 0; i < 12; i++) {
+    opts = readOpts();
+    if (opts.length) break;
+    await sleep(300);
+  }
 
   const want = String(wanted).trim().toLowerCase();
   const txt = (o) => (o.innerText || "").trim();
@@ -128,8 +139,11 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
 
   if (!hit) {
     btn.click();                                   // close, leave the field untouched
-    return { ok: false, reason: "no option matched",
-             wanted, sample: opts.slice(0, 8).map(txt) };
+    // An empty list and a list without the answer are different failures — one is timing,
+    // the other is vocabulary — and the old message could not tell them apart.
+    return { ok: false, wanted, sample: opts.slice(0, 8).map(txt),
+             reason: opts.length ? `no option matched (of ${opts.length})`
+                                 : "list never populated" };
   }
   hit.click();
   await sleep(600);
@@ -198,6 +212,7 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
 
   const rows = () => [...document.querySelectorAll(`${pt.portal} ${pt.row}`)];
   const rowText = (el) => (el.innerText || "").trim();
+  let lastHit = null;
 
   for (let depth = 0; depth < path.length; depth++) {
     // A level may offer ALTERNATES: the profile's own wording plus fallbacks, tried in
@@ -242,6 +257,7 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
                wanted: wants, sawCount: seen.length, near: nearest(wants, seen) };
     }
 
+    lastHit = hit;
     const r = hit.getBoundingClientRect();
     // Leaves commit only when the RADIO is hit; category rows drill in from anywhere.
     const x = isLeaf ? Math.round(r.left + (pt.radioOffsetFromLeft ?? 22))
@@ -250,10 +266,43 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
     await sleep(1100);
   }
 
-  const committed = wrap.querySelector(pt.selected);
-  return committed
-    ? { ok: true, value: (committed.innerText || "").trim() }
-    : { ok: false, reason: "clicked through but nothing committed" };
+  const c = committedValue(wrap, pt);
+  return c ? { ok: true, value: c }
+           : { ok: false, reason: "clicked through but nothing committed",
+               widget: describePromptRow(wrap, pt, lastHit) };
+}
+
+// Did the selection stick? Two signals, because one shape does not cover both users of
+// this widget: a single-select tree renders a `selectedItem` pill, while the multi-select
+// Field of Study only updates its own summary line to "N items selected". Reading the
+// pill alone reports failure on a multi-select that worked perfectly.
+export function committedValue(wrap, pt) {
+  const pill = wrap.querySelector(pt.selected);
+  if (pill && (pill.innerText || "").trim()) return (pill.innerText || "").trim();
+  const m = (wrap.innerText || "").match(/(\d+)\s+items?\s+selected/i);
+  if (m && Number(m[1]) > 0) return m[0];
+  return null;
+}
+
+// Failure diagnostic, same bargain as describeDateWidget: a click that lands but does not
+// commit is indistinguishable from one that missed, and every guess at the cause costs a
+// live run. Report the geometry and the row's own children so the next run says which.
+export function describePromptRow(wrap, pt, row) {
+  const box = (e) => { const r = e.getBoundingClientRect();
+    return { l: Math.round(r.left), t: Math.round(r.top),
+             w: Math.round(r.width), h: Math.round(r.height) }; };
+  const out = { field: (wrap.innerText || "").trim().slice(0, 60),
+                clickedAt: pt.radioOffsetFromLeft ?? 22 };
+  if (!row) return { ...out, row: "gone after click" };
+  out.row = box(row);
+  out.children = [...row.querySelectorAll("*")].slice(0, 12).map(e => ({
+    tag: e.tagName.toLowerCase(),
+    aid: e.getAttribute("data-automation-id"),
+    role: e.getAttribute("role"),
+    checked: e.getAttribute("aria-checked") ?? e.getAttribute("aria-selected") ?? e.checked,
+    ...box(e),
+  })).filter(e => e.w > 0 || e.aid || e.role);
+  return out;
 }
 
 // Split month/year spinner.
@@ -602,7 +651,8 @@ async function fillEducationField(ctx, report, key, sel, value, alternates = [])
     const res = await pickPromptTree(ctx, sel, [[String(value), ...alternates]]);
     report.push([label, res.ok ? `set ${res.value}` : `FAILED ${res.reason}` +
       (res.near && res.near.length ? ` — closest of ${res.sawCount} options: ${res.near.join(", ")}`
-                                   : res.sawCount ? ` (saw ${res.sawCount} options, none similar)` : "")]);
+                                   : res.sawCount ? ` (saw ${res.sawCount} options, none similar)` : "") +
+      (res.widget ? ` ${JSON.stringify(res.widget)}` : "")]);
   } else {
     const el = wrapper.querySelector("input,textarea");
     setTextNative(el, String(value));
