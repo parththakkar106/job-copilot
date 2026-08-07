@@ -179,6 +179,127 @@ ok(WORKDAY.customQuestion.knownCoreIds.includes("formField-source"),
 ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousWorker"),
    "adapter: tenant question NOT in core ids, so the taxonomy pass sees it");
 
+// ── reconcile: keep, overwrite, or leave alone ───────────────────────────────
+// The form arrives pre-filled by a clone or the resume parser, so this rule decides what
+// survives onto a real application. Both directions cost: a false "same" leaves a wrong
+// answer standing, and a false "differs" rewrites a correct field — which on a date means
+// clearing and retyping the one widget that poisons itself when written wrong.
+{
+  const src2 = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const grab = (name) => {
+    const i = src2.search(new RegExp(`function ${name}\\s*\\(`));
+    let depth = 0, j = src2.indexOf("{", i);
+    for (; j < src2.length; j++) {
+      if (src2[j] === "{") depth++;
+      else if (src2[j] === "}" && --depth === 0) break;
+    }
+    return src2.slice(i, j + 1);
+  };
+  // These call each other and the two small helpers, so evaluate them as one unit.
+  const bundle = ["digitsOf", "tidy"].map(n => {
+    const m = src2.match(new RegExp(`const ${n} = [^;]+;`));
+    return m ? m[0] : "";
+  }).join("\n") + "\n" + ["toMonthYear", "isBlankValue", "sameValue", "reconcileDecision"]
+    .map(grab).join("\n");
+  const { isBlankValue, sameValue, reconcileDecision } =
+    eval(`(() => { ${bundle}; return { isBlankValue, sameValue, reconcileDecision }; })()`);
+
+  const A = WORKDAY;
+  const act = (kind, cur, want) => reconcileDecision(kind, cur, want, A).action;
+
+  // Blank detection. "Select One" is a listbox that looks full and is empty; a prompt tree
+  // announces itself with a "1 item selected" badge and is unset without one.
+  ok(isBlankValue("text", "", A), "an empty text field is blank");
+  ok(isBlankValue("text", "   ", A), "whitespace is blank");
+  ok(isBlankValue("listbox", "Select One", A), "the listbox placeholder is blank");
+  ok(!isBlankValue("listbox", "United States of America", A), "a chosen option is not blank");
+  ok(isBlankValue("promptTree", "How Did You Hear About Us?", A),
+     "a prompt tree with no badge is unset however much text it shows");
+  ok(!isBlankValue("promptTree", "1 item selected", A), "the badge means committed");
+
+  // Missing -> write. This is the ordinary case on a cold autofill.
+  eq(act("text", "", "Springfield"), "write", "an empty field gets written");
+  eq(act("listbox", "Select One", "Ohio"), "write", "a placeholder dropdown gets written");
+  eq(act("text", null, "Springfield"), "write", "an unreadable field is treated as empty");
+
+  // Agreeing -> keep. Every one of these was pre-filled correctly and must not be retyped.
+  eq(act("text", "Springfield", "Springfield"), "keep", "identical text is kept");
+  eq(act("text", " springfield ", "Springfield"), "keep", "case and padding are not a disagreement");
+
+  // Workday reformats phone numbers on blur and splits the country code into its own
+  // control. Comparing as text would rewrite a correct number on every run.
+  eq(act("phone", "(555) 123-4567", "+1 555-123-4567"), "keep", "a reformatted phone is the same phone");
+  eq(act("phone", "555-123-4567", "5551234567"), "keep", "separators do not matter");
+  eq(act("phone", "(555) 123-9999", "+1 555-123-4567"), "write", "a genuinely different number is rewritten");
+
+  // Option text is the form's wording, not ours.
+  eq(act("listbox", "Bachelor's Degree (BA/BS)", "Bachelor's Degree"), "keep",
+     "a longer option label containing our value counts as agreed");
+  eq(act("listbox", "Master's Degree", "Bachelor's Degree"), "write", "a different option is rewritten");
+
+  // Dates arrive as ISO from the profile and as spinner text from the form.
+  eq(act("date", "01/2024", "2024-01"), "keep", "the same month in two notations is kept");
+  eq(act("date", "1/2024", "2024-01"), "keep", "an unpadded month still matches");
+  eq(act("date", "02/2024", "2024-01"), "write", "a different month is rewritten");
+  eq(act("date", "", "2024-01"), "write", "an empty date is written");
+
+  // Nothing to assert. FILL_ME is the profile's "not set yet" marker and must never be
+  // typed onto a form as if it were a value.
+  eq(act("text", "Springfield", "FILL_ME"), "skip", "FILL_ME is not a value");
+  eq(act("text", "", "FILL_ME"), "skip", "FILL_ME does not fill an empty field either");
+  eq(act("text", "Springfield", ""), "skip", "no intent means leave it alone");
+  eq(act("text", "", ""), "skip", "no intent and no value is still nothing to do");
+
+  // A value we did NOT put there and do not agree with must lose. This is the clone case:
+  // the previous application's answer sitting in the field.
+  eq(act("text", "San Jose", "Springfield"), "write", "a clone's stale answer is overwritten");
+
+  // And the reason travels, because the report is the only view into a run.
+  ok(/differs/.test(reconcileDecision("text", "San Jose", "Springfield", A).why),
+     "an overwrite says what it replaced");
+  ok(/empty/.test(reconcileDecision("text", "", "Springfield", A).why),
+     "a fill says the field was empty");
+}
+
+// ── the attached CV: the mismatch reconciling text cannot fix ────────────────
+// A clone replays a past application complete with its PDF. Every visible answer can be
+// reconciled correctly and the form still goes out contradicting itself, because the wrong
+// CV is stapled to it. Our uploads are named Parth_Resume_<tag>.pdf, so the attached track
+// is readable off the container — for every clone source this tool creates.
+{
+  const attachedTrackTag = eval(`(${extract("attachedTrackTag")})`);
+  const box = (text) => {
+    globalThis.document = { querySelector: (s) =>
+      s === WORKDAY.experience.resume.container ? { innerText: text } : null };
+    return attachedTrackTag({ adapter: WORKDAY });
+  };
+
+  eq(box("Parth_Resume_ai.pdf|182KB|Successfully Uploaded!").tag, "ai",
+     "reads the track off our own filename");
+  eq(box("Parth_Resume_quant.pdf|182KB|Successfully Uploaded!").tag, "quant",
+     "a longer tag parses too");
+  ok(box("Parth_Resume_ai.pdf|182KB|Successfully Uploaded!").present,
+     "a named PDF counts as present");
+
+  // Nothing attached at all — the ordinary cold path.
+  ok(!box("").present, "an empty container has no attachment");
+  ok(!box("Drop files here").present, "prompt text is not an attachment");
+  eq(box("").tag, null, "no attachment has no track");
+
+  // A file we cannot identify must NOT read as a match. It is someone's older naming
+  // scheme or a file uploaded outside this tool, and a redundant upload is far cheaper
+  // than shipping the wrong CV.
+  const unknown = box("resume_final_v3.pdf|200KB|Successfully Uploaded!");
+  ok(unknown.present, "an unrecognised file is still an attachment");
+  eq(unknown.tag, null, "an unrecognised file yields no track, so it will be replaced");
+
+  // The adapter must keep the replace path honest about being unproven.
+  ok(WORKDAY.experience.resume.removeVerified === false,
+     "adapter: the attachment remove control is still flagged unverified");
+  ok(WORKDAY.entry.clonePolicy.reattachOnTrackMismatch === true,
+     "adapter: clone policy still demands the attachment be re-checked");
+}
+
 // ── entry: which route to take out of the Apply modal ────────────────────────
 // Pure, and pinned hard. Every route lands on the same six steps, so a wrong choice does
 // not throw — it quietly fills the slow way, or replays an application it should not have.

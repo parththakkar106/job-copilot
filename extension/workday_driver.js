@@ -214,6 +214,12 @@ async function fillMyInformation(ctx, report) {
   const pre = adapter.prerequisite;
   const country = dig(profile, pre.profilePath) || pre.fallbackValue;
 
+  // DELIBERATELY NOT RECONCILED. Every other field on this step is left alone when it
+  // already looks right; country is set explicitly every time because its default is
+  // derived from the connection's IP, not from nothing — it arrived pre-set to a foreign
+  // country while the label still read "Select One". A non-empty value here is not
+  // evidence of a correct one, and getting it wrong poisons the work-authorization
+  // answers downstream.
   const r = await pickListbox(ctx, `[data-automation-id="${pre.field}"]`, country);
   report.push(["country", r.ok ? `set ${r.value}` : `FAILED ${r.reason}`]);
   if (!r.ok) return;
@@ -232,6 +238,18 @@ async function fillMyInformation(ctx, report) {
       continue;
     }
     if (f.transform === "stripCountryCode") value = String(value).replace(/^\+\d+\s*/, "");
+
+    // Reconcile before writing. The form arrived pre-filled by the clone or the resume
+    // parser, so most of these are already right, and rewriting one is not free: a
+    // dropdown costs a menu round-trip, a prompt tree two trusted clicks, and a date field
+    // has to be cleared and retyped because a plain write poisons it.
+    const current = readFieldValue(ctx, f);
+    const kind = f.compare || f.control;
+    const d = reconcileDecision(kind, current, value, adapter);
+    if (d.action !== "write") {
+      report.push([f.key, d.action === "keep" ? `kept "${String(current).trim()}"` : `skipped: ${d.why}`]);
+      continue;
+    }
 
     if (f.control === "listbox") {
       const wrapper = f.selectors[0].replace(/\s+button.*$/, "");
@@ -259,6 +277,36 @@ function resolveSourcePath(ctx, field, value) {
   const map = adapter[field.sourceMapPath] || {};
   if (tenant && map[tenant]) return map[tenant];
   return ["Job Board", "LinkedIn"];
+}
+
+// Which resume track is hanging off the form right now, read from the attachment's
+// filename. Works because our own uploads are named Parth_Resume_<tag>.pdf, so every clone
+// source we create from here on is self-describing.
+//
+// `{present: true, tag: null}` — a file is attached but we cannot tell which track — is
+// deliberately NOT treated as a match. An unknown CV is exactly the case worth replacing:
+// it is either somebody's older naming scheme or a file uploaded outside this tool, and a
+// redundant re-upload is cheap next to shipping the wrong CV.
+export function attachedTrackTag(ctx) {
+  const { adapter } = ctx;
+  const box = document.querySelector(adapter.experience.resume.container);
+  const text = box ? (box.innerText || "").trim() : "";
+  if (!text || !/\.pdf\b/i.test(text)) return { present: false, tag: null, text };
+  const m = text.match(adapter.experience.resume.attachedNamePattern);
+  return { present: true, tag: m ? m[1].toLowerCase() : null, text };
+}
+
+async function removeAttachment(ctx) {
+  const { adapter } = ctx;
+  const btn = document.querySelector(adapter.experience.resume.removeButton);
+  if (!btn) return false;
+  btn.click();
+  // Gone when the container stops naming a PDF.
+  for (let i = 0; i < 20; i++) {
+    if (!attachedTrackTag(ctx).present) return true;
+    await sleep(300);
+  }
+  return false;
 }
 
 // Step 2. All of it is required: work history, education AND a resume.
@@ -325,6 +373,26 @@ async function fillMyExperience(ctx, report) {
   }
 
   // Resume — required. Reuses fill.js's DataTransfer attach so there is one implementation.
+  //
+  // Before uploading, check what is ALREADY attached. A clone brings the previous
+  // application's PDF, and that is the one thing reconciling text cannot repair: every
+  // answer on the form can be right while the wrong CV hangs off it, which is precisely
+  // the contradiction the four tracks exist to avoid.
+  const already = attachedTrackTag(ctx);
+  if (already.tag && track && already.tag === track.tag) {
+    report.push(["resume", `kept the attached ${already.tag} CV`]);
+    return;
+  }
+  if (already.present) {
+    // Replace, never add. A second upload may append rather than swap, and a form
+    // carrying two CVs is worse than one carrying the wrong CV.
+    const removed = await removeAttachment(ctx);
+    report.push(["resume-replace",
+                 `${already.tag || "an unrecognised"} CV was attached, need ${track && track.tag}` +
+                 (removed ? " — removed it" : " — COULD NOT REMOVE IT, upload skipped")]);
+    if (!removed) return;
+  }
+
   const input = document.querySelector(exp.resume.input);
   if (input && attachResume) {
     try {
@@ -419,7 +487,110 @@ function cssPathOf(el) {
   return `#${CSS.escape(el.id)}`;
 }
 
-// ── the loop ─────────────────────────────────────────────────────────────────
+// ── reconcile: keep what Workday already got right ───────────────────────────
+// Both entry routes arrive at a form that is already mostly filled — a clone replays a
+// past application, the autofill route parses the PDF. So the job here is not to type
+// everything, it is to leave alone what matches the chosen resume track and overwrite only
+// what is missing or wrong.
+//
+// This matters beyond tidiness. Rewriting a date field is the single most dangerous thing
+// this driver does: a synthesized write displays but never commits AND poisons the
+// section, so the recovery is a clear-then-trusted-retype. A reconcile that overwrites
+// needlessly walks into that on every run, on a field that was already correct.
+
+const digitsOf = (s) => String(s == null ? "" : s).replace(/\D+/g, "");
+const tidy = (s) => String(s == null ? "" : s).trim().replace(/\s+/g, " ").toLowerCase();
+
+// Month/year in whatever shape it came from: "2024-01" from the profile, "01/2024" off the
+// spinners. Compared as MMYYYY so the two representations meet.
+function toMonthYear(v) {
+  const s = String(v == null ? "" : v).trim();
+  const iso = s.match(/^(\d{4})-(\d{1,2})\b/);
+  if (iso) return String(iso[2]).padStart(2, "0") + iso[1];
+  const my = s.match(/^(\d{1,2})\D+(\d{4})$/);
+  if (my) return String(my[1]).padStart(2, "0") + my[2];
+  const raw = digitsOf(s);
+  return raw.length === 6 ? raw : null;
+}
+
+// Is the field empty? Not the same as an empty string: a listbox reading "Select One" and
+// a prompt tree with no "1 item selected" badge are both unset while carrying text.
+export function isBlankValue(kind, current, adapter) {
+  const c = String(current == null ? "" : current).trim();
+  if (!c) return true;
+  if (kind === "listbox") return adapter.dropdown.placeholderText.test(c);
+  if (kind === "promptTree") return !adapter.promptTree.committedText.test(c);
+  return false;
+}
+
+// Does what the form holds already say what we mean? Deliberately generous in the places
+// the form legitimately reformats, and strict everywhere else — a false "same" leaves a
+// wrong answer on a real application, which is worse than a redundant write everywhere
+// except dates.
+export function sameValue(kind, current, intended, adapter) {
+  const a = tidy(current), b = tidy(intended);
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  if (kind === "phone") {
+    // Workday reformats on blur ("+1 555-123-4567" -> "(555) 123-4567") and strips the
+    // country code into its own control, so only the national number can be compared.
+    const da = digitsOf(a), db = digitsOf(b);
+    return da.length >= 7 && db.length >= 7 && da.slice(-10) === db.slice(-10);
+  }
+  if (kind === "date") {
+    const ma = toMonthYear(a), mb = toMonthYear(b);
+    return !!ma && ma === mb;
+  }
+  if (kind === "listbox" || kind === "promptTree") {
+    // Option text is the form's wording, not ours: "Bachelor's Degree" against
+    // "Bachelor's Degree (BA/BS)". Re-picking a dropdown costs a menu round-trip and, on
+    // a prompt tree, a pair of trusted clicks, so containment either way counts as agreed.
+    return a.includes(b) || b.includes(a);
+  }
+  return false;
+}
+
+// keep / write / skip, and why. Pure — this is the whole reconcile rule.
+export function reconcileDecision(kind, current, intended, adapter) {
+  const want = String(intended == null ? "" : intended).trim();
+  // FILL_ME is the profile's "not set yet" marker, never a value to type onto a form.
+  if (!want || want === "FILL_ME") {
+    return { action: "skip", why: "nothing in the profile to assert" };
+  }
+  if (isBlankValue(kind, current, adapter)) return { action: "write", why: "was empty" };
+  if (sameValue(kind, current, intended, adapter)) {
+    return { action: "keep", why: "already matches" };
+  }
+  return { action: "write", why: `differs (form had "${String(current).trim()}")` };
+}
+
+// What the form currently holds for one configured field. null means "cannot tell", which
+// callers must treat as blank — writing over an unknown is recoverable, trusting one is not.
+function readFieldValue(ctx, f) {
+  const { adapter } = ctx;
+  const wrapper = f.selectors[0].replace(/\s+button.*$/, "");
+  if (f.control === "listbox") {
+    const btn = document.querySelector(`${wrapper} ${adapter.dropdown.control}`);
+    return btn ? (btn.innerText || "").trim() : null;
+  }
+  if (f.control === "promptTree") {
+    const w = document.querySelector(wrapper);
+    if (!w) return null;
+    const chosen = [...w.querySelectorAll(adapter.promptTree.selected)]
+      .map(n => (n.innerText || "").trim()).filter(Boolean);
+    return chosen.length ? chosen.join(", ") : (w.innerText || "").trim();
+  }
+  if (f.control === "date") {
+    const w = document.querySelector(wrapper);
+    if (!w) return null;
+    const mm = w.querySelector(adapter.date.month), yy = w.querySelector(adapter.date.year);
+    if (!mm || !yy || !mm.value || !yy.value) return null;
+    return `${mm.value}/${yy.value}`;
+  }
+  const el = fieldInput(f.selectors[0]) || fieldInput(wrapper);
+  return el ? el.value : null;
+}
 
 // ── entry: advert -> open form ───────────────────────────────────────────────
 // A Workday job page is an advert with no form on it. Apply opens a modal offering up to
@@ -569,6 +740,8 @@ export async function enterApplyFlow(ctx) {
   return { ...entry, ok: false, stage: "wizard",
            error: `took the '${pick.route}' route but no step marker ever appeared` };
 }
+
+// ── the loop ─────────────────────────────────────────────────────────────────
 
 export async function runWorkday(ctx) {
   const { adapter, rpc } = ctx;

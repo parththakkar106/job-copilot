@@ -217,9 +217,12 @@ export const WORKDAY = {
 
     // Workday reformats this itself ("+1 555-123-4567" -> "(555) 123-4567"), so do not
     // compare the read-back value against profile to decide whether the write landed.
+    // `compare: "phone"` so the reconcile pass compares digits, not text. Workday's own
+    // reformat would otherwise read as a disagreement and rewrite a correct number on
+    // every single run.
     { key: "phone", profilePath: "identity.phone", control: "text",
       selectors: ['[data-automation-id="formField-phoneNumber"] input'],
-      transform: "stripCountryCode" },
+      transform: "stripCountryCode", compare: "phone" },
 
     // "How Did You Hear About Us?*" — REQUIRED, and a promptTree, not a text box. It has a
     // text input inside it, so naive probing reports control:"text"; typing into it fills
@@ -290,6 +293,18 @@ export const WORKDAY = {
       // The container's text becomes "<name>|<size>|Successfully Uploaded!" — a clean
       // success signal to assert on rather than trusting the change event.
       successText: /Successfully Uploaded/i,
+
+      // A CLONE ARRIVES WITH THE PREVIOUS APPLICATION'S PDF ALREADY ATTACHED, and that is
+      // the one mismatch reconciling text cannot fix: every visible answer can be correct
+      // while the wrong CV hangs off the form. Our uploads are named Parth_Resume_<tag>.pdf
+      // (see cleanResumeName), so the track that is currently attached is readable straight
+      // off the container text — for anything we uploaded, which is every clone source from
+      // now on.
+      attachedNamePattern: /_([a-z]{2,6})\.pdf\b/i,
+      // UNVERIFIED. Replacing an attachment needs Workday's own remove control; a second
+      // upload may otherwise append rather than replace, leaving BOTH CVs on the form.
+      removeButton: '[data-automation-id="delete-file"]',
+      removeVerified: false,
     },
   },
 
