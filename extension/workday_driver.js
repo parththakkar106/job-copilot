@@ -690,7 +690,10 @@ async function fillMyInformation(ctx, report) {
     if (f.control === "listbox") {
       const wrapper = f.selectors[0].replace(/\s+button.*$/, "");
       const res = await pickListbox(ctx, wrapper, value);
-      report.push([f.key, res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
+      // Name what WAS on offer when nothing matched. "no option matched (of 36)" on a
+      // 50-state list is a puzzle; the same line with the first few options is a diagnosis.
+      report.push([f.key, res.ok ? `set ${res.value}`
+        : `FAILED ${res.reason}${res.sample && res.sample.length ? ` (saw: ${res.sample.join(", ")})` : ""}`]);
     } else if (f.control === "promptTree") {
       const path = resolveSourcePath(ctx, f, value);
       const res = await pickPromptTree(ctx, f.selectors[0], path);
@@ -723,6 +726,24 @@ function resolveSourcePath(ctx, field, value) {
 // deliberately NOT treated as a match. An unknown CV is exactly the case worth replacing:
 // it is either somebody's older naming scheme or a file uploaded outside this tool, and a
 // redundant re-upload is cheap next to shipping the wrong CV.
+// Why the file input would not take the file. attachFile only reports true/false, and
+// "rejected" covers a disabled input, a hidden one, the wrong one of several, and an input
+// that is not a file input at all. Naming which costs one line here and a run otherwise.
+export function describeFileInputs(exp) {
+  const all = [...document.querySelectorAll(exp.resume.input)];
+  const box = document.querySelector(exp.resume.container);
+  return {
+    matched: all.length,
+    inputs: all.slice(0, 4).map(el => ({
+      type: el.type, disabled: !!el.disabled, accept: el.accept || null,
+      hidden: !el.offsetParent && getComputedStyle(el).display === "none",
+      inResumeBox: !!(box && box.contains(el)),
+      files: el.files ? el.files.length : null,
+    })),
+    boxText: box ? (box.innerText || "").trim().slice(0, 80) : null,
+  };
+}
+
 export function attachedTrackTag(ctx) {
   const { adapter } = ctx;
   const box = document.querySelector(adapter.experience.resume.container);
@@ -865,9 +886,16 @@ export async function pickBySearch(ctx, wrapperSel, term) {
     await sleep(700);
   }
 
-  // Clear whatever the last term left behind. Typing over it produced "Pythondata" when
-  // done by hand, which searches for nothing and looks exactly like an empty vocabulary.
-  if (input.value) await rpc({ type: "CDP_ERASE", times: input.value.length + 4 });
+  // FOCUS FIRST. Keystrokes go to whatever holds focus, and after the previous search the
+  // panel is open but focus has left the box — so the erase was a no-op and the next term
+  // was appended, giving "PythonSQL" and a search for nothing. Clicking would toggle the
+  // open panel shut, so focus it directly: the same fix that finally made the date
+  // spinner commit.
+  input.focus();
+  if (input.value) {
+    await rpc({ type: "CDP_ERASE", times: input.value.length + 4 });
+    if (input.value) return { ok: false, reason: `could not clear the search box ("${input.value}")` };
+  }
   await rpc({ type: "CDP_TYPE", text: term });
 
   // SUBMIT. The search is server-side and runs on Enter, not as you type. Waiting for
@@ -1146,7 +1174,8 @@ async function fillMyExperience(ctx, report) {
       const box = document.querySelector(exp.resume.container);
       const ok = attached && box && exp.resume.successText.test(box.innerText || "");
       report.push(["resume", ok ? `attached (${track && track.tag})`
-                                : `FAILED ${attached ? "no success text" : "input rejected the file"}`]);
+                                : `FAILED ${attached ? "no success text" : "input rejected the file"} ` +
+                                  JSON.stringify(describeFileInputs(exp))]);
     } catch (e) {
       report.push(["resume", `FAILED ${e.message}`]);
     }

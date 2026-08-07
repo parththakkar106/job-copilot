@@ -1339,5 +1339,20 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
      "pressing Stop says something — a silent flag reads as a dead button");
 }
 
+// ── the search box has to be cleared before the next term ────────────────────
+// Live: the second skill searched for "PythonSQL". The panel was already open so nothing
+// clicked the box, focus was elsewhere, and the erase keystrokes went nowhere.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("async function pickBySearch"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  ok(body.indexOf("input.focus()") < body.indexOf("CDP_ERASE"),
+     "focus is taken before the erase, or the keystrokes go nowhere");
+  ok(body.indexOf("CDP_ERASE") < body.indexOf("CDP_TYPE"),
+     "and the box is cleared before the next term is typed");
+  ok(/could not clear the search box/.test(body),
+     "a box that would not clear is reported, not typed over");
+}
+
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);
