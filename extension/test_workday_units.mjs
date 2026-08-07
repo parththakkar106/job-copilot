@@ -156,7 +156,11 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   };
   // setDate closes over the module's `sleep`. Bind a zero-delay one so the tests do not
   // pay the widget's real settle waits.
+  // setDate closes over the module's `sleep` and its widget-describing helper. Bind a
+  // zero-delay sleep so the tests do not pay the widget's real settle waits, and pull in
+  // the real describeDateWidget so the failure text is the one users will see.
   const setDate = eval(`(() => { const sleep = () => Promise.resolve();
+                                 ${extract("describeDateWidget")}
                                  return ${extractAsync("setDate")}; })()`);
 
   // A date widget with two sections. `commit` decides how faithfully it accepts typing,
@@ -167,7 +171,16 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
   const mkWidget = (opts = {}) => {
     const month = { value: "", tag: "month", getBoundingClientRect: () => ({ left: 0, top: 10, width: 20, height: 10 }) };
     const year  = { value: "", tag: "year",  getBoundingClientRect: () => ({ left: 0, top: 30, width: 20, height: 10 }) };
-    const wrap = { querySelector: (s) => (s === WORKDAY.date.month ? month : s === WORKDAY.date.year ? year : null) };
+    const wrap = {
+      querySelector: (s) => (s === WORKDAY.date.month ? month : s === WORKDAY.date.year ? year
+                             : s === "input" ? month : null),
+      // describeDateWidget reads these on failure, so the harness has to have them or the
+      // diagnostic path throws instead of reporting.
+      querySelectorAll: () => [month, year],
+      innerText: "From",
+    };
+    month.getAttribute = () => "dateSectionMonth-input";
+    year.getAttribute = () => "dateSectionYear-input";
     globalThis.document = { querySelector: (s) => (s === "#w" ? wrap : null) };
     let focused = null;
     const rpc = async (msg) => {
@@ -178,6 +191,13 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
       if (msg.type === "CDP_ERASE" && focused) focused.value = "";
       if (msg.type === "CDP_TYPE" && focused) {
         let text = String(msg.text);
+        // The separator moves to the next section on widgets that work that way.
+        if (opts.slashAdvances && text.includes("/")) {
+          const [a, b] = text.split("/");
+          if (focused === month) { month.value = a; year.value = b; }
+          return { ok: true };
+        }
+        if (text.includes("/")) text = text.replace(/\//g, "");   // otherwise ignored
         if (focused === month && text.length > 2) {
           // A month spinner takes two digits. Either it spills the rest into the year, or
           // it clamps — the live control clamped to 12 when handed a year.
@@ -220,6 +240,35 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
     ok(!res.ok, "THE REGRESSION: an uncommitted date is a FAILURE, not a silent success");
     ok(/wanted 05\/2005/.test(res.reason), "the reason says what was wanted");
     ok(/reads/.test(res.reason), "and what the field actually reads");
+  }
+
+  // THE SLASH ADVANCES. On many date widgets the separator is what moves to the next
+  // section, and "MM/YYYY" is the shape the field displays — so it is what a person types
+  // and the first thing to try.
+  {
+    const { ctx, month, year } = mkWidget({ arrowMoves: false, slashAdvances: true });
+    const res = await setDate(ctx, "#w", "2024-01");
+    ok(res.ok, "a slash-separated date commits on a widget that advances on the separator");
+    eq(month.value, "01", "month took its own digits");
+    eq(year.value, "2024", "and the year took the rest");
+  }
+
+  // SINGLE-BOX SHAPE. Not every tenant renders two sections; some render one input wanting
+  // "MM/YYYY" typed whole, where six bare digits are simply invalid.
+  {
+    const one = { value: "", getBoundingClientRect: () => ({ left: 0, top: 10, width: 60, height: 10 }),
+                  getAttribute: () => "dateWidget" };
+    const wrap = { querySelector: (s) => (s === "input" ? one : null),
+                   querySelectorAll: () => [one], innerText: "From" };
+    globalThis.document = { querySelector: (s) => (s === "#w" ? wrap : null) };
+    const rpc = async (msg) => {
+      if (msg.type === "CDP_ERASE") one.value = "";
+      if (msg.type === "CDP_TYPE") one.value += String(msg.text);
+      return { ok: true };
+    };
+    const res = await setDate({ adapter: WORKDAY, rpc, bringIntoView() {} }, "#w", "2024-01");
+    ok(res.ok, "a single-box date control is filled as MM/YYYY");
+    eq(one.value, "01/2024", "with the separator, not six bare digits");
   }
 
   // A single-digit month must be padded, or "1" never equals "01" and it retries forever.

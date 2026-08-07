@@ -208,6 +208,20 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
 // required" while showing 01/2024. Worse, that write POISONS the section: typing over it
 // with real keystrokes did not clear the error either. It has to be erased first, then
 // typed with trusted keys. Never setNativeValue a Workday date.
+// What is actually inside a date wrapper. Every date failure so far has been diagnosed by
+// inferring the widget's shape from the error text on screen, which took a round trip each
+// time. When a date will not commit, say what the control IS: its inputs, their
+// automation-ids, and what they currently hold.
+function describeDateWidget(wrap) {
+  if (!wrap) return "no wrapper";
+  const parts = [...wrap.querySelectorAll("input")].slice(0, 6).map(el => {
+    const aid = el.getAttribute("data-automation-id") || el.getAttribute("aria-label") || el.name || "?";
+    return `${aid}="${String(el.value || "").slice(0, 12)}"`;
+  });
+  const text = String(wrap.innerText || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  return parts.length ? `inputs: ${parts.join(", ")}` : `no inputs; text "${text}"`;
+}
+
 export async function setDate(ctx, wrapperSel, iso) {
   const { adapter, rpc, bringIntoView } = ctx;
   const d = adapter.date;
@@ -220,9 +234,28 @@ export async function setDate(ctx, wrapperSel, iso) {
 
   const month = wrap.querySelector(d.month);
   const year = wrap.querySelector(d.year);
-  if (!month) return { ok: false, reason: "no month section" };
-  if (!year) return { ok: false, reason: "no year section" };
   bringIntoView(wrap);
+
+  // SINGLE-INPUT SHAPE. Not every Workday date control is a two-section spinner; some are
+  // one box that wants "MM/YYYY" typed, slash and all. Six bare digits are invalid there,
+  // which is consistent with the field rejecting everything it was given.
+  if (!month || !year) {
+    const one = wrap.querySelector('input');
+    if (!one) return { ok: false, reason: `no date input at all — ${describeDateWidget(wrap)}` };
+    const r = one.getBoundingClientRect();
+    if (!r.width && !r.height) return { ok: false, reason: "the date input has no rect" };
+    await rpc({ type: "CDP_CLICK",
+                x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
+    await sleep(200);
+    await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
+    await sleep(150);
+    await rpc({ type: "CDP_TYPE", text: `${mm}/${yyyy}` });
+    await sleep(400);
+    const got = String(one.value || "");
+    if (got.includes(mm) && got.includes(yyyy)) return { ok: true, value: `${mm}/${yyyy}` };
+    return { ok: false,
+             reason: `single-box date did not commit — reads "${got}", wanted ${mm}/${yyyy}` };
+  }
 
   // DRIVE EACH SECTION, DO NOT TRUST AUTO-ADVANCE. Typing all six digits into the month
   // section and letting the widget carry the rest into the year produced "MM/2005" plus
@@ -243,27 +276,35 @@ export async function setDate(ctx, wrapperSel, iso) {
   const reads = () => [String(month.value || "").trim().padStart(2, "0"),
                        String(year.value || "").trim()];
 
-  // Two strategies, because this widget has now failed in both directions: typing MMYYYY
-  // as one burst lost the month, and clicking between sections lost the year.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // THREE STRATEGIES, tried in order, each verified. This control has failed in every
+  // direction so far — a bare MMYYYY burst lost the month, clicking between sections
+  // clamped the month to 12 — and there is no way to tell from here which shape a given
+  // tenant renders. Verification is what makes trying several safe: a strategy that half
+  // works is otherwise indistinguishable from one that works.
+  const strategies = [
+    // The separator advances the section on many date widgets, and "MM/YYYY" is what the
+    // field displays, so it is the shape a person would type.
+    async () => { await rpc({ type: "CDP_TYPE", text: `${mm}/${yyyy}` }); },
+    // Explicit caret move. Harmless if the widget already auto-advanced: there is no
+    // section beyond the year to overshoot into.
+    async () => {
+      await rpc({ type: "CDP_TYPE", text: mm });
+      await sleep(250);
+      await rpc({ type: "CDP_KEY", key: "ArrowRight" });
+      await sleep(150);
+      await rpc({ type: "CDP_TYPE", text: yyyy });
+    },
+    // Let the widget advance itself off a single burst.
+    async () => { await rpc({ type: "CDP_TYPE", text: mm + yyyy }); },
+  ];
+
+  for (const run of strategies) {
     if (!await focusMonth()) {
       return { ok: false, reason: "the month section has no rect (row detached?)" };
     }
     await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
     await sleep(150);
-
-    if (attempt === 0) {
-      await rpc({ type: "CDP_TYPE", text: mm });
-      await sleep(250);
-      // Explicit caret move. Harmless if the widget already auto-advanced: there is no
-      // section beyond the year to overshoot into.
-      await rpc({ type: "CDP_KEY", key: "ArrowRight" });
-      await sleep(150);
-      await rpc({ type: "CDP_TYPE", text: yyyy });
-    } else {
-      // Fall back to the one-burst form and let the widget advance itself.
-      await rpc({ type: "CDP_TYPE", text: mm + yyyy });
-    }
+    await run();
     await sleep(400);
 
     const [gotM, gotY] = reads();
@@ -275,7 +316,8 @@ export async function setDate(ctx, wrapperSel, iso) {
   // wrong, because the run moves on and blames the next step.
   const [m2, y2] = reads();
   return { ok: false,
-           reason: `did not commit — reads "${m2 || "MM"}/${y2 || "YYYY"}", wanted ${mm}/${yyyy}` };
+           reason: `did not commit after 3 strategies — reads "${m2 || "MM"}/${y2 || "YYYY"}", ` +
+                   `wanted ${mm}/${yyyy}; ${describeDateWidget(wrap)}` };
 }
 
 // ── steps ────────────────────────────────────────────────────────────────────
