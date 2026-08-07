@@ -68,6 +68,24 @@ async function trustedErase(tabId, times) {
   }
 }
 
+// Trusted navigation keys. Workday's date control is several sections inside one widget,
+// and CLICKING a section to move between them proved unreliable: a click aimed at the year
+// kept focus on the month, so the year's digits were typed into a month spinner and
+// clamped to 12 ("Invalid Date: 12/"). Moving with a keypress is what a person does and
+// removes the coordinate guess entirely.
+const NAV_KEYS = { ArrowRight: 39, ArrowLeft: 37, Tab: 9 };
+async function trustedKey(tabId, key, times) {
+  const vk = NAV_KEYS[key];
+  if (!vk) return false;                       // allowlist: never dispatch arbitrary keys
+  for (let i = 0; i < Math.min(Number(times) || 1, 20); i++) {
+    await send(tabId, "Input.dispatchKeyEvent", {
+      type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+    await send(tabId, "Input.dispatchKeyEvent", {
+      type: "keyUp", key, code: key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+  }
+  return true;
+}
+
 // If the user closes DevTools / the session drops, forget the tab so a later fill re-attaches.
 chrome.debugger.onDetach.addListener((source) => { if (source.tabId != null) attached.delete(source.tabId); });
 
@@ -400,6 +418,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       else if (msg.type === "CDP_CLICK") { await attach(tabId); await trustedClick(tabId, msg.x, msg.y); sendResponse({ ok: true }); }
       else if (msg.type === "CDP_TYPE") { await attach(tabId); await trustedType(tabId, msg.text); sendResponse({ ok: true }); }
       else if (msg.type === "CDP_ERASE") { await attach(tabId); await trustedErase(tabId, msg.times); sendResponse({ ok: true }); }
+      else if (msg.type === "CDP_KEY") { await attach(tabId); const ok = await trustedKey(tabId, msg.key, msg.times); sendResponse({ ok }); }
       else if (msg.type === "CDP_DETACH") { await detach(tabId); sendResponse({ ok: true }); }
       else return; // unknown type: ignore (let other listeners handle)
     } catch (e) {

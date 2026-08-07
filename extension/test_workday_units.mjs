@@ -161,7 +161,10 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
 
   // A date widget with two sections. `commit` decides how faithfully it accepts typing,
   // which is the whole variable here.
-  const mkWidget = (commit) => {
+  // A two-section date widget. `opts.arrowMoves` models whether ArrowRight advances the
+  // caret, and `opts.autoAdvance` whether a long burst spills from month into year — the
+  // two behaviours this control has been seen to have.
+  const mkWidget = (opts = {}) => {
     const month = { value: "", tag: "month", getBoundingClientRect: () => ({ left: 0, top: 10, width: 20, height: 10 }) };
     const year  = { value: "", tag: "year",  getBoundingClientRect: () => ({ left: 0, top: 30, width: 20, height: 10 }) };
     const wrap = { querySelector: (s) => (s === WORKDAY.date.month ? month : s === WORKDAY.date.year ? year : null) };
@@ -169,37 +172,70 @@ eq(currentStep(WORKDAY).name, "My Information", "the real step 1 is unaffected")
     let focused = null;
     const rpc = async (msg) => {
       if (msg.type === "CDP_CLICK") focused = msg.y < 20 ? month : year;
+      if (msg.type === "CDP_KEY" && msg.key === "ArrowRight" && opts.arrowMoves !== false) {
+        focused = focused === month ? year : focused;
+      }
       if (msg.type === "CDP_ERASE" && focused) focused.value = "";
-      if (msg.type === "CDP_TYPE" && focused) commit(focused, msg.text);
+      if (msg.type === "CDP_TYPE" && focused) {
+        let text = String(msg.text);
+        if (focused === month && text.length > 2) {
+          // A month spinner takes two digits. Either it spills the rest into the year, or
+          // it clamps — the live control clamped to 12 when handed a year.
+          if (opts.autoAdvance) { month.value = text.slice(0, 2); year.value = text.slice(2); }
+          else month.value = String(Math.min(12, Number(text.slice(0, 2)) || 12)).padStart(2, "0");
+        } else if (opts.dropMonth && focused === month) {
+          month.value = "";                       // the section that refuses to keep anything
+        } else {
+          focused.value = text;
+        }
+      }
       return { ok: true };
     };
     return { ctx: { adapter: WORKDAY, rpc, bringIntoView: () => {} }, month, year };
   };
 
-  // A widget that behaves: each section keeps what it was given.
+  // The intended path: focus the month, type it, move the caret, type the year.
   {
-    const { ctx, month, year } = mkWidget((el, text) => { el.value = text; });
+    const { ctx, month, year } = mkWidget();
     const res = await setDate(ctx, "#w", "2024-01");
     ok(res.ok, "a committing widget reports success");
     eq(month.value, "01", "the month section got only the month");
     eq(year.value, "2024", "the year section got only the year");
   }
 
-  // THE LIVE FAILURE: the month never keeps anything, the year does.
+  // ArrowRight ignored, but the widget spills a long burst itself. The second attempt
+  // exists for exactly this, and the two strategies must not both fail on one widget.
   {
-    const { ctx } = mkWidget((el, text) => { if (el.tag === "year") el.value = text; });
+    const { ctx, month, year } = mkWidget({ arrowMoves: false, autoAdvance: true });
+    const res = await setDate(ctx, "#w", "2022-05");
+    ok(res.ok, "the one-burst fallback rescues a widget that ignores the caret move");
+    eq(month.value, "05", "month still ends up correct");
+    eq(year.value, "2022", "and so does the year");
+  }
+
+  // THE LIVE FAILURE: a month that keeps nothing. Both strategies fail, and it must SAY so.
+  {
+    const { ctx } = mkWidget({ dropMonth: true, arrowMoves: false });
     const res = await setDate(ctx, "#w", "2005-05");
-    ok(!res.ok, "THE REGRESSION: an uncommitted month is a FAILURE, not a silent success");
+    ok(!res.ok, "THE REGRESSION: an uncommitted date is a FAILURE, not a silent success");
     ok(/wanted 05\/2005/.test(res.reason), "the reason says what was wanted");
-    ok(/MM|reads/.test(res.reason), "and what the field actually reads");
+    ok(/reads/.test(res.reason), "and what the field actually reads");
   }
 
   // A single-digit month must be padded, or "1" never equals "01" and it retries forever.
   {
-    const { ctx, month } = mkWidget((el, text) => { el.value = text; });
+    const { ctx, month } = mkWidget();
     const res = await setDate(ctx, "#w", "2024-9");
     ok(res.ok, "a single-digit ISO month still commits");
     eq(month.value, "09", "and is zero-padded");
+  }
+
+  // The year must never be typed into the month section. That is what clamped it to 12 and
+  // produced "Invalid Date: 12/" for every date the driver tried to set.
+  {
+    const { ctx, month } = mkWidget({ arrowMoves: false });
+    await setDate(ctx, "#w", "2024-01");
+    ok(month.value !== "12", "a failed caret move must not leave the month clamped at 12");
   }
 
   // Structural refusals, before any typing.

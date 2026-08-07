@@ -228,34 +228,54 @@ export async function setDate(ctx, wrapperSel, iso) {
   // section and letting the widget carry the rest into the year produced "MM/2005" plus
   // "Invalid Date: 05/" on a real form — the year took the tail and the month kept
   // nothing. Clicking each section and typing only its own digits removes the guess.
-  const section = async (el, text, erase) => {
-    const r = el.getBoundingClientRect();
+  // FOCUS THE MONTH BY CLICK, THEN MOVE BY KEYPRESS. Clicking the year section to move
+  // there does NOT work: focus stayed on the month, so the year's digits went into a month
+  // spinner and clamped to its maximum — the form read "Invalid Date: 12/" whatever date
+  // was asked for. A caret move is what a person does and needs no coordinates.
+  const focusMonth = async () => {
+    const r = month.getBoundingClientRect();
     if (!r.width && !r.height) return false;
     await rpc({ type: "CDP_CLICK",
                 x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
     await sleep(200);
-    await rpc({ type: "CDP_ERASE", times: erase });
-    await sleep(150);
-    await rpc({ type: "CDP_TYPE", text });
-    await sleep(300);
     return true;
   };
+  const reads = () => [String(month.value || "").trim().padStart(2, "0"),
+                       String(year.value || "").trim()];
 
-  // AND VERIFY. This used to return ok:true unconditionally, so the report said "set" for
-  // two dates that were showing validation errors on screen — the worst kind of wrong,
-  // because it moves on and blames the next step.
+  // Two strategies, because this widget has now failed in both directions: typing MMYYYY
+  // as one burst lost the month, and clicking between sections lost the year.
   for (let attempt = 0; attempt < 2; attempt++) {
-    if (!await section(month, mm, 3) || !await section(year, yyyy, 5)) {
-      return { ok: false, reason: "a date section has no rect (row detached?)" };
+    if (!await focusMonth()) {
+      return { ok: false, reason: "the month section has no rect (row detached?)" };
     }
-    await sleep(300);
-    const gotM = String(month.value || "").trim().padStart(2, "0");
-    const gotY = String(year.value || "").trim();
+    await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
+    await sleep(150);
+
+    if (attempt === 0) {
+      await rpc({ type: "CDP_TYPE", text: mm });
+      await sleep(250);
+      // Explicit caret move. Harmless if the widget already auto-advanced: there is no
+      // section beyond the year to overshoot into.
+      await rpc({ type: "CDP_KEY", key: "ArrowRight" });
+      await sleep(150);
+      await rpc({ type: "CDP_TYPE", text: yyyy });
+    } else {
+      // Fall back to the one-burst form and let the widget advance itself.
+      await rpc({ type: "CDP_TYPE", text: mm + yyyy });
+    }
+    await sleep(400);
+
+    const [gotM, gotY] = reads();
     if (gotM === mm && gotY === yyyy) return { ok: true, value: `${mm}/${yyyy}` };
   }
+
+  // AND REPORT THE TRUTH. This used to return ok:true unconditionally, so the report said
+  // "set" for dates that were showing validation errors on screen — the worst kind of
+  // wrong, because the run moves on and blames the next step.
+  const [m2, y2] = reads();
   return { ok: false,
-           reason: `did not commit — reads "${String(month.value || "MM")}/` +
-                   `${String(year.value || "YYYY")}", wanted ${mm}/${yyyy}` };
+           reason: `did not commit — reads "${m2 || "MM"}/${y2 || "YYYY"}", wanted ${mm}/${yyyy}` };
 }
 
 // ── steps ────────────────────────────────────────────────────────────────────
@@ -508,6 +528,14 @@ async function fillMyExperience(ctx, report) {
   const already = attachedTrackTag(ctx);
   if (attachmentMatchesTrack(already, track)) {
     report.push(["resume", `kept the attached ${track.tag} CV`]);
+    return;
+  }
+  // The autofill route already uploaded this exact track on the way in — that upload is
+  // what built this page. Workday does not necessarily surface it in the step-2 container,
+  // so "no attachment visible" here is not evidence there is none, and re-uploading got
+  // the file rejected. Trust what we did over what we can see.
+  if (!already.present && ctx.entryAttached && track && ctx.entryAttached === track.tag) {
+    report.push(["resume", `already uploaded at entry (${track.tag})`]);
     return;
   }
   if (already.present) {
@@ -1087,6 +1115,10 @@ export async function runWorkday(ctx) {
     return { ok: false, adapter: "workday", stage: entry.stage, error: entry.error,
              entry, report };
   }
+
+  // Step 2 needs to know the entry route already uploaded the CV, or it re-uploads and the
+  // input rejects the duplicate.
+  ctx.entryAttached = entry.attached || null;
 
   // Into the report array rather than onto one return, so HOW the application started
   // survives every exit below — it is the first thing worth knowing when a run misbehaves,
