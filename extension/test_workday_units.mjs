@@ -961,5 +961,68 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
      "an empty pill is not a commit");
 }
 
+// ── whose options are these? ─────────────────────────────────────────────────
+// Option lists share a body-level portal, so a document-wide read cannot tell this
+// field's list from the previous field's list that has not been torn down yet. Reading
+// with no settle wait picked up the still-open Country popup while opening State and
+// clicked a COUNTRY that happens to share its name with a US state, on a live draft.
+{
+  // extract() slices from "function", dropping the `async` these need to eval with await.
+  const asyncSrc = (name) => {
+    const i = src.search(new RegExp(`async function ${name}\\s*\\(`));
+    if (i < 0) throw new Error(`async ${name}() not found — renamed?`);
+    let depth = 0, j = src.indexOf("{", i);
+    for (; j < src.length; j++) {
+      if (src[j] === "{") depth++;
+      else if (src[j] === "}" && --depth === 0) break;
+    }
+    return src.slice(i, j + 1);
+  };
+  const pickListbox = eval(`(() => { const sleep = () => Promise.resolve();
+                             return ${asyncSrc("pickListbox")}; })()`);
+  const dd = WORKDAY.dropdown;
+
+  const opt = (t) => ({ innerText: t, matches: () => false, clicked: 0,
+                        click() { this.clicked++; } });
+  const popup = (labels) => ({ opts: labels.map(opt),
+                               querySelectorAll: function () { return this.opts; } });
+
+  // The country popup is still on screen when State is opened; State's own list arrives
+  // 600ms later. The SAME NAME sits in both lists, which is what made this silent — a
+  // wrong-list click looked like an ordinary successful match.
+  const mk = (openLate) => {
+    const country = popup(["United States of America", "Northland", "Germany"]);
+    const state = popup(["Florida", "Northland", "Hawaii"]);
+    let live = [country], t = 0;
+    const btn = { innerText: "Select One", click() { t++; } };
+    globalThis.document = {
+      querySelector: (s) => (s.includes("button") ? btn : null),
+      querySelectorAll: () => (openLate && t === 0 ? live : (live = [country, state])),
+    };
+    return { country, state, btn };
+  };
+
+  const run = async () => {
+    const pick = pickListbox;
+    let { country, state } = mk(true);
+    const res = await pick({ adapter: WORKDAY }, "#state", "Northland");
+    ok(res.ok, "State still gets set");
+    eq(country.opts.find(o => o.innerText === "Northland").clicked, 0,
+       "the previous field's option is never clicked");
+    eq(state.opts.find(o => o.innerText === "Northland").clicked, 1,
+       "this field's own option is the one clicked");
+
+    // Nothing new ever appears: refuse rather than fall back to the stale list.
+    ({ country, state } = mk(false));
+    globalThis.document.querySelectorAll = () => [country];
+    const res2 = await pick({ adapter: WORKDAY }, "#state", "Northland");
+    ok(!res2.ok, "a list that never arrives is a failure, not a wrong click");
+    eq(res2.reason, "list never populated", "and it is named as timing, not vocabulary");
+    eq(country.opts.find(o => o.innerText === "Northland").clicked, 0,
+       "still nothing clicked in the stale list");
+  };
+  await run();
+}
+
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);

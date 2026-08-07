@@ -111,8 +111,6 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
   const btn = document.querySelector(`${wrapperSel} ${dd.control}`);
   if (!btn) return { ok: false, reason: "no listbox button" };
 
-  btn.click();
-
   const readOpts = () => {
     const out = [];
     for (const b of document.querySelectorAll(dd.optionScope)) out.push(...b.querySelectorAll(dd.option));
@@ -120,15 +118,25 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
                            !dd.placeholderText.test((o.innerText || "").trim()));
   };
 
-  // POLL, do not sleep a fixed 700ms. Dependent lists are refetched when their parent
-  // changes — setting Country to United States of America reloads State — and this driver
-  // writes Country immediately before State, so a fixed wait is a race it will sometimes
-  // lose. Seen live: identical run, State set fine once and "no option matched" the next.
+  // WHOSE OPTIONS ARE THESE? Option lists render in a shared body-level portal, so a
+  // document-wide read cannot tell this field's list from the PREVIOUS field's list that
+  // has not been torn down yet. That is not hypothetical: reading with no settle wait
+  // picked up the still-open Country popup while opening State, matched the state's name
+  // against a COUNTRY of the same name, and clicked it — which changes the country on the
+  // application and reshapes the entire address form. Several US state names are also
+  // country names, so this fails silently rather than loudly.
+  // Anything already on screen before the click belongs to someone else.
+  const stale = new Set(readOpts());
+  btn.click();
+
+  // Then poll, because a dependent list is refetched when its parent changes — setting
+  // Country reloads State, and this driver writes them back to back — so a fixed wait is
+  // a race. Seen live: identical run, State set once and "no option matched" the next.
   let opts = [];
   for (let i = 0; i < 12; i++) {
-    opts = readOpts();
-    if (opts.length) break;
     await sleep(300);
+    opts = readOpts().filter(o => !stale.has(o));
+    if (opts.length) break;
   }
 
   const want = String(wanted).trim().toLowerCase();
