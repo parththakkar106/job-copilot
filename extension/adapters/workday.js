@@ -320,12 +320,26 @@ export const WORKDAY = {
     // them verbatim. Verified list: GED, High School, Associates, Bachelors, Masters,
     // Doctorate, JD. Note it is NOT "Bachelor's Degree" — do not "helpfully" expand it.
     degreeOptions: ["GED", "High School", "Associates", "Bachelors", "Masters", "Doctorate", "JD"],
-    // "Type to Add Skills" — a promptTree multi-select, filled one value at a time from
-    // the stream-resolved profile so the form agrees with the attached CV.
+    // "Type to Add Skills" — a promptTree multi-select filled one value at a time from the
+    // stream-resolved profile, so the form agrees with the attached CV.
     skills: '[data-automation-id="formField-skills"]',
-    // Each skill costs a full walk of the vocabulary, and the field is optional on every
-    // tenant seen so far. A handful of accurate skills beats an exhaustive list that
-    // takes a minute to enter.
+
+    // SEARCH-ONLY, unlike Field of Study, and measured rather than assumed 2026-08-07:
+    // opening the panel shows a single "No Items." row and nothing else. There is no list
+    // to walk, so the scroll walker cannot work here at any budget. Its input IS a real
+    // search box (placeholder "Search", enterkeyhint "search") and trusted typing lands in
+    // it — the two together are why this field gets its own path.
+    //
+    // On Adobe the vocabulary is EMPTY: "Python", "data" and even "a" all return
+    // "No Items." after several seconds. The field is optional there, so nothing is lost,
+    // but a tenant can clearly ship this field with no options behind it and the driver
+    // has to notice that rather than grind through every candidate.
+    skillsSearch: true,
+    // Give up once this many searches in a row come back empty — an empty vocabulary is a
+    // property of the tenant, not of the term, so the third miss tells you nothing new.
+    skillsEmptyGiveUp: 2,
+    // Each skill costs a search round-trip, and the field is optional on every tenant seen
+    // so far. A handful of accurate skills beats an exhaustive list.
     maxSkills: 8,
     linkedin: '[data-automation-id="formField-linkedInAccount"]',
     resume: {
@@ -482,6 +496,16 @@ export const WORKDAY = {
     // stay unfiltered — so scrolling is the only way through it. With the 0.75 overlap the
     // walker applies, a full pass costs ~62 scrolls; 120 leaves room for a longer list.
     maxScrolls: 120,
+
+    // The panel renders a single row reading "No Items." when it has nothing to show.
+    // That is an EMPTY STATE, not an option: counted as a row it makes an empty list look
+    // populated, and a prefix match on a short search term could even click it.
+    emptyRow: /^no items\.?$/i,
+
+    // Whether THIS field's panel is open. Measured on the live Skills field: the input
+    // carries no aria-expanded at all, but the wrapper's own text gains "Expanded". That
+    // matters because the opener is a toggle — see pickPromptTree.
+    expandedText: /(^|\n)\s*Expanded\s*(\n|$)/,
   },
 
   // Referral-source vocabulary is TENANT-SPECIFIC and cannot come from one profile string.

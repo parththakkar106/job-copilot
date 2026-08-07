@@ -274,6 +274,34 @@ export function whatIsAt(x, y, row) {
   return `<${top.tagName.toLowerCase()}${id ? ` ${id}` : ""}>`;
 }
 
+// Rows currently rendered, with the panel's EMPTY STATE removed. Workday shows a single
+// row reading "No Items." when it has nothing; counted as an option it makes an empty list
+// look populated, and a prefix match on a short term could click it.
+export function allRows(pt) {
+  const all = [...document.querySelectorAll(`${pt.portal} ${pt.row}`)];
+  if (!pt.emptyRow) return all;
+  return all.filter(r => !pt.emptyRow.test((r.innerText || "").trim()));
+}
+export function showsEmptyState(pt) {
+  if (!pt.emptyRow) return false;
+  return [...document.querySelectorAll(`${pt.portal} ${pt.row}`)]
+    .some(r => pt.emptyRow.test((r.innerText || "").trim()));
+}
+
+// Whose panel is open: true (this field's), false (nobody's), or null (cannot tell).
+// aria-expanded first because it is the standard; the live Skills input has none, but the
+// wrapper's own text gains "Expanded" — an equally definite signal, just a Workday one.
+export function panelOwner(wrap, opener, pt) {
+  const aria = opener && opener.getAttribute && opener.getAttribute("aria-expanded");
+  if (aria === "true") return true;
+  if (aria === "false") return false;
+  if (pt.expandedText && wrap) return pt.expandedText.test(wrap.innerText || "");
+  return null;
+}
+export function isPanelOpen(wrap, opener, pt) {
+  return panelOwner(wrap, opener, pt) === true;
+}
+
 export async function pickPromptTree(ctx, wrapperSel, path) {
   const { adapter, rpc, bringIntoView } = ctx;
   const pt = adapter.promptTree;
@@ -286,23 +314,21 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
   const r0 = opener.getBoundingClientRect();
   if (!r0.width && !r0.height) return { ok: false, reason: "opener has no rect" };
 
-  const rows = () => [...document.querySelectorAll(`${pt.portal} ${pt.row}`)];
+  const rows = () => allRows(pt);
   const rowText = (el) => (el.innerText || "").trim();
 
   // OPEN IT ONLY IF IT IS SHUT. The opener is a TOGGLE, so a multi-select being filled one
   // value at a time — Skills — leaves the panel open and a second unconditional click
   // closes it. That is the exact shape that made Field of Study report "no row matched"
   // against a list that was no longer there.
-  //
-  // "Rows are on screen" is not enough to conclude they are OURS: a neighbouring field's
-  // panel would look identical, and acting on another field's list is the mistake that
-  // changed a country on a live application. aria-expanded says whose panel it is; without
-  // it, only an empty screen is safe to interpret.
-  const expanded = opener.getAttribute && opener.getAttribute("aria-expanded");
-  const mine = expanded === "true";
-  if (!mine) {
-    if (expanded === null && rows().length) {
-      return { ok: false, reason: "a panel is open and nothing says it is this field's" };
+  if (!isPanelOpen(wrap, opener, pt)) {
+    // Our panel is shut, so any rows on screen are SOMEONE ELSE'S — and rows are matched
+    // document-wide, so reading them is how a neighbouring field's list gets acted on.
+    // That mistake changed a country on a live application. Wait for them to go, and
+    // refuse if they will not: an unfilled field costs less than a wrong one.
+    for (let i = 0; i < 10 && rows().length; i++) await sleep(250);
+    if (rows().length) {
+      return { ok: false, reason: "another field's list is still open" };
     }
     await rpc({ type: "CDP_CLICK",
                 x: Math.round(r0.left + r0.width / 2), y: Math.round(r0.top + r0.height / 2) });
@@ -794,6 +820,71 @@ async function fillEducationField(ctx, report, key, sel, value, alternates = [])
   }
 }
 
+// Pick one value from a SEARCH-ONLY prompt: type the term, wait for results, click the
+// match. Measured on the live Skills field — the panel opens showing "No Items." and
+// populates only from the search box — so the scroll walker is not merely slow here, it
+// has nothing to walk.
+//
+// Returns { ok } on success, { empty: true } when the search came back with nothing (a
+// fact about the vocabulary, not a failure of ours), or { ok: false, reason }.
+export async function pickBySearch(ctx, wrapperSel, term) {
+  const { adapter, rpc, bringIntoView } = ctx;
+  const pt = adapter.promptTree;
+  const wrap = document.querySelector(wrapperSel);
+  if (!wrap) return { ok: false, reason: "field not found" };
+  const input = wrap.querySelector("input");
+  if (!input) return { ok: false, reason: "no search box" };
+
+  bringIntoView(wrap);
+  if (!isPanelOpen(wrap, input, pt)) {
+    const r0 = input.getBoundingClientRect();
+    if (!r0.width && !r0.height) return { ok: false, reason: "opener has no rect" };
+    await rpc({ type: "CDP_CLICK",
+                x: Math.round(r0.left + r0.width / 2), y: Math.round(r0.top + r0.height / 2) });
+    await sleep(700);
+  }
+
+  // Clear whatever the last term left behind. Typing over it produced "Pythondata" when
+  // done by hand, which searches for nothing and looks exactly like an empty vocabulary.
+  if (input.value) await rpc({ type: "CDP_ERASE", times: input.value.length + 4 });
+  await rpc({ type: "CDP_TYPE", text: term });
+
+  // Results arrive from the server, so wait for them to settle rather than reading once.
+  let opts = [], prev = -1;
+  for (let i = 0; i < 12; i++) {
+    await sleep(300);
+    if (input.value !== term) return { ok: false, reason: `search box holds "${input.value}"` };
+    opts = allRows(pt);
+    if (opts.length && opts.length === prev) break;
+    if (!opts.length && showsEmptyState(pt) && i >= 3) return { empty: true, ok: false };
+    prev = opts.length;
+  }
+  if (!opts.length) return { empty: true, ok: false };
+
+  const want = term.trim().toLowerCase();
+  const txt = (o) => (o.innerText || "").trim();
+  const hit = opts.find(o => txt(o).toLowerCase() === want)
+           || opts.find(o => txt(o).toLowerCase().startsWith(want));
+  if (!hit) return { ok: false, reason: "searched but no exact match",
+                     sample: opts.slice(0, 5).map(txt) };
+
+  const target = clickPointFor(hit, pt, true);
+  if (!target) return { ok: false, reason: "result row has no clickable box" };
+  const blocker = whatIsAt(target.x, target.y, hit);
+  if (blocker) return { ok: false, reason: `click point is covered by ${blocker}` };
+  await rpc({ type: "CDP_CLICK", x: target.x, y: target.y });
+  await sleep(900);
+  return { ok: true, value: txt(hit) };
+}
+
+// How many values a multi-select currently holds, read from its own summary line. Used to
+// confirm a pick actually landed rather than trusting the click.
+export function selectedCount(wrap, pt) {
+  const c = committedValue(wrap, pt);
+  const m = c && String(c).match(/(\d+)\s+items?\s+selected/i);
+  return m ? Number(m[1]) : (c ? 1 : 0);
+}
+
 // Skills — a multi-select over a fixed vocabulary, filled one value at a time.
 //
 // Every value is one the applicant listed on the resume being attached, resolved by
@@ -801,38 +892,57 @@ async function fillEducationField(ctx, report, key, sel, value, alternates = [])
 // adding a skill because the posting asked for it would be writing a claim about someone
 // on the strength of what the employer wanted to hear.
 //
-// The list's size is UNMEASURED. Field of Study turned out to be 320 entries with a dead
-// search box, and the walker handles that; if a tenant's skill vocabulary runs to
-// thousands this will report misses rather than find them, and the fix is a search path
-// built against a measurement — not a second strategy guessed at now, which is how the
-// last one broke the widget it was meant to help.
+// Whether it searches or scrolls is a per-tenant fact, so it is configured, not sniffed.
 async function fillSkills(ctx, report, wanted) {
   const { adapter } = ctx;
-  const sel = adapter.experience.skills;
+  const exp = adapter.experience;
+  const sel = exp.skills;
   if (!sel || !document.querySelector(sel)) return;      // not on this tenant's form
   const list = (wanted || []).map(s => String(s).trim()).filter(Boolean);
   if (!list.length) { report.push(["skills", "SKIPPED none in profile"]); return; }
 
   const wrap = document.querySelector(sel);
-  const already = committedValue(wrap, adapter.promptTree);
-  if (already) { report.push(["skills", `kept ${already}`]); return; }   // reconcile, as everywhere
+  const pt = adapter.promptTree;
+  if (selectedCount(wrap, pt)) {                          // reconcile, as everywhere
+    report.push(["skills", `kept ${committedValue(wrap, pt)}`]);
+    return;
+  }
 
-  const cap = adapter.experience.maxSkills || 8;
-  const set = [], missed = [];
+  const cap = exp.maxSkills || 8;
+  const giveUp = exp.skillsEmptyGiveUp || 2;
+  const set = [], missing = [];
+  let emptyRun = 0;
+
   for (const skill of list.slice(0, cap)) {
-    const res = await pickPromptTree(ctx, sel, [[skill]]);
-    if (res.ok) { set.push(skill); continue; }
-    missed.push(skill);
-    // Stop after two consecutive failures with nothing landing: either the vocabulary is
-    // wrong or the widget is not cooperating, and hammering a stateful control is how it
-    // ends up in a state nothing recovers from.
-    if (missed.length >= 2 && !set.length) {
-      report.push(["skills", `FAILED ${res.reason} — gave up after ${missed.join(", ")}`]);
+    const before = selectedCount(wrap, pt);
+    const res = exp.skillsSearch ? await pickBySearch(ctx, sel, skill)
+                                 : await pickPromptTree(ctx, sel, [[skill]]);
+
+    if (res.empty) {
+      missing.push(skill);
+      // An empty vocabulary is a property of the TENANT, not of the term, so the third
+      // miss in a row tells us nothing the second did not. Adobe returns "No Items." for
+      // every term including a single letter.
+      if (++emptyRun >= giveUp && !set.length) {
+        report.push(["skills",
+          `SKIPPED this tenant's skill list is empty — "${missing.join('", "')}" all returned nothing`]);
+        return;
+      }
+      continue;
+    }
+    emptyRun = 0;
+
+    // Verify against the field's own count. A click that highlights without committing is
+    // the failure mode this widget specialises in.
+    if (res.ok && selectedCount(wrap, pt) > before) { set.push(res.value || skill); continue; }
+    missing.push(skill);
+    if (!res.ok && res.reason && !set.length && missing.length >= giveUp) {
+      report.push(["skills", `FAILED ${res.reason} — gave up after ${missing.join(", ")}`]);
       return;
     }
   }
-  report.push(["skills", `${set.length ? `set ${set.join(", ")}` : "set none"}` +
-                         (missed.length ? ` (not offered: ${missed.join(", ")})` : "")]);
+  report.push(["skills", (set.length ? `set ${set.join(", ")}` : "set none") +
+                         (missing.length ? ` (not offered: ${missing.join(", ")})` : "")]);
 }
 
 // Step 2. All of it is required: work history, education AND a resume.

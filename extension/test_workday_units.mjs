@@ -1191,6 +1191,9 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
     const clickPointFor = () => null;
     const whatIsAt = () => null;
     const nearest = () => [];
+    ${extract("allRows")}
+    ${extract("panelOwner")}
+    ${extract("isPanelOpen")}
     return ${asyncSrc2("pickPromptTree")}; })()`);
 
   const ctx = (h) => ({ adapter: WORKDAY, rpc: h.rpc, bringIntoView: () => {} });
@@ -1205,16 +1208,65 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
   await pick(ctx(h), "#skills", [["Nothing"]]);
   eq(h.clicks(), 1, "a closed panel is opened");
 
-  // No aria-expanded and rows on screen: they may be another field's. Refuse.
+  // Our panel is shut but rows are on screen: they are another field's, and rows are
+  // matched document-wide. Refuse rather than read them.
   h = openerFor(null, [{ innerText: "Belgium" }]);
   const res = await pick(ctx(h), "#skills", [["Nothing"]]);
-  ok(!res.ok, "an unattributable open panel is refused");
-  eq(h.clicks(), 0, "and nothing is clicked while it is ambiguous");
+  ok(!res.ok, "another field's open list is refused");
+  eq(res.reason, "another field's list is still open", "and named as such");
+  eq(h.clicks(), 0, "nothing is clicked while another list is up");
 
   // No aria-expanded and a clear screen is safe to open.
   h = openerFor(null, []);
   await pick(ctx(h), "#skills", [["Nothing"]]);
   eq(h.clicks(), 1, "a clear screen is opened as before");
+}
+
+// ── "No Items." is an empty state, not an option ─────────────────────────────
+// Measured live on Skills: the panel opens with a single row reading "No Items." and
+// populates only from its search box. Counted as a row it makes an empty list look
+// populated; matched by prefix, a short search term could actually click it.
+{
+  const allRows = eval(`(${extract("allRows")})`);
+  const showsEmptyState = eval(`(${extract("showsEmptyState")})`);
+  const pt = WORKDAY.promptTree;
+  const doc = (texts) => { globalThis.document =
+    { querySelectorAll: () => texts.map(t => ({ innerText: t })) }; };
+
+  doc(["No Items."]);
+  eq(allRows(pt).length, 0, "an empty panel has no options");
+  ok(showsEmptyState(pt), "and it is recognisable as empty rather than broken");
+
+  doc(["Python", "Python 3"]);
+  eq(allRows(pt).length, 2, "real results are all kept");
+  ok(!showsEmptyState(pt), "a populated panel is not an empty state");
+
+  doc([]);
+  eq(allRows(pt).length, 0, "a closed panel has no options");
+  ok(!showsEmptyState(pt), "...and is not the same thing as an empty one");
+}
+
+// ── whose panel is open ──────────────────────────────────────────────────────
+// The Skills input carries no aria-expanded at all, but the wrapper's text gains
+// "Expanded". Without a signal the opener is a toggle being clicked blind.
+{
+  const panelOwner = eval(`(${extract("panelOwner")})`);
+  const isPanelOpen = eval(`(${extract("isPanelOpen")})`);
+  const pt = WORKDAY.promptTree;
+  const el = (aria) => ({ getAttribute: () => aria });
+
+  ok(isPanelOpen({ innerText: "Skills" }, el("true"), pt), "aria-expanded=true is open");
+  eq(panelOwner({ innerText: "Skills" }, el("false"), pt), false, "aria-expanded=false is shut");
+  // The real Workday shape, measured: no aria attribute, state in the wrapper's text.
+  ok(isPanelOpen({ innerText: "Type to Add Skills\nExpanded" }, el(null), pt),
+     "the wrapper's own 'Expanded' counts when there is no aria attribute");
+  eq(panelOwner({ innerText: "Type to Add Skills\n0 items selected" }, el(null), pt), false,
+     "and its absence means shut");
+  // A word merely containing "Expanded" must not read as state.
+  eq(panelOwner({ innerText: "Skills\nExpanded View Options" }, el(null), pt), false,
+     "a longer line is not the state marker");
+  eq(panelOwner({ innerText: "Skills" }, el(null), { ...pt, expandedText: null }), null,
+     "with no signal at all the answer is 'cannot tell', not 'shut'");
 }
 
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
