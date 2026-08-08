@@ -1385,5 +1385,389 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
   ok(iters * gap >= 4000, `the search budget (${iters * gap}ms) clears the measured ~1.5s round-trip`);
 }
 
+// ── the previous term's results are not this term's answer ───────────────────
+// Live: Pandas, Tableau and Snowflake landed and the rest came back "no result means
+// exactly this" — for skills the tenant offers. Erasing the box does not clear the panel,
+// so from the second skill on, the settle loop read the PREVIOUS skill's rows: non-empty
+// and length-stable, i.e. indistinguishable from a settled answer.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("export async function pickBySearch"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+
+  ok(/const stale = rowsKey\(\)/.test(body), "the rows showing before the search are remembered");
+  ok(body.indexOf("const stale = rowsKey()") < body.indexOf("CDP_TYPE"),
+     "and remembered BEFORE the new term is typed, or the snapshot is of the answer itself");
+  ok(/key === stale/.test(body), "a list identical to that snapshot is not read as a result");
+  ok(/never refreshed/.test(body),
+     "a panel that never updated is reported as ours to fix, not as an empty vocabulary");
+  // The staleness gate must not short-circuit the empty-state path: "No Items." is still
+  // how a genuinely absent skill answers.
+  ok(/empty: true/.test(body), "a real empty result is still reported as empty");
+}
+
+// ── the RESULTS are virtualized too ──────────────────────────────────────────
+// Live: Snowflake and ETL landed, Python did not — the reverse of the staleness bug, and
+// the giveaway. Python's search returns "Search Results (20)" into a panel holding ~7
+// rows, so the entry was below the fold and never in the DOM; short result lists fit in
+// one frame and hid it.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("export async function pickBySearch"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+
+  ok(/scrollerFor\(pt\.portal\)/.test(body), "the search results are scrolled, not read once");
+  ok(/maxScrolls/.test(body), "the walk is bounded by the adapter's budget");
+  // Scrolling must widen what is SEEN without loosening what counts as a match.
+  const frames = (body.match(/matchSearchResult\(/g) || []).length;
+  ok(frames >= 2, "matchSearchResult still decides, per frame");
+  ok(!/startsWith|includes\(want/.test(body), "and no prefix/substring fallback crept in with it");
+  // A scroller left part-way down by the previous term makes the next term's results open
+  // mid-list.
+  ok(/scrollTop = 0/.test(body), "the walk starts from the top of the list");
+  // Recycled nodes: the row matched two frames ago may be a different option by now.
+  ok(body.lastIndexOf("matchSearchResult(") > body.indexOf("delta"),
+     "the row is re-found after centring, not held across scrolls");
+  ok(/of \$\{seen\.length\} seen/.test(body),
+     "a miss reports the whole list walked, not the frame that happened to show");
+}
+
+// ── a multi-select counts its pills, not the first one ───────────────────────
+// Live: every skill after Python was clicked, landed on the form, and was reported
+// "clicked but the count did not move" — committedValue returns the first pill's TEXT,
+// which matches no "N items selected", so the count was stuck at 1 forever.
+{
+  const selectedCount = eval(`(${extract("selectedCount")})`);
+  const pt = WORKDAY.promptTree;
+  const wrapOf = (text, pills) => ({ innerText: text, querySelectorAll: () => new Array(pills) });
+
+  eq(selectedCount(wrapOf("Type to Add Skills", 0), pt), 0, "an untouched field holds nothing");
+  eq(selectedCount(wrapOf("Type to Add Skills\nPython (Programming Language)", 1), pt), 1,
+     "one pill is one value");
+  // The regression itself.
+  eq(selectedCount(wrapOf("Type to Add Skills\nPython (Programming Language)\nPandas", 2), pt), 2,
+     "a second pill moves the count — a stuck count reports every later skill as failed");
+  // The Field of Study shape has no pills, only a summary line.
+  eq(selectedCount(wrapOf("Field of Study\n3 items selected", 0), pt), 3,
+     "the summary line still counts where there are no pills");
+  eq(selectedCount(wrapOf("Field of Study\n1 item selected", 0), pt), 1, "...including the singular");
+}
+
+// The erase is asynchronous: CDP acknowledges the key, React applies it later.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("export async function pickBySearch"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  const erase = body.slice(body.indexOf("CDP_ERASE"));
+  ok(/i < \d+ && input\.value/.test(erase.slice(0, erase.indexOf("could not clear"))),
+     "the box is given time to empty before the erase is called a failure");
+}
+
+// Skills belongs to fillSkills, so the taxonomy pass must not re-ask it.
+// Live: it escalated as "Type to Add Skills" / unmatched and paused the run, so step 2
+// could never advance while step 1 sailed through.
+{
+  ok(WORKDAY.customQuestion.knownCoreIds.includes("formField-skills"),
+     "the skills field is claimed by the core fillers, not re-asked as a question");
+  // Everything else fillSkills/fillMyExperience owns must be claimed too, or the same
+  // pause comes back wearing a different label.
+  for (const aid of ["formField-jobTitle", "formField-schoolName", "formField-degree"]) {
+    ok(WORKDAY.customQuestion.knownCoreIds.includes(aid), `${aid} is claimed as well`);
+  }
+}
+
+// ── a step that touched nothing has to SAY nothing was touched ───────────────
+// Live on Adobe's "Application Questions": six required questions, and the pass filled
+// nothing, asked nothing and logged nothing — then Next bounced and the step was recorded
+// "blocked" with no errors. Silence read exactly like a page with no questions on it.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("async function fillQuestions"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+
+  ok(/NOTHING TOUCHED/.test(body), "a pass that did nothing says so");
+  ok(/seen\.wrappers/.test(body) && /seen\.unlabelled/.test(body),
+     "and tallies what it saw — 0 wrappers and 6 unlabelled are different bugs");
+  // Every silent `continue` must be counted, or the tally lies by omission.
+  const conts = (body.match(/continue;/g) || []).length;
+  const counted = (body.match(/seen\.\w+\+\+/g) || []).length;
+  ok(counted >= conts - 2, `each silent skip is counted (${counted} counters, ${conts} continues)`);
+  ok(/unnamed\.push\(aid\)/.test(body),
+     "an unlabelled wrapper is named by its automation-id, so the next run is actionable");
+}
+
+// ── which page, not "a page" ─────────────────────────────────────────────────
+// Live: the questions pass ran against My Experience — 15 wrappers, 14 of them core
+// fields it had already set — touched nothing, and clicked Next into six unanswered
+// required questions. Reading the live DOM found the marker had existed all along.
+{
+  ok(WORKDAY.multiStep.stepPages.questions === '[data-automation-id="applyFlowPrimaryQuestionsPage"]',
+     "the questions step is identified by its own marker, verified live");
+  // Every kind the driver dispatches on should eventually get one; the ones still missing
+  // are the steps that have never been reached.
+  for (const kind of ["myInformation", "myExperience", "questions"]) {
+    ok(WORKDAY.multiStep.stepPages[kind], `${kind} has a page marker`);
+  }
+}
+
+// Identifying the page is only half of ready: the container mounts before its fields.
+// Live, with the marker finally correct, the pass still logged "0 formField wrapper(s)"
+// because Adobe's questionnaire arrives on its own request a beat later.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("async function awaitStepReady"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  ok(/waitFor\(marker, timeoutMs\)\) return await fieldsSettled\(\)/.test(body),
+     "a matched marker still waits for the fields to arrive");
+  ok(!/waitFor\(marker, timeoutMs\)\) return true/.test(body),
+     "and never reports ready on the marker alone");
+  // Both paths, or the marker-less steps hit the same bug wearing a different hat.
+  eq((body.match(/fieldsSettled\(\)/g) || []).length, 3,
+     "every path that declares readiness waits for the fields");
+
+  const settle = drvSrc.slice(drvSrc.indexOf("async function fieldsSettled"));
+  const sbody = settle.slice(0, settle.indexOf("\n}\n"));
+  ok(/n > 0 && n === prev/.test(sbody), "settled means non-empty AND no longer growing");
+  ok(/return false/.test(sbody), "a page that never produces fields is reported, not waited on forever");
+}
+
+// And the backstop for the steps whose markers are still unknown.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("async function awaitStepReady"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+
+  // Counting is not identity: the outgoing page's field count is perfectly stable, which
+  // is exactly how the first fix passed its tests and still failed live.
+  ok(/formFieldSignature\(\) !== wasShowing/.test(body),
+     "the page must TURN OVER — a stable count is not proof of arrival");
+  ok(!/n === prev/.test(body), "and the count-settle that did not work is gone");
+  ok(/return false/.test(body), "a page that never turns over is reported, not filled blind");
+
+  // The signature has to be captured at the click, or there is nothing to compare against.
+  const loop = drvSrc.slice(drvSrc.indexOf("while (guard++ < 10)"));
+  ok(loop.indexOf("lastSignature = formFieldSignature()") < loop.indexOf("next.click()"),
+     "it is captured before Next is clicked");
+  ok(/awaitStepReady\(ctx, which, \d+, lastSignature\)/.test(loop),
+     "and handed to the readiness check on the following step");
+  // Filling the wrong page is worse than not filling: this must abort, not warn.
+  ok(/action: "never rendered"/.test(loop),
+     "a step that never rendered aborts the run rather than pressing on");
+}
+
+// ── "No" when the options are sentences ──────────────────────────────────────
+// Adobe asks "have you ever worked at Adobe in the following capacity" as a checkbox
+// group: Employee / Intern / Temporary Agency or Vendor / Other / "I have not worked for
+// Adobe in the past." A derived "No" matched nothing, so a question fully answerable from
+// work_history was asked instead.
+{
+  const rule = WORKDAY.derivedQuestions.find(r => r.key === "priorEmployer");
+  ok(rule.pattern.test("Have you ever worked at Adobe in the following capacity:"),
+     "the named-employer phrasing reaches the derived rule");
+  // The phrasings that already worked must keep working.
+  ok(rule.pattern.test("Have you been employed by Adobe in the past?"), "...and so does the old one");
+
+  const noAliases = rule.optionAliases.No;
+  ok(noAliases.some(rx => rx.test("I have not worked for Adobe in the past.")),
+     "a 'No' reaches the option that says No in words");
+  // Narrowness is the point: these must be restatements, never a broader claim.
+  ok(!noAliases.some(rx => rx.test("None of the above")),
+     "'None of the above' is NOT a No — it can cover options work_history says nothing about");
+  ok(!noAliases.some(rx => rx.test("Employee")) && !noAliases.some(rx => rx.test("Other")),
+     "and no alias reaches a capacity option");
+  ok(!rule.optionAliases.Yes,
+     "there is no Yes alias — which capacity he worked in is not derivable and must be asked");
+}
+
+// ── a group's question is its legend, not its first option ───────────────────
+// Live: "Have you ever worked at Adobe in the following capacity:" is a fieldset with a
+// legend AND option labels. Label-first extracted "Employee", so the derived rule never
+// saw the question and the taxonomy was handed an option name to classify.
+{
+  const extractLabel = eval(`(${extract("extractLabel")})`);
+  const mk = (legend, label) => ({
+    querySelector: (s) => s === "legend" ? (legend ? { innerText: legend } : null)
+                        : s === "label"  ? (label  ? { innerText: label  } : null) : null,
+    getAttribute: () => null, innerText: [legend, label].filter(Boolean).join("\n"),
+  });
+  eq(extractLabel(mk("Have you ever worked at Adobe in the following capacity:*", "Employee"), WORKDAY),
+     "Have you ever worked at Adobe in the following capacity:",
+     "the fieldset's legend is the question, and the trailing * is stripped");
+  // Ordinary single fields have a label and no legend — unchanged.
+  eq(extractLabel(mk(null, "Email Address*"), WORKDAY), "Email Address",
+     "a plain field still reads its label");
+  // And the question the legend yields must reach the derived rule.
+  const rule = WORKDAY.derivedQuestions.find(r => r.key === "priorEmployer");
+  ok(rule.pattern.test("Have you ever worked at Adobe in the following capacity:"),
+     "which is the whole point — 'Employee' matched nothing");
+}
+
+// ── the tenant's wording comes from the profile, not from us ─────────────────
+// Adobe's ethnicity list has no "South Asian", and its veteran list splits "not a
+// protected veteran" into two different claims. Both wordings are facts about the
+// applicant, so they are read from the profile — never picked at fill time.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("export async function pickListbox"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+
+  ok(/pickListbox\(ctx, wrapperSel, wanted, alternates = \[\]\)/.test(drvSrc),
+     "pickListbox takes alternates");
+  ok(/const wants = \[wanted, \.\.\.\(alternates \|\| \[\]\)\]/.test(body),
+     "the profile's own value is tried first, alternates only after");
+
+  // Scoped by value_key, so a wording written for ethnicity can never reach another field.
+  const qf = drvSrc.slice(drvSrc.indexOf("async function fillQuestions"));
+  ok(/answer_alternates"\) \|\| \{\}\)\[c\.value_key\]/.test(qf),
+     "alternates are keyed by the taxonomy value_key that produced the answer");
+  // And a miss must name what was on offer, the same bargain as the skills search.
+  ok(/offered: /.test(qf), "a failed pick reports the options it was offered");
+}
+
+// The consent box Parth chose to auto-tick (2026-08-09).
+{
+  const tax = JSON.parse(readFileSync(new URL("./taxonomy.json", import.meta.url), "utf8"));
+  const rules = tax.buckets.deterministic;
+  const hit = rules.find(r => r.pattern && new RegExp(r.pattern, "i")
+    .test("Check this box to confirm the statement above."));
+  ok(hit && hit.value_key === "attestations.data_privacy_consent",
+     "Adobe's consent checkbox routes to the privacy-consent flag");
+  // An opt-OUT box says something different and must not ride this rule.
+  const optOut = rules.find(r => r.pattern && new RegExp(r.pattern, "i")
+    .test("Check this box if you do not wish to be contacted about future roles"));
+  ok(!optOut || optOut.value_key !== "attestations.data_privacy_consent",
+     "and an opt-out box does not land on it");
+}
+
+// ── a lone checkbox is answered by ticking it ────────────────────────────────
+// Live: "Check this box to confirm the statement above." classified to Yes, then the group
+// matcher looked for an option LABELLED "Yes", found none, and paused the run on a
+// question the profile had already answered.
+{
+  const setLoneCheckbox = eval(`(${extract("setLoneCheckbox")})`);
+  const mk = (checked, extra = []) => {
+    const box = { type: "checkbox", id: "b1", checked, click() { this.checked = !this.checked; } };
+    const all = [box, ...extra];
+    return { box, wrapper: {
+      querySelectorAll: (s) => s.includes("checkbox") ? all.filter(i => i.type === "checkbox")
+                                                      : all.filter(i => i.type === "radio"),
+      querySelector: (s) => s.includes("radio") ? all.find(i => i.type === "radio") || null : null,
+    }};
+  };
+
+  let m = mk(false);
+  let r = setLoneCheckbox(m.wrapper, "Yes");
+  ok(r && r.ok && m.box.checked, "an unticked box is ticked for Yes");
+
+  m = mk(true);
+  r = setLoneCheckbox(m.wrapper, "Yes");
+  ok(r && r.ok && m.box.checked, "an already-ticked box is left alone, not toggled off");
+
+  m = mk(true);
+  r = setLoneCheckbox(m.wrapper, "No");
+  ok(r && r.ok && !m.box.checked, "No clears it");
+
+  m = mk(false);
+  r = setLoneCheckbox(m.wrapper, "No");
+  ok(r && r.ok && !m.box.checked, "and never ticks something for No");
+
+  // Anything we do not understand must fall through to being asked — a consent box is the
+  // last place to guess.
+  eq(setLoneCheckbox(mk(false).wrapper, "Employee"), null, "an unrecognised answer is not applied");
+  // A real group still goes down the group path.
+  const grp = mk(false, [{ type: "radio", id: "r1" }]);
+  eq(setLoneCheckbox(grp.wrapper, "Yes"), null, "a wrapper with radios is not a lone checkbox");
+}
+
+// ── Self Identify: the four fields that stopped the run ──────────────────────
+{
+  const cq = WORKDAY.customQuestion;
+  eq(cq.fieldValueKeys["formField-disabilityStatus"], "eeo.disability_status",
+     "the disability question is routed by id — its legend says only 'check one of the boxes below'");
+  ok(cq.todayFields.includes("formField-dateSignedOn"),
+     "the signature date comes from the clock, not the profile");
+  ok(WORKDAY.multiStep.stepPages.disclosures, "and the disclosures page has its marker");
+  ok(WORKDAY.date.day === '[data-automation-id="dateSectionDay-input"]',
+     "MM/DD/YYYY dates have a day section");
+}
+
+// Optional fields must not stop the run; required ones still must.
+{
+  const isFieldRequired = eval(`(${extract("isFieldRequired")})`);
+  const mk = (ariaReq, cap) => ({
+    querySelector: (s) => s === "[aria-required]" ? (ariaReq == null ? null : { getAttribute: () => ariaReq })
+                        : s === "legend" ? (cap ? { innerText: cap } : null)
+                        : s === "label" ? (cap ? { innerText: cap } : null) : null,
+  });
+  eq(isFieldRequired(mk("false", "Employee ID (if applicable)")), false,
+     "aria-required=false is believed — this is the field that stopped the run");
+  eq(isFieldRequired(mk("true", "Anything")), true, "and so is aria-required=true");
+  eq(isFieldRequired(mk(null, "Language*")), true, "an asterisk means required");
+  eq(isFieldRequired(mk(null, "Employee ID (if applicable)")), false, "no marking means not required");
+}
+
+// A field that already holds the right answer is kept, not re-answered.
+{
+  const committedAnswer = eval(`(${extract("committedAnswer")})`);
+  const dd = WORKDAY.dropdown;
+  const mkDrop = (text) => ({
+    querySelectorAll: () => [],
+    querySelector: (s) => s === dd.control ? { innerText: text } : null,
+  });
+  eq(committedAnswer(mkDrop("English"), WORKDAY), "English", "a set dropdown reports its value");
+  eq(committedAnswer(mkDrop("Select One"), WORKDAY), null,
+     "the placeholder is not an answer");
+
+  const mkChecked = (texts) => ({
+    querySelectorAll: () => texts.map((t, i) => ({ checked: true, id: "i" + i })),
+    querySelector: (s) => s.startsWith("label[for=") ? { innerText: texts[Number(s.match(/i(\d+)/)[1])] } : null,
+  });
+  eq(committedAnswer(mkChecked(["Yes"]), WORKDAY), "Yes", "a ticked box reports its label");
+}
+
+// Profile alternates reach checkbox groups too, matched whole or as a prefix.
+{
+  const clickChoiceByText = eval(`(${extract("clickChoiceByText")})`);
+  globalThis.CSS = { escape: (s) => s };
+  const opts = ["Yes, I have a disability, or have had one in the past",
+                "No, I do not have a disability and have not had one in the past",
+                "I do not want to answer"];
+  let clicked = null;
+  const wrapper = {
+    querySelectorAll: () => opts.map((t, i) => ({ type: "checkbox", id: "o" + i, closest: () => null })),
+    querySelector: (s) => { const m = s.match(/o(\d+)/);
+      return m ? { innerText: opts[Number(m[1])], click() { clicked = opts[Number(m[1])]; } } : null; },
+  };
+  ok(clickChoiceByText(wrapper, "No, I don't have a disability",
+       ["No, I do not have a disability and have not had one in the past"]),
+     "the profile's alternate finds Adobe's wording");
+  eq(clicked, "No, I do not have a disability and have not had one in the past",
+     "and ticks the No option, not the Yes one");
+
+  // A substring match would tick the Yes option, which says the opposite.
+  clicked = null;
+  ok(!clickChoiceByText(wrapper, "have a disability", []),
+     "a bare substring is not a match — 'have a disability' must not tick the Yes box");
+  eq(clicked, null, "nothing was ticked");
+}
+
+// Aliases are a fallback, never a shortcut past an exact option.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("function clickChoiceByText"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  ok(body.indexOf("=== want") < body.indexOf("alt instanceof RegExp"),
+     "every exact option is tried before any alias is considered");
+}
+
+// A skill the tenant words differently must say what it offered instead.
+{
+  const drvSrc = readFileSync(new URL("./workday_driver.js", import.meta.url), "utf8");
+  const fn = drvSrc.slice(drvSrc.indexOf("async function fillSkills"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  ok(/res\.sample/.test(body),
+     "the rows on offer reach the report — 'no result means exactly this' alone is unactionable");
+}
+
 console.log(`workday units: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);

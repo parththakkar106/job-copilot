@@ -178,9 +178,21 @@ export const WORKDAY = {
     // missing — live, step 3 came back with "no Add Another button", "no listbox button"
     // and "file input not found" simultaneously, which is not three broken selectors, it
     // is one empty page. Where a step has a known container, wait for it.
+    // WHICH page has rendered, not "a page has rendered". A step without a marker here
+    // falls back to "does any formField exist", and during React's swap the OUTGOING
+    // step's fields are still mounted — so the questions pass ran against My Experience,
+    // found 15 wrappers of which 14 were core fields it had already set, touched nothing,
+    // and clicked Next into six unanswered required questions. VERIFIED LIVE 2026-08-09
+    // by reading the page: the questions step carries its own marker and always did.
     stepPages: {
       myInformation: '[data-automation-id="applyFlowMyInfoPage"]',
       myExperience: '[data-automation-id="applyFlowMyExpPage"]',
+      questions: '[data-automation-id="applyFlowPrimaryQuestionsPage"]',
+      disclosures: '[data-automation-id="applyFlowVoluntaryDisclosuresPage"]',   // read live 2026-08-09
+      // disclosures / selfIdentify / review markers are still UNKNOWN — read them off the
+      // live page when the run first reaches each, the way this one was found. Until then
+      // those steps rely on the page-turnover check in awaitStepReady, which is a backstop
+      // rather than proof of which page you are on.
     },
 
     stepKinds: {
@@ -410,7 +422,28 @@ export const WORKDAY = {
       "formField-roleDescription", "formField-schoolName", "formField-degree",
       "formField-fieldOfStudy", "formField-gradeAverage",
       "formField-firstYearAttended", "formField-lastYearAttended",
+      // Skills is fillSkills' field, from the CV's own list. Left off this list it reached
+      // the taxonomy pass as "Type to Add Skills", bucket "unmatched", and PAUSED THE RUN
+      // FOR INPUT on a field that had just been filled — step 2 could never advance, while
+      // step 1 sailed through. Same shape as the resume-upload trap documented below.
+      "formField-skills",
     ],
+
+    // WHEN THE LABEL CANNOT CARRY THE QUESTION. Self Identify's disability question is a
+    // legend reading "Please check one of the boxes below:" — no word in it says what is
+    // being asked, so no label pattern could ever route it, and it escalated as unmatched.
+    // The automation-id says exactly what the field is and is stable across tenants
+    // (Workday's own self-identify form), so the id is the honest signal here. Answers
+    // still come from the profile; this only says WHICH profile answer is being asked for.
+    fieldValueKeys: {
+      "formField-disabilityStatus": "eeo.disability_status",
+    },
+
+    // "Date" on the Self Identify page is the signature date — the day you attest, which
+    // is today by definition, not a fact stored in the profile. Listed by id rather than
+    // matched on the label "Date", which appears on plenty of fields that mean something
+    // else entirely.
+    todayFields: ["formField-dateSignedOn"],
 
     // NOT QUESTIONS. The resume upload is owned by the attach path and no answer could
     // satisfy it, but it renders as a formField- wrapper and so reached the taxonomy pass
@@ -440,8 +473,22 @@ export const WORKDAY = {
   // The wording varies by tenant, hence the pattern rather than an id.
   derivedQuestions: [
     { key: "priorEmployer",
-      pattern: /\b(have you|were you)\b.*\b(employed|worked)\b.*\b(here|us|for us|in the past|previously|before)\b|\bprevious(ly)? (employed|worked)\b.*\b(by|at|for)\b/i,
-      resolve: "priorEmployerAnswer" },
+      // "...ever worked at Adobe in the following capacity:" — named-employer phrasing was
+      // missing, so the question fell past the derived rule to the taxonomy and was asked.
+      pattern: /\b(have you|were you)\b.*\b(employed|worked)\b.*\b(here|us|for us|in the past|previously|before)\b|\bprevious(ly)? (employed|worked)\b.*\b(by|at|for)\b|\bhave you ever (been employed|worked)\b/i,
+      resolve: "priorEmployerAnswer",
+      // WHEN THE OPTIONS ARE NOT "Yes"/"No". Adobe asks this as a checkbox group —
+      // Employee / Intern / Temporary Agency or Vendor / Other / "I have not worked for
+      // Adobe in the past." — so a derived "No" matched nothing and the question was asked
+      // despite being fully answerable from work_history.
+      //
+      // These are RESTATEMENTS of the derived answer, not new claims: "I have not worked
+      // for X" says exactly what No says. Deliberately narrow — "None of the above" is NOT
+      // here, because on some tenants it also covers options this rule knows nothing
+      // about, and ticking it would assert more than work_history supports. There is no
+      // Yes alias for the same reason: which capacity he worked in is not derivable, so a
+      // Yes must always be asked.
+      optionAliases: { No: [/^\s*i have not worked\b/i, /\bnever worked (for|at)\b/i] } },
   ],
 
   // ── promptTree: the widget that needs CDP ───────────────────────────────────
@@ -533,6 +580,9 @@ export const WORKDAY = {
   date: {
     wrapper: '[data-automation-id="dateInputWrapper"]',
     month: '[data-automation-id="dateSectionMonth-input"]',
+    // Present on MM/DD/YYYY dates only — the Self Identify signature date has one, work
+    // history does not. setDate reads the DOM for it rather than being told per step.
+    day: '[data-automation-id="dateSectionDay-input"]',
     year: '[data-automation-id="dateSectionYear-input"]',
     needsCDP: true,
     // Never setNativeValue these. Clear first, then type MMYYYY as trusted keystrokes;

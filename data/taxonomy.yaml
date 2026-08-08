@@ -71,14 +71,30 @@ buckets:
     # "authorized to work in this COUNTRY?" is a Yes/No work-auth question, but the generic
     # \bcountry\b address rule below would grab it and fill "United States" (no Yes/No match).
     # So this MUST precede country. Renders "Yes" from work_authorization.authorized_us.
-    - {pattern: 'authorized to work|legally authorized|eligible to work',  value_key: work_authorization.authorized_us}
+    # "right to work" is the same question in other words, and Adobe asks it as "can you
+    # provide documentation establishing your identity and right to work..." — which a
+    # green card answers Yes. It was missing, so a question fully covered by the profile
+    # fell through to being asked. Not "right-to-work state" (US labour law, a different
+    # thing entirely): require the work/employment sense by what follows it.
+    - {pattern: 'authorized to work|legally authorized|eligible to work|right to work (in|for|at|here)|(documentation|proof|evidence).{0,40}right to work', value_key: work_authorization.authorized_us}
     # "Country of citizenship"/"Nationality" is an immigration question, NOT the mailing
     # address. The two differ for anyone living outside their country of citizenship,
     # which is every visa and permanent-resident case. MUST precede \bcountry\b, which
     # would otherwise silently fill the country of RESIDENCE — factually wrong, and wrong
     # on exactly the forms where the distinction is being checked.
     - {pattern: 'country of (citizenship|nationality)|citizenship country|\bnationality\b', value_key: work_authorization.citizenship_country}
-    - {pattern: '\bcountry\b',                                      value_key: identity.address.country}
+    # Explicit residence phrasings first — these ARE asking for a country and do end in a
+    # question mark, so they must be claimed before the no-question-mark guard below.
+    - {pattern: 'country of residence|(what|which) country do you (live|reside)|country you (live|reside) in', value_key: identity.address.country}
+    # A QUESTION MARK MEANS IT IS A QUESTION, NOT A FIELD LABEL. Verified live on Adobe's
+    # Application Questions: "Are you of legal age to work in the country in which this
+    # position will be based?" and "...can you provide documentation establishing your
+    # identity and right to work in the country where this position will be based?" are
+    # both Yes/No, and this rule answered "United States" to each. No such option exists so
+    # nothing wrong was ever ticked — but a mis-routed question is reported as a failed
+    # fill instead of being asked, which is the noisier and less honest of the two.
+    # Address labels ("Country", "Country/Region") carry no "?", so the guard costs nothing.
+    - {pattern: '^[^?]*\bcountry\b[^?]*$',                          value_key: identity.address.country}
     # A single free-text "Location" field (common as a Greenhouse React custom question):
     # no separate city/state boxes, so fill the full display string ("City, State,
     # Country"). Placed AFTER the granular city/state/zip/country rules so those still
@@ -128,7 +144,12 @@ buckets:
     # accordance with … Privacy Policy"). Deterministic Yes -> checks the box / picks "I agree"
     # (canon() maps "I agree" -> yes). Keyed on agreement wording, NOT bare "consent", so it
     # doesn't collide with the demographic-consent rule above.
-    - {pattern: 'i agree|privacy policy|candidate privacy|processed in accordance|terms (and|&) conditions|by (checking|selecting|clicking|submitting)', value_key: attestations.data_privacy_consent}
+    # "Check this box to confirm the statement above." — Adobe's Voluntary Disclosures
+    # consent, and the phrasing points at a statement it does not repeat, so the label
+    # alone never matched. Confirmed with Parth 2026-08-09: consent boxes fill from this
+    # flag rather than pausing. Kept to confirm/acknowledge/agree — a box whose label says
+    # what it opts you OUT of is a different question and must not land here.
+    - {pattern: 'i agree|privacy policy|candidate privacy|processed in accordance|terms (and|&) conditions|by (checking|selecting|clicking|submitting)|check this box to (confirm|acknowledge|agree)', value_key: attestations.data_privacy_consent}
     # Prior / related affiliation disclosures -> all No (see profile.affiliations)
     # Question-anchored: the old broad previous(ly)+employ/work pattern captured résumé
     # history fields ("List your previous employers", "Describe your previous work

@@ -105,7 +105,12 @@ function fieldInput(wrapperSel, kind = "input,textarea") {
 // permanently-present listbox holding `selectedItem` nodes for values chosen elsewhere on
 // the page; on the country field it contributed a stray "India (+91)" owned by the phone
 // widget. Scope to the real popup and drop selectedItem nodes.
-export async function pickListbox(ctx, wrapperSel, wanted) {
+// `alternates` are OTHER WORDINGS OF THE SAME ANSWER, supplied by the profile and tried
+// only after the profile's own value fails. Adobe's ethnicity list has no "South Asian"
+// and its veteran list splits "not a protected veteran" into two different claims, so the
+// tenant's phrasing has to come from somewhere — and the only honest somewhere is the
+// applicant. Nothing here derives a substitute; it recognises ones already written down.
+export async function pickListbox(ctx, wrapperSel, wanted, alternates = []) {
   const { adapter } = ctx;
   const dd = adapter.dropdown;
   const btn = document.querySelector(`${wrapperSel} ${dd.control}`);
@@ -144,11 +149,20 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
   const leftOpen = scoped ? [] : readOpts();
   btn.click();
 
-  const want = String(wanted).trim().toLowerCase();
   const txt = (o) => (o.innerText || "").trim();
-  const match = (os) => os.find(o => txt(o).toLowerCase() === want)
-                     || os.find(o => txt(o).toLowerCase().startsWith(want))
-                     || os.find(o => txt(o).toLowerCase().includes(want));
+  // The profile's own value first, in full, before any alternate is considered — an
+  // alternate is a fallback for a vocabulary gap, never a shortcut past the real answer.
+  const wants = [wanted, ...(alternates || [])]
+    .map(v => String(v == null ? "" : v).trim().toLowerCase()).filter(Boolean);
+  const match = (os) => {
+    for (const w of wants) {
+      const hit = os.find(o => txt(o).toLowerCase() === w)
+               || os.find(o => txt(o).toLowerCase().startsWith(w))
+               || os.find(o => txt(o).toLowerCase().includes(w));
+      if (hit) return hit;
+    }
+    return null;
+  };
 
   // Then wait for the list to SETTLE, not merely to be non-empty. A dependent list is
   // refetched when its parent changes — setting Country reloads State, and this driver
@@ -178,6 +192,7 @@ export async function pickListbox(ctx, wrapperSel, wanted) {
     // An empty list and a list without the answer are different failures — one is timing,
     // the other is vocabulary — and the old message could not tell them apart.
     return { ok: false, wanted, sample: opts.slice(0, 8).map(txt),
+             tried: wants,
              reason: opts.length ? `no option matched (of ${opts.length})`
                                  : "list never populated" };
   }
@@ -491,13 +506,22 @@ export async function setDate(ctx, wrapperSel, iso) {
   const d = adapter.date;
   const wrap = document.querySelector(wrapperSel);
   if (!wrap) return { ok: false, reason: "date field not found" };
-  const m = String(iso || "").match(/^(\d{4})-(\d{1,2})/);
-  if (!m) return { ok: false, reason: `unparseable date ${JSON.stringify(iso)} (want YYYY-MM)` };
+  const m = String(iso || "").match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/);
+  if (!m) return { ok: false, reason: `unparseable date ${JSON.stringify(iso)} (want YYYY-MM[-DD])` };
 
   const mm = String(m[2]).padStart(2, "0"), yyyy = m[1];
 
   const month = wrap.querySelector(d.month);
   const year = wrap.querySelector(d.year);
+  // A THIRD SECTION EXISTS ON SOME DATES. Work history asks for MM/YYYY, but the Self
+  // Identify signature date is MM/DD/YYYY — and a day section left empty is an incomplete
+  // date, so the step bounces while the field looks filled. Detected from the DOM rather
+  // than assumed per step: the same widget renders both shapes.
+  const dayEl = d.day ? wrap.querySelector(d.day) : null;
+  const dd = m[3] ? String(m[3]).padStart(2, "0") : null;
+  if (dayEl && !dd) {
+    return { ok: false, reason: `this date has a day section but ${JSON.stringify(iso)} carries no day` };
+  }
   bringIntoView(wrap);
 
   // SINGLE-INPUT SHAPE. Not every Workday date control is a two-section spinner; some are
@@ -513,12 +537,14 @@ export async function setDate(ctx, wrapperSel, iso) {
     await sleep(200);
     await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
     await sleep(150);
-    await rpc({ type: "CDP_TYPE", text: `${mm}/${yyyy}` });
+    await rpc({ type: "CDP_TYPE", text: dd ? `${mm}/${dd}/${yyyy}` : `${mm}/${yyyy}` });
     await sleep(400);
     const got = String(one.value || "");
-    if (got.includes(mm) && got.includes(yyyy)) return { ok: true, value: `${mm}/${yyyy}` };
+    const okOne = got.includes(mm) && got.includes(yyyy) && (!dd || got.includes(dd));
+    if (okOne) return { ok: true, value: dd ? `${mm}/${dd}/${yyyy}` : `${mm}/${yyyy}` };
     return { ok: false,
-             reason: `single-box date did not commit — reads "${got}", wanted ${mm}/${yyyy}` };
+             reason: `single-box date did not commit — reads "${got}", wanted ` +
+                     (dd ? `${mm}/${dd}/${yyyy}` : `${mm}/${yyyy}`) };
   }
 
   // DRIVE EACH SECTION, DO NOT TRUST AUTO-ADVANCE. Typing all six digits into the month
@@ -537,8 +563,17 @@ export async function setDate(ctx, wrapperSel, iso) {
     await sleep(200);
     return true;
   };
-  const reads = () => [String(month.value || "").trim().padStart(2, "0"),
-                       String(year.value || "").trim()];
+  // Sections in the order they are typed, so month/year and month/day/year share one path.
+  const sections = [{ el: month, text: mm, erase: 4 }]
+    .concat(dayEl ? [{ el: dayEl, text: dd, erase: 4 }] : [])
+    .concat([{ el: year, text: yyyy, erase: 6 }]);
+  const wantAll = sections.map(x => x.text);
+  const shown = dayEl ? `${mm}/${dd}/${yyyy}` : `${mm}/${yyyy}`;
+  const reads = () => sections.map(x => {
+    const v = String(x.el.value || "").trim();
+    return x.el === year ? v : v.padStart(2, "0");
+  });
+  const same = (got) => got.length === wantAll.length && got.every((v, i) => v === wantAll[i]);
 
   // THREE STRATEGIES, tried in order, each verified. This control has failed in every
   // direction so far — a bare MMYYYY burst lost the month, clicking between sections
@@ -569,8 +604,10 @@ export async function setDate(ctx, wrapperSel, iso) {
   const strategies = [
     // Focus each section directly. No coordinates, no caret travel.
     async () => {
-      if (!await typeInto(month, mm, 4)) return "the month section would not take focus";
-      if (!await typeInto(year, yyyy, 6)) return "the year section would not take focus";
+      for (const x of sections) {
+        const name = x.el === month ? "month" : x.el === year ? "year" : "day";
+        if (!await typeInto(x.el, x.text, x.erase)) return `the ${name} section would not take focus`;
+      }
       return null;
     },
     // Tab between sections, in case the widget manages focus itself and rejects a
@@ -580,6 +617,12 @@ export async function setDate(ctx, wrapperSel, iso) {
       await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
       await rpc({ type: "CDP_TYPE", text: mm });
       await sleep(200);
+      if (dayEl) {
+        await rpc({ type: "CDP_KEY", key: "Tab" });
+        await sleep(150);
+        await rpc({ type: "CDP_TYPE", text: dd });
+        await sleep(200);
+      }
       await rpc({ type: "CDP_KEY", key: "Tab" });
       await sleep(150);
       await rpc({ type: "CDP_TYPE", text: yyyy });
@@ -589,7 +632,7 @@ export async function setDate(ctx, wrapperSel, iso) {
     async () => {
       if (!await focusMonth()) return "the month section has no rect";
       await rpc({ type: "CDP_ERASE", times: d.clearKeystrokes || 8 });
-      await rpc({ type: "CDP_TYPE", text: `${mm}/${yyyy}` });
+      await rpc({ type: "CDP_TYPE", text: shown });
       return null;
     },
   ];
@@ -598,17 +641,16 @@ export async function setDate(ctx, wrapperSel, iso) {
   for (const run of strategies) {
     lastWhy = await run();
     await sleep(350);
-    const [gotM, gotY] = reads();
-    if (gotM === mm && gotY === yyyy) return { ok: true, value: `${mm}/${yyyy}` };
+    if (same(reads())) return { ok: true, value: shown };
   }
 
   // AND REPORT THE TRUTH. This used to return ok:true unconditionally, so the report said
   // "set" for dates that were showing validation errors on screen — the worst kind of
   // wrong, because the run moves on and blames the next step.
-  const [m2, y2] = reads();
+  const got = reads();
   return { ok: false,
            reason: `did not commit after ${strategies.length} strategies — reads ` +
-                   `"${m2 || "MM"}/${y2 || "YYYY"}", wanted ${mm}/${yyyy}` +
+                   `"${got.join("/") || "empty"}", wanted ${shown}` +
                    (lastWhy ? ` (${lastWhy})` : "") + `; ${describeDateWidget(wrap)}` };
 }
 
@@ -893,9 +935,29 @@ export async function pickBySearch(ctx, wrapperSel, term) {
   // spinner commit.
   input.focus();
   if (input.value) {
-    await rpc({ type: "CDP_ERASE", times: input.value.length + 4 });
+    // WAIT FOR THE KEYSTROKES TO LAND, THEN TRY AGAIN. CDP resolves when the browser
+    // acknowledges the key event, not when React has processed it into the controlled
+    // input. Polling alone still lost Tableau to a box holding "NumP": the backspaces do
+    // not all survive the round trip, so waiting longer for the remaining four to arrive
+    // waits for something that is not coming. Erase, wait, and re-erase what is left.
+    for (let attempt = 0; attempt < 3 && input.value; attempt++) {
+      await rpc({ type: "CDP_ERASE", times: input.value.length + 4 });
+      for (let i = 0; i < 10 && input.value; i++) await sleep(150);
+    }
     if (input.value) return { ok: false, reason: `could not clear the search box ("${input.value}")` };
   }
+  // THE PREVIOUS TERM'S RESULTS ARE STILL ON SCREEN. Clearing the box does not empty the
+  // panel — the rows change only when the server answers the NEXT search — so from the
+  // second skill onwards the list read below can be the previous skill's list. It is
+  // non-empty and its length is stable, which is exactly what the settle loop calls
+  // "settled": "Snowflake" gets matched against Python's twenty rows and is reported "no
+  // result means exactly this" for a skill this tenant does offer. That is the whole
+  // reason a few skills land and the rest do not — the first search has an empty panel to
+  // start from, later ones do not. Remember what is there and refuse to read it as an
+  // answer to a question it never heard.
+  const rowsKey = () => allRows(pt).map(r => (r.innerText || "").trim()).join("\u0001");
+  const stale = rowsKey();
+
   await rpc({ type: "CDP_TYPE", text: term });
 
   // SUBMIT. The search is server-side and runs on Enter, not as you type. Waiting for
@@ -911,11 +973,15 @@ export async function pickBySearch(ctx, wrapperSel, term) {
   // first cut called it empty after 1.2s, so the first skill squeaked through and the next
   // seven were reported "not offered" despite every one of them existing. Give the server
   // real time, and require the empty state to PERSIST before believing it.
-  let opts = [], prev = -1, emptyReads = 0;
+  let opts = [], prev = -1, emptyReads = 0, key = "";
   for (let i = 0; i < 20; i++) {
     await sleep(300);
     if (input.value !== term) return { ok: false, reason: `search box holds "${input.value}"` };
-    opts = allRows(pt);
+    key = rowsKey();
+    // A list identical to the one that was showing before we typed has not answered us
+    // yet. Treat it as nothing on screen: keep waiting, and let the empty-state counter
+    // stay put, since the panel is showing rows rather than "No Items."
+    opts = (stale && key === stale) ? [] : allRows(pt);
     if (opts.length) {
       if (opts.length === prev) break;                       // settled
       emptyReads = 0;
@@ -925,12 +991,58 @@ export async function pickBySearch(ctx, wrapperSel, term) {
     }
     prev = opts.length;
   }
-  if (!opts.length) return { empty: true, ok: false, reason: "no results within 6s" };
+  if (!opts.length) {
+    // Distinguish "this tenant has no such skill" from "the panel never updated" — the
+    // second is ours to fix and must never be filed under the first.
+    if (stale && key === stale) {
+      return { ok: false, reason: "the results never refreshed — still showing the previous search" };
+    }
+    return { empty: true, ok: false, reason: "no results within 6s" };
+  }
 
   const txt = (o) => (o.innerText || "").trim();
-  const hit = matchSearchResult(term, opts, txt);
-  if (!hit) return { ok: false, reason: "no result means exactly this",
-                     sample: opts.slice(0, 6).map(txt) };
+
+  // THE RESULTS ARE VIRTUALIZED TOO. Matching only what is rendered right now is how
+  // "Python" fails while "Snowflake" and "ETL" work: measured, Python's search returns
+  // "Search Results (20)" into a panel that keeps ~7 rows in the DOM, so
+  // "Python (Programming Language)" is not absent — it is below the fold and was never
+  // queryable. A short result list fits in one frame and looked fine, which is exactly why
+  // this hid behind two skills that worked.
+  //
+  // So walk the list the way pickPromptTree does. Same bargain as there: scrolling widens
+  // what we can SEE, it does not loosen what counts as a match — matchSearchResult still
+  // decides, per frame.
+  const list = scrollerFor(pt.portal);
+  // Start from the top. The scroller survives between searches, so a term scrolled through
+  // earlier leaves the next term's results opening part-way down their own list.
+  if (list && list.scrollTop) { list.scrollTop = 0; await sleep(250); }
+
+  const seen = [];
+  let hit = null;
+  for (let scroll = 0; scroll < (pt.maxScrolls || 120); scroll++) {
+    const frame = allRows(pt);
+    for (const r of frame) { const t = txt(r); if (!seen.includes(t)) seen.push(t); }
+    hit = matchSearchResult(term, frame, txt);
+    if (hit || !list) break;
+    const before = list.scrollTop;
+    list.scrollTop += Math.max(40, Math.round((list.clientHeight || 200) * 0.75));
+    await sleep(250);
+    if (list.scrollTop === before) break;               // bottom reached
+  }
+  // Report the whole list walked, not the frame that happened to be showing — that is what
+  // makes "the tenant words it differently" distinguishable from "the tenant lacks it".
+  if (!hit) return { ok: false, reason: `no result means exactly this (of ${seen.length} seen)`,
+                     sample: seen.slice(0, 8) };
+
+  // RE-FIND AFTER SCROLLING, then centre — virtualised rows get recycled, so the node
+  // matched two frames ago may now be a different option or unmounted. pickPromptTree
+  // learned this against a 0x0 rect; the same renderer is underneath this panel.
+  if (list) {
+    const lr = list.getBoundingClientRect(), hr = hit.getBoundingClientRect();
+    const delta = (hr.top + hr.height / 2) - (lr.top + lr.height / 2);
+    if (Math.abs(delta) > 4) { list.scrollTop += delta; await sleep(300); }
+    hit = matchSearchResult(term, allRows(pt), txt) || hit;
+  }
 
   const target = clickPointFor(hit, pt, true);
   if (!target) return { ok: false, reason: "result row has no clickable box" };
@@ -944,9 +1056,20 @@ export async function pickBySearch(ctx, wrapperSel, term) {
 // How many values a multi-select currently holds, read from its own summary line. Used to
 // confirm a pick actually landed rather than trusting the click.
 export function selectedCount(wrap, pt) {
-  const c = committedValue(wrap, pt);
-  const m = c && String(c).match(/(\d+)\s+items?\s+selected/i);
-  return m ? Number(m[1]) : (c ? 1 : 0);
+  // COUNT THE PILLS, don't read the first one. This went through committedValue, which
+  // returns the first `selectedItem` pill's TEXT before it looks at the summary line — so
+  // from the second skill on it returned "Python (Programming Language)", matched no
+  // "N items selected", and fell through to 1. Stuck at 1, `after > before` is false
+  // forever: every skill after the first was clicked, landed on the form, and was reported
+  // "clicked but the count did not move". The form was right and the report was wrong,
+  // which is the worst way round — it sent me hunting the search code twice.
+  //
+  // Take whichever signal is higher: a multi-select renders a pill per value, while the
+  // Field of Study shape only updates its summary line.
+  const m = (wrap.innerText || "").match(/(\d+)\s+items?\s+selected/i);
+  const summary = m ? Number(m[1]) : 0;
+  const pills = pt.selected ? wrap.querySelectorAll(pt.selected).length : 0;
+  return Math.max(summary, pills);
 }
 
 // Skills — a multi-select over a fixed vocabulary, filled one value at a time.
@@ -1001,7 +1124,13 @@ async function fillSkills(ctx, report, wanted) {
     if (res.ok && selectedCount(wrap, pt) > before) { set.push(res.value || skill); continue; }
     // Say WHY, per skill. Reporting seven different failures as one "not offered" hid the
     // fact that every one of those skills exists and the wait was simply too short.
-    missing.push(`${skill}: ${res.ok ? "clicked but the count did not move" : (res.reason || "no match")}`);
+    // ...and say WHAT WAS ON OFFER when the vocabulary simply words it differently. Without
+    // the sample, "no result means exactly this" is unactionable: it cannot be told apart
+    // from a skill the tenant lacks, and the fix (write the tenant's wording into the
+    // profile) is invisible. The rows are the tenant's own text, so quoting them infers
+    // nothing.
+    missing.push(`${skill}: ${res.ok ? "clicked but the count did not move" : (res.reason || "no match")}` +
+                 (res.sample && res.sample.length ? ` — offered: ${res.sample.join(" / ")}` : ""));
     if (!res.ok && res.reason && !set.length && missing.length >= giveUp) {
       report.push(["skills", `FAILED — gave up after ${missing.join("; ")}`]);
       return;
@@ -1252,16 +1381,23 @@ export function priorEmployerAnswer(ctx) {
 const DERIVED = { priorEmployerAnswer };
 
 async function fillQuestions(ctx, report, needsInput) {
-  const { adapter, profile, tax, classify, render, company } = ctx;
+  const { adapter, profile, tax, classify, render, company, dig } = ctx;
   const wrappers = [...document.querySelectorAll('[data-automation-id^="formField-"]')];
+  // SAY WHAT WAS ON THE PAGE. Live on Adobe's "Application Questions": six required
+  // questions, and this pass filled nothing, asked nothing and reported nothing — then
+  // Next bounced and the step was logged "blocked" with no errors. A silent pass is
+  // indistinguishable from a page with no questions on it, and that cost a whole round
+  // trip to work out. One line, always, so the log says which of the two happened.
+  const seen = { wrappers: wrappers.length, known: 0, skipped: 0, unlabelled: 0, handled: 0 };
   // Steps 1 and 2 mix tenant questions in with the core fields this driver already set
   // by hand. Re-classifying those would re-answer a solved field from a label match —
   // so skip the known core ids and leave everything else to the taxonomy.
   const known = new Set(adapter.customQuestion.knownCoreIds || []);
+  const unnamed = [];
 
   for (const w of wrappers) {
     const aid = w.getAttribute("data-automation-id");
-    if (known.has(aid)) continue;
+    if (known.has(aid)) { seen.known++; continue; }
 
     // A FILE UPLOAD IS NOT A QUESTION. The attach path owns it, and no answer exists that
     // could satisfy it. Live, the resume widget came through here as an unanswered
@@ -1275,11 +1411,37 @@ async function fillQuestions(ctx, report, needsInput) {
     // container as well, and fall back to the label — the prompt text is unmistakable and
     // is the one signal that outlives the widget's own DOM.
     const cq = adapter.customQuestion;
-    if ((cq.skipContaining || []).some(s => w.matches?.(s) || w.querySelector(s))) continue;
+    if ((cq.skipContaining || []).some(s => w.matches?.(s) || w.querySelector(s))) { seen.skipped++; continue; }
+
+    // THE SIGNATURE DATE. Today by definition — the day the attestation is made — so it
+    // comes from the clock, not the profile. Done before the label is even read, because
+    // the label is only "Date" and would route somewhere wrong if it routed at all.
+    if ((cq.todayFields || []).includes(aid)) {
+      const now = new Date();
+      const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-` +
+                  `${String(now.getDate()).padStart(2, "0")}`;
+      const res = await setDate(ctx, `[data-automation-id="${aid}"]`, iso);
+      report.push(["signature date", res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
+      if (!res.ok) needsInput.push({ aid, label: "Date", bucket: "date-stuck" });
+      seen.handled++;
+      continue;
+    }
 
     const label = extractLabel(w, adapter);
-    if (!label) continue;
-    if (cq.skipLabelPattern && cq.skipLabelPattern.test(label)) continue;
+    // An unlabelled wrapper is not nothing — it is a control we could not read, and on a
+    // step of required questions that is exactly what must not vanish quietly.
+    if (!label) { seen.unlabelled++; unnamed.push(aid); continue; }
+    if (cq.skipLabelPattern && cq.skipLabelPattern.test(label)) { seen.skipped++; continue; }
+
+    // ALREADY ANSWERED. "Language*" arrives set to English; a clone can arrive with other
+    // answers already in place. Leave them and say so — re-answering a field the form has
+    // already got right is how a correct value becomes a wrong one.
+    const already = committedAnswer(w, adapter);
+    if (already) {
+      report.push([label.slice(0, 45), `kept ${String(already).slice(0, 40)}`]);
+      seen.handled++;
+      continue;
+    }
 
     // Derived answers run BEFORE the taxonomy, because the taxonomy structurally cannot
     // produce them — and after the skips, so they never fire on a widget that is not a
@@ -1288,7 +1450,7 @@ async function fillQuestions(ctx, report, needsInput) {
     if (rule) {
       const answer = (DERIVED[rule.resolve] || (() => null))(ctx);
       if (answer != null) {
-        const hit = clickChoiceByText(w, answer);
+        const hit = clickChoiceByText(w, answer, (rule.optionAliases || {})[answer]);
         report.push([label.slice(0, 45), hit ? `set ${answer} (derived)`
                                              : `FAILED no "${answer}" option`]);
         if (!hit) needsInput.push({ aid, label, bucket: "choice-miss" });
@@ -1298,45 +1460,197 @@ async function fillQuestions(ctx, report, needsInput) {
       report.push([label.slice(0, 45), "could not derive — asking"]);
     }
 
-    const c = classify(label, company, profile, tax);
+    // The id says WHICH answer is being asked for when the label cannot. The answer
+    // itself still comes from the profile, exactly as the taxonomy would fetch it.
+    const forced = (cq.fieldValueKeys || {})[aid];
+    const c = forced ? { bucket: "deterministic", value_key: forced,
+                         value: dig(profile, forced), filled: dig(profile, forced) != null }
+                     : classify(label, company, profile, tax);
     if (c.bucket !== "deterministic" || !c.filled) {
+      // AN OPTIONAL FIELD IS NOT A BLOCKER. "Employee ID (if applicable)" is marked
+      // aria-required=false and Parth has no Adobe employee id — pausing the whole run to
+      // ask for a value that does not exist is worse than leaving it empty, which is what
+      // the form itself expects. Required ones still stop the run, which is the point.
+      if (!isFieldRequired(w)) {
+        report.push([label.slice(0, 45), "left blank (optional, no profile answer)"]);
+        seen.skipped++;
+        continue;
+      }
       needsInput.push({ aid, label, bucket: c.bucket || "unmatched" });
       continue;
     }
     const value = render(c.value);
 
     if (w.querySelector(adapter.dropdown.control)) {
-      const res = await pickListbox(ctx, `[data-automation-id="${aid}"]`, value);
-      report.push([label.slice(0, 45), res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
+      // Alternates are keyed by the taxonomy value_key that produced this answer, so a
+      // phrasing written for `eeo.race_ethnicity` can never be tried on another field.
+      const alts = (dig(profile, "answer_alternates") || {})[c.value_key] || [];
+      const res = await pickListbox(ctx, `[data-automation-id="${aid}"]`, value, alts);
+      report.push([label.slice(0, 45), res.ok ? `set ${res.value}`
+        : `FAILED ${res.reason}` +
+          (res.sample && res.sample.length ? ` — offered: ${res.sample.join(" / ")}` : "") +
+          (res.tried && res.tried.length > 1 ? ` (tried ${res.tried.length} wordings)` : "")]);
     } else if (w.querySelector('input[type=radio],input[type=checkbox]')) {
-      const ok = clickChoiceByText(w, value);
-      report.push([label.slice(0, 45), ok ? `set ${value}` : "FAILED no matching option"]);
+      // Single checkbox first: it looks like a choice group to the selector above, but
+      // answering it means ticking it, not finding an option named "Yes".
+      const lone = setLoneCheckbox(w, value);
+      if (lone) {
+        report.push([label.slice(0, 45), lone.ok ? (lone.wanted ? "ticked" : "left unticked")
+                                                 : `FAILED did not ${lone.wanted ? "tick" : "clear"}`]);
+        if (!lone.ok) needsInput.push({ aid, label, bucket: "checkbox-stuck" });
+        seen.handled++;
+        continue;
+      }
+      const alts = (dig(profile, "answer_alternates") || {})[c.value_key] || [];
+      const ok = clickChoiceByText(w, value, alts);
+      // Name the options when nothing matched. "No matching option" alone cannot be told
+      // apart from a field we never understood, and the fix — writing the tenant's wording
+      // into answer_alternates — is invisible without seeing what it offered.
+      const offered = [...w.querySelectorAll("input[type=radio],input[type=checkbox]")]
+        .map(i => { const l = i.id ? w.querySelector(`label[for="${CSS.escape(i.id)}"]`) : null;
+                    return ((l && l.innerText) || "").trim(); })
+        .filter(Boolean).slice(0, 6);
+      report.push([label.slice(0, 45), ok ? `set ${value}`
+        : `FAILED no matching option for "${value}"` +
+          (offered.length ? ` — offered: ${offered.join(" / ")}` : "")]);
       if (!ok) needsInput.push({ aid, label, bucket: "choice-miss" });
     } else {
       const el = w.querySelector("input,textarea");
       if (el) { setTextNative(el, value); report.push([label.slice(0, 45), "set"]); }
     }
+    seen.handled++;
+  }
+
+  // The one line that was missing. A step where nothing was touched must say so loudly,
+  // with the tally — "0 wrappers" means the page had not rendered yet (or its questions do
+  // not carry formField- ids), while "6 wrappers, 6 unlabelled" is a completely different
+  // bug. Without this the log looked identical in both cases: empty.
+  if (!seen.handled && !needsInput.length) {
+    report.push(["questions", `NOTHING TOUCHED — ${seen.wrappers} formField wrapper(s): ` +
+      `${seen.known} core, ${seen.skipped} skipped, ${seen.unlabelled} unlabelled` +
+      (unnamed.length ? ` [${unnamed.slice(0, 8).join(", ")}]` : "")]);
   }
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
 
 function extractLabel(wrapper, adapter) {
-  const el = wrapper.querySelector("label") || wrapper.querySelector("legend");
+  // LEGEND BEFORE LABEL. A legend exists only on a fieldset, where it IS the question; the
+  // first <label> inside one belongs to the first OPTION. Verified live: "Have you ever
+  // worked at Adobe in the following capacity:" has both, and label-first read it as
+  // "Employee" — so the derived prior-employer rule never saw the question it answers, and
+  // the taxonomy got handed an option name to classify. Every other question on that step
+  // resolves through legend, which is why only the checkbox group misbehaved.
+  const el = wrapper.querySelector("legend") || wrapper.querySelector("label");
   let t = el ? el.innerText : (wrapper.getAttribute("aria-label") || "");
   if (!t) t = (wrapper.innerText || "").split("\n")[0];
   return (t || "").replace(adapter.labelStripPattern, "").trim();
 }
 
+// Required, per the form's own markup. aria-required when the widget states it (Workday
+// puts aria-required="false" on "Employee ID (if applicable)"), otherwise the asterisk
+// Workday appends to the caption. Only these two, because guessing that an unmarked field
+// is required is how an optional blank turns into a run that stops and asks for a value
+// that does not exist.
+export function isFieldRequired(wrapper) {
+  const el = wrapper.querySelector("[aria-required]");
+  if (el) {
+    const v = el.getAttribute("aria-required");
+    if (v === "true") return true;
+    if (v === "false") return false;
+  }
+  const cap = wrapper.querySelector("legend") || wrapper.querySelector("label");
+  return /\*\s*$/.test(((cap && cap.innerText) || "").trim());
+}
+
+// What the field ALREADY says, before we touch it. Self Identify's "Language*" arrives set
+// to English — a required field with a correct answer that this pass asked about anyway,
+// because it only ever looked at whether IT had filled something. Reconciling here is the
+// same bargain the rest of the driver already makes: an answer that is already right is
+// left alone, and the report says so rather than staying silent.
+export function committedAnswer(wrapper, adapter) {
+  const ticked = [...wrapper.querySelectorAll("input[type=checkbox],input[type=radio]")]
+    .filter(i => i.checked);
+  if (ticked.length) {
+    const texts = ticked.map(i => {
+      const l = i.id ? wrapper.querySelector(`label[for="${CSS.escape(i.id)}"]`) : null;
+      return ((l && l.innerText) || "").trim();
+    }).filter(Boolean);
+    return texts.length ? texts.join(", ") : "checked";
+  }
+  const dd = adapter.dropdown;
+  const btn = dd && dd.control ? wrapper.querySelector(dd.control) : null;
+  if (btn) {
+    const t = (btn.innerText || "").trim();
+    if (t && !(dd.placeholderText && dd.placeholderText.test(t))) return t;
+  }
+  const el = wrapper.querySelector("input:not([type=checkbox]):not([type=radio]),textarea");
+  const v = el ? String(el.value || "").trim() : "";
+  return v || null;
+}
+
+// A LONE CHECKBOX IS NOT A CHOICE GROUP. "Check this box to confirm the statement above."
+// is answered by ticking it — there is no option called "Yes" to find, so the group
+// matcher reported "no matching option" and paused the run on a question the profile had
+// already answered. A group offers alternatives; this offers one assertion, and the answer
+// is whether to make it.
+//
+// Returns null when this is not that shape, so the caller falls through to the group path.
+export function setLoneCheckbox(wrapper, value) {
+  const boxes = [...wrapper.querySelectorAll('input[type=checkbox]')];
+  if (boxes.length !== 1 || wrapper.querySelector('input[type=radio]')) return null;
+  const box = boxes[0];
+
+  // Only an explicit yes/no decides. Anything else is an answer we do not understand, and
+  // guessing at a consent box is the last place to start — fall through and let it be
+  // asked. "No" means LEAVE IT ALONE (or clear it), never tick something else.
+  const v = String(value == null ? "" : value).trim().toLowerCase();
+  const yes = /^(yes|true|y|agree|i agree|acknowledged?)$/.test(v);
+  const no = /^(no|false|n|decline|declined)$/.test(v);
+  if (!yes && !no) return null;
+
+  if (box.checked !== yes) {
+    const lab = box.id ? wrapper.querySelector(`label[for="${CSS.escape(box.id)}"]`) : null;
+    (lab || box).click();
+  }
+  // Report what the BOX says, not what we clicked — a click that does not stick on a
+  // required consent is exactly the failure that must not read as success.
+  return { ok: box.checked === yes, checked: box.checked, wanted: yes };
+}
+
 // Radio/checkbox option ids are opaque and unstable ("eeap3"/"eeap4"), so match on the
 // associated label's TEXT, never on id or index.
-function clickChoiceByText(wrapper, value) {
+function clickChoiceByText(wrapper, value, aliases = null) {
   const want = String(value).trim().toLowerCase();
   const inputs = [...wrapper.querySelectorAll('input[type=radio],input[type=checkbox]')];
-  for (const inp of inputs) {
+  const textOf = (inp) => {
     const lab = inp.id ? wrapper.querySelector(`label[for="${CSS.escape(inp.id)}"]`) : null;
-    const text = (lab ? lab.innerText : (inp.closest("label") || {}).innerText || "").trim();
+    return { lab, text: (lab ? lab.innerText : (inp.closest("label") || {}).innerText || "").trim() };
+  };
+  for (const inp of inputs) {
+    const { lab, text } = textOf(inp);
     if (text.toLowerCase() === want) { (lab || inp).click(); return true; }
+  }
+  // EXACT FIRST, ALWAYS. Aliases are a fallback for options written as sentences rather
+  // than "Yes"/"No" — Adobe offers "I have not worked for Adobe in the past." and nothing
+  // called No, and words the disability answer as "No, I do not have a disability and have
+  // not had one in the past" where the profile says "No, I don't have a disability". Each
+  // alias is a restatement of the same answer, supplied by the adapter or written into the
+  // profile, so nothing here decides what is true; it only recognises it in other words.
+  //
+  // Two shapes because both callers are legitimate: the adapter supplies RegExps for
+  // phrasings it recognises structurally, the profile supplies STRINGS Parth wrote down.
+  // A string is matched whole, or as a prefix — never as a substring, which would let a
+  // short answer land inside a longer option that says something else.
+  for (const alt of (aliases || [])) {
+    for (const inp of inputs) {
+      const { lab, text } = textOf(inp);
+      const t = text.toLowerCase();
+      const hit = alt instanceof RegExp ? alt.test(text)
+                : (() => { const a = String(alt).trim().toLowerCase();
+                           return !!a && (t === a || t.startsWith(a)); })();
+      if (hit) { (lab || inp).click(); return true; }
+    }
   }
   return false;
 }
@@ -1574,12 +1888,56 @@ export function isFinalStep(adapter, step) {
 // first, so without this the fillers run against an empty document and report every
 // control as missing — which reads as a pile of broken selectors rather than one early
 // read. Falls back to "any form field has rendered" for the steps with no known container.
-async function awaitStepReady(ctx, kind, timeoutMs = 20000) {
+async function awaitStepReady(ctx, kind, timeoutMs = 20000, wasShowing = null) {
   const { adapter } = ctx;
   const marker = (adapter.multiStep.stepPages || {})[kind];
-  if (marker && await waitFor(marker, timeoutMs)) return true;
+  // THE CONTAINER MOUNTS BEFORE ITS FIELDS. Verified live: with the questions marker
+  // finally correct, the pass still touched nothing and logged "0 formField wrapper(s)" —
+  // Adobe's questionnaire arrives on its own request, so the page element is there a beat
+  // before anything to fill is. Identifying the right page is only half of ready.
+  if (marker && await waitFor(marker, timeoutMs)) return await fieldsSettled();
   const any = await waitFor('[data-automation-id^="formField-"]', marker ? 4000 : timeoutMs);
-  return !!any;
+  if (!any) return false;
+
+  // "A formField exists" is not "this step has rendered". A step with no marker above
+  // arrives here straight after a step change, and during React's swap the OUTGOING
+  // page's fields are still mounted — one matching node was enough to call the page
+  // ready, so the question pass ran against a page on its way out.
+  //
+  // Waiting for the COUNT to hold still does not fix that: the outgoing page's count is
+  // perfectly stable, which is exactly how this survived a first fix. Wait for the page to
+  // TURN OVER — the set of field ids must differ from the one showing before Next was
+  // clicked. Same reasoning as the stale-results gate in pickBySearch: identity, not size.
+  if (!wasShowing) return await fieldsSettled();       // nothing to compare: caller's first step
+  for (let i = 0; i < 30; i++) {
+    // Turnover says the new page is here; settling says it has finished arriving. Both,
+    // for the same reason the marker branch needs both.
+    if (formFieldSignature() !== wasShowing) return await fieldsSettled();
+    await sleep(300);
+  }
+  return false;                   // never turned over: report it rather than fill blind
+}
+
+// Wait until the page has fields AND has stopped gaining them. Used after a page marker
+// matches: the marker says WHICH page, this says the page has finished arriving. A step
+// that genuinely has no fields (a pure text page) times out and reports false rather than
+// hanging the run.
+async function fieldsSettled(tries = 30, gapMs = 300) {
+  let prev = -1;
+  for (let i = 0; i < tries; i++) {
+    const n = document.querySelectorAll('[data-automation-id^="formField-"]').length;
+    if (n > 0 && n === prev) return true;
+    prev = n;
+    await sleep(gapMs);
+  }
+  return false;
+}
+
+// The identity of what is on screen, not how much. Used to tell one wizard step from the
+// next when the step has no page marker of its own.
+export function formFieldSignature() {
+  return [...document.querySelectorAll('[data-automation-id^="formField-"]')]
+    .map(e => e.getAttribute("data-automation-id")).join("\u0001");
 }
 
 // A real wizard step, not a route page wearing the same progress bar. currentStep already
@@ -1796,6 +2154,7 @@ export async function runWorkday(ctx) {
 
   try {
     let guard = 0;
+    let lastSignature = null;                  // set on each Next; see awaitStepReady
     while (guard++ < 10) {
       // STOP BETWEEN STEPS, never mid-step. The panel's Stop was only ever read by the
       // submit loop, so during a fill it did nothing at all — and this driver is the one
@@ -1823,8 +2182,14 @@ export async function runWorkday(ctx) {
       // reported three missing selectors that were all simply on a different page.
       // The number depends on the entry route; the name does not.
       const which = stepKind(adapter, step);
-      if (!await awaitStepReady(ctx, which)) {
-        report.push([`step${step.n}`, `"${step.name}" never rendered any fields`]);
+      // What was on screen when the PREVIOUS step clicked Next. A step with no page marker
+      // is only truly here once that has been replaced — see awaitStepReady.
+      if (!await awaitStepReady(ctx, which, 20000, lastSignature)) {
+        report.push([`step${step.n}`,
+          `"${step.name}" never presented its own fields (the page did not turn over, or ` +
+          `its fields never arrived) — filling was skipped rather than done blind`]);
+        steps.push({ n: step.n, name: step.name, action: "never rendered" });
+        return { ok: false, adapter: "workday", blockedAt: step, report, needsInput, steps };
       }
       if (which === "myInformation") await fillMyInformation(ctx, report);
       else if (which === "myExperience") await fillMyExperience(ctx, report);
@@ -1844,6 +2209,7 @@ export async function runWorkday(ctx) {
 
       const next = document.querySelector(adapter.multiStep.nextButton);
       if (!next) return { ok: false, adapter: "workday", error: "no Next button", report, steps };
+      lastSignature = formFieldSignature();      // what the NEXT step must replace
       next.click();
 
       const after = await waitForStepChange(adapter, step.n);
