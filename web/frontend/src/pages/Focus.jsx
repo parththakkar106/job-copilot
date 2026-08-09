@@ -23,6 +23,7 @@ const KEYS = [
 function stateLine(row) {
   if (row.bucket === 'discovered') return { kind: 'wait', text: 'not collected yet — run Collect queue to fill it' }
   if (row.bucket === 'dream') return { kind: 'wait', text: 'dream role — apply by hand, then mark it' }
+  if (row.bucket === 'manual') return { kind: 'wait', text: "no adapter for this board — fill it yourself, then mark it" }
   if (row.bucket === 'filled') {
     return row.tag === 'ready to submit'
       ? { kind: 'go', text: 'filled and ready to submit' }

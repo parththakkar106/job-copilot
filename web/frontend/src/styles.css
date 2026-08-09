@@ -15,6 +15,7 @@
   --blue: #5aa9ff;
   --red: #ff6b6b;
   --violet: #b98cff;
+  --teal: #4fd1c5;
   --radius: 12px;
   --radius-lg: 18px;
   --shadow: 0 8px 30px rgba(0,0,0,.35);
@@ -229,6 +230,7 @@ kbd {
 .row-discovered::before { background: var(--dim); }
 .row-filled::before     { background: var(--blue); }
 .row-dream::before      { background: var(--violet); }
+.row-manual::before     { background: var(--teal); }
 .row-submitted::before  { background: var(--green); }
 .row-blocked::before    { background: var(--red); }
 .row-blocked, .row-submitted { opacity: .82; }
@@ -270,6 +272,7 @@ kbd {
 .tag-discovered { background: rgba(255,255,255,.06); color: var(--dim); }
 .tag-filled     { background: rgba(90,169,255,.14); color: var(--blue); }
 .tag-dream      { background: rgba(185,140,255,.14); color: var(--violet); }
+.tag-manual     { background: rgba(79,209,197,.14); color: var(--teal); }
 .tag-submitted  { background: rgba(62,207,142,.14); color: var(--green); }
 .tag-blocked    { background: rgba(255,107,107,.14); color: var(--red); }
 .tag-mini { font-size: 11px; color: var(--muted); background: var(--bg-3); padding: 1px 7px; border-radius: 5px; }
@@ -346,6 +349,7 @@ kbd {
 .focus-discovered::before { background: linear-gradient(90deg, var(--dim), transparent); }
 .focus-filled::before     { background: linear-gradient(90deg, var(--blue), transparent); }
 .focus-dream::before      { background: linear-gradient(90deg, var(--violet), transparent); }
+.focus-manual::before     { background: linear-gradient(90deg, var(--teal), transparent); }
 
 .focus-head { display: flex; gap: 17px; align-items: flex-start; }
 .focus-titles { min-width: 0; flex: 1; }
@@ -379,6 +383,7 @@ kbd {
 .fdot-in_queue { background: rgba(230,180,94,.5); }
 .fdot-filled { background: rgba(90,169,255,.5); }
 .fdot-dream { background: rgba(185,140,255,.5); }
+.fdot-manual { background: rgba(79,209,197,.5); }
 .fdot-on { width: 18px; border-radius: 999px; background: var(--accent); }
 
 .keysheet {
@@ -488,6 +493,7 @@ kbd {
 .kb-dot-discovered { background: var(--dim); }
 .kb-dot-filled     { background: var(--blue); }
 .kb-dot-dream      { background: var(--violet); }
+.kb-dot-manual     { background: var(--teal); }
 .kb-dot-submitted  { background: var(--green); }
 .kb-dot-blocked    { background: var(--red); }
 
@@ -519,6 +525,7 @@ kbd {
 .kb-card-discovered::before { background: var(--dim); }
 .kb-card-filled::before     { background: var(--blue); }
 .kb-card-dream::before      { background: var(--violet); }
+.kb-card-manual::before     { background: var(--teal); }
 .kb-card-submitted::before  { background: var(--green); }
 .kb-card-blocked::before    { background: var(--red); }
 

@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
 """
-Job scraper v2 — Greenhouse / Lever / Ashby.
+Job scraper v2 — Greenhouse / Lever / Ashby / Workday, plus aggregator feeds.
 
 Design goals (fixing the v1 pain):
   * FRESH-TRUTH: every run re-reads the live board API and surfaces ONLY what is
     currently open, so expired/closed postings never leak through. There is no
     accumulation of a "seen" pile that goes stale.
-  * BROADER: Greenhouse + Lever + Ashby, driven by a hand-editable companies.yaml.
+  * BROADER: Greenhouse + Lever + Ashby + Workday, driven by a hand-editable
+    companies.yaml, plus whole-feed SOURCES (see fetch_feed) that surface companies
+    nobody has put on that list yet.
   * TAGGED: each role is classified into a field (ai/tech/quant/ds) at scrape time.
-  * DEDUPED: normalized (company + title + location) key, checked against applied.json.
+  * DEDUPED: normalized (company + title + location) key, checked against applied.json,
+    AND an ATS identity key so one posting reached by two routes lands once.
   * FILTERED: relevance (field match), seniority, US-location, freshness.
   * LIVENESS: optional per-job re-check on the shortlist to close the scrape->surface gap.
 
 Outputs:
-  queue.json   -> pipeline roles, live, fresh, not-yet-applied, freshest first (apply feeds off this)
+  queue.json   -> pipeline roles the extension can FILL, live, fresh, not-yet-applied,
+                  freshest first (the apply loop feeds off this and nothing else)
   dream.json   -> dream roles, same shape as queue.json; manual-only (extension skips these)
-  digest.md    -> human-readable, grouped by field, dream roles flagged separately
+  manual.json  -> roles on a board there is no adapter for (Apple, Amazon, SmartRecruiters,
+                  iCIMS...). Same shape again; apply-by-hand, and deliberately kept OUT of
+                  queue.json — a P1 collect run that opens one of these gets a tab where no
+                  content script mounts, which is a stall, not a fill.
+  digest.md    -> human-readable, grouped by field, dream/manual roles flagged separately
   raw_YYYYMMDD.json -> everything fetched this run (audit)
 
 Note: the job-board APIs are not reachable from every sandbox; run this in your
@@ -30,6 +38,7 @@ import json
 import re
 import sys
 import time
+import urllib.parse
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -44,6 +53,12 @@ from core import paths
 
 UA = "job-copilot/2.0 (personal job search)"
 FIELD_PRIORITY = ("quant", "ai", "ds", "tech")  # order matters for classification
+
+# The four boards the extension has an adapter for. Everything else is apply-by-hand:
+# extension/manifest.json only injects fill.js on these hosts, so a role anywhere else
+# opens a tab with no panel on it. That is why `fillable()` decides queue.json membership
+# rather than tier alone — see manual.json in the module docstring.
+FILLABLE_ATS = ("greenhouse", "lever", "ashby", "workday")
 
 # --- what counts as a US location -------------------------------------------
 # State NAMES are matched against the normalized (lowercased) string; the two-letter
@@ -150,6 +165,79 @@ def iso_from_ms(ms) -> str | None:
         return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).isoformat()
     except (TypeError, ValueError):
         return None
+
+
+def iso_from_epoch(sec) -> str | None:
+    try:
+        return datetime.fromtimestamp(int(sec), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def fillable(ats: str) -> bool:
+    return ats in FILLABLE_ATS
+
+
+# --------------------------------------------------------- ATS identity ------
+# A company-board fetch KNOWS which ATS it just called. A feed does not — it hands over a
+# posting URL and nothing else, so the ATS, the board slug and the job id all have to be
+# read back out of that URL. Those three are what the extension needs to open the right
+# form (Greenhouse in particular is routed to the legacy embed endpoint by ats_job_id, see
+# `_apply_url`), and they are also the only reliable way to notice that a role reached via
+# a feed is the SAME posting a companies.yaml board already produced: the dedup_key can't
+# see it, because the two routes disagree about wording (a feed says "SF; NYC" where
+# Greenhouse says "San Francisco, CA").
+_LOCALE = re.compile(r"^[a-z]{2}(-[A-Za-z]{2,4})?$")
+
+
+def ats_from_url(url: str) -> tuple[str, str, str]:
+    """(ats, slug, job_id) for a posting URL; ('other', host, '') when no adapter fits.
+
+    Deliberately total — an unrecognised board is a normal, expected outcome (it becomes a
+    manual.json role), not an error. `slug` carries the host in that case so the manual
+    pile still says where the role lives.
+    """
+    p = urllib.parse.urlparse(url or "")
+    host = p.netloc.lower()
+    seg = [s for s in p.path.split("/") if s]
+
+    if host.endswith("greenhouse.io"):
+        # Three shapes in the wild: job-boards.greenhouse.io/<slug>/jobs/<id>, the legacy
+        # boards.greenhouse.io/<slug>/jobs/<id>, and the embed endpoint that carries the id
+        # as ?token= and names the board in ?for=.
+        q = urllib.parse.parse_qs(p.query)
+        if "job_app" in seg or "embed" in seg:
+            return "greenhouse", (q.get("for") or [""])[0], (q.get("token") or [""])[0]
+        if len(seg) >= 3 and seg[1] == "jobs":
+            return "greenhouse", seg[0], seg[2]
+        return "greenhouse", seg[0] if seg else "", ""
+    if host == "jobs.lever.co" and len(seg) >= 2:
+        return "lever", seg[0], seg[1]
+    if host == "jobs.ashbyhq.com" and len(seg) >= 2:
+        return "ashby", seg[0], seg[1]
+    if host.endswith("myworkdayjobs.com"):
+        # <tenant>.wdN.myworkdayjobs.com/[<locale>/]<board>/job/<location>/<title>_<reqId>
+        tenant = host.split(".")[0]
+        rest = seg[1:] if seg and _LOCALE.match(seg[0]) else seg
+        board = rest[0] if rest else ""
+        job_id = rest[-1].rsplit("_", 1)[-1] if rest else ""
+        return "workday", f"{tenant}/{board}", job_id
+    return "other", host, ""
+
+
+def ats_identity(j: "Job") -> tuple | None:
+    """A key that means "this exact posting", across sources. None when unknowable.
+
+    Workday is the one that needs normalising: its detail API returns jobReqId `R175644`
+    while the same posting's public URL ends `..._R175644-1`, so the two routes to one
+    requisition would otherwise look like two jobs.
+    """
+    if not fillable(j.ats) or not j.ats_job_id:
+        return None
+    jid = j.ats_job_id
+    if j.ats == "workday":
+        jid = re.sub(r"-\d+$", "", jid)
+    return (j.ats, norm(j.ats_slug), jid.lower())
 
 
 # ---------------------------------------------------------------- parsers ---
@@ -334,10 +422,10 @@ def is_fresh(posted: str | None, days: int) -> bool:
 
 
 # ----------------------------------------------------------------- fetch ----
-def _get(url, **kw):
+def _get(url, timeout=20, **kw):
     for attempt in range(3):
         try:
-            r = requests.get(url, headers={"User-Agent": UA}, timeout=20, **kw)
+            r = requests.get(url, headers={"User-Agent": UA}, timeout=timeout, **kw)
             if r.status_code == 200:
                 return r
             if r.status_code == 404:
@@ -514,6 +602,89 @@ def fetch_company(c: dict, fields_cfg: dict, filt: dict | None = None) -> list[J
     return jobs
 
 
+# ------------------------------------------------------------------ feeds ---
+# A FEED is the other shape of source: not "ask this company's board what is open" but
+# "here is a list somebody else already aggregated". companies.yaml can only ever find
+# roles at companies already on it, which is a chicken-and-egg problem for a job search —
+# the whole point is to discover employers you had not thought of.
+#
+# The one wired up is SimplifyJobs/New-Grad-Positions, a public GitHub repo whose bot
+# republishes a single JSON array of new-grad postings. One HTTP GET per run, no auth, no
+# scraping of anybody's site. Its records carry a real posting URL, so `ats_from_url` can
+# recover the board identity and roughly half the survivors land on a fillable ATS.
+#
+# What the feed is NOT trusted for: relevance, seniority, location or freshness. Those all
+# run again in run() against the same filters.yaml every other source is judged by — a
+# feed entry is a lead, not a verdict.
+SPONSORSHIP_EXCLUDE = (
+    # Green Card, not citizenship: these postings are a hard no, and they are the only
+    # sponsorship value in this feed that rules anybody out. Roles needing a clearance are
+    # usually NOT labelled here (they say it in the title instead), so this is a floor.
+    "U.S. Citizenship is Required",
+)
+
+
+def parse_simplify(raw, dream_names: set[str] | None = None) -> list[Job]:
+    """The SimplifyJobs listings.json array -> Jobs. Pure; the fetch is in fetch_feed.
+
+    `active` is the feed's own liveness flag and the single most valuable field in it —
+    the file keeps closed postings forever (18k rows, ~2.6k live), so dropping inactive
+    ones here is what stops the queue filling with dead links.
+    """
+    dream_names = dream_names or set()
+    out = []
+    for j in raw or []:
+        if not isinstance(j, dict):
+            continue
+        if not j.get("active") or j.get("is_visible") is False:
+            continue
+        if (j.get("sponsorship") or "") in SPONSORSHIP_EXCLUDE:
+            continue
+        url = j.get("url") or ""
+        ats, slug, job_id = ats_from_url(url)
+        company = str(j.get("company_name") or "")
+        locs = j.get("locations") or []
+        location = "; ".join(str(x) for x in locs if x)
+        out.append(Job(company, str(j.get("title") or ""), location, url,
+                       ats, slug, job_id, iso_from_epoch(j.get("date_posted")), None,
+                       "dream" if norm(company) in dream_names else "pipeline"))
+    return out
+
+
+FEED_PARSERS = {"simplify": parse_simplify}
+
+
+def fetch_feed(src: dict, fields_cfg: dict, dream_names: set[str]) -> list[Job]:
+    """One `sources:` entry from filters.yaml, e.g.
+       {name: SimplifyJobs New-Grad, format: simplify, url: https://.../listings.json}
+    """
+    name = src.get("name") or src.get("format") or "?"
+    fmt, url = src.get("format"), src.get("url")
+    if fmt not in FEED_PARSERS or not url:
+        print(f"  ! {name}: source needs a `url` and a known `format` "
+              f"({'/'.join(FEED_PARSERS)}) — skipped", file=sys.stderr)
+        return []
+    # listings.json is ~12MB, an order of magnitude past any board API response, so the
+    # default 20s read timeout is not a fair budget for it.
+    r = _get(url, timeout=int(src.get("timeout") or 60))
+    if not r or r.status_code != 200:
+        print(f"  ! {name}: feed fetch failed", file=sys.stderr)
+        return []
+    try:
+        raw = r.json()
+    except ValueError:
+        print(f"  ! {name}: feed did not return JSON", file=sys.stderr)
+        return []
+    jobs = FEED_PARSERS[fmt](raw, dream_names)
+    for j in jobs:
+        j.field = classify_field(j.title, fields_cfg)
+        j.keyed()
+    n_fill = sum(1 for j in jobs if fillable(j.ats))
+    print(f"    {name}: {len(raw) if isinstance(raw, list) else '?'} rows -> {len(jobs)} live "
+          f"({n_fill} on a fillable board)", file=sys.stderr)
+    return jobs
+
+
 # Ashby has no per-job liveness endpoint, and its jobUrl is an SPA shell that returns 200
 # whether or not the posting is open — fetching it proves nothing. Re-fetch the board's
 # JSON once per slug and check the job id is still listed. None = board fetch failed ->
@@ -548,8 +719,17 @@ def verify_live(j: Job) -> bool:
         "greenhouse": f"https://boards-api.greenhouse.io/v1/boards/{j.ats_slug}/jobs/{j.ats_job_id}",
         "lever":      f"https://api.lever.co/v0/postings/{j.ats_slug}/{j.ats_job_id}?mode=json",
     }
-    r = _get(urls[j.ats])
-    return bool(r and r.status_code == 200)
+    # A feed hands over a URL, not a board identity, so both the ATS and the slug can be
+    # unknown here in a way they never are on a companies.yaml fetch. Probing the posting
+    # URL is weaker evidence (some boards serve an SPA shell for a dead job) but it is far
+    # better than the alternatives: a KeyError would kill the run, and treating "I have no
+    # API for this board" as dead would silently empty the whole manual pile.
+    api = urls.get(j.ats) if j.ats_slug and j.ats_job_id else None
+    if api:
+        r = _get(api)
+        return bool(r and r.status_code == 200)
+    r = _get(j.url)
+    return True if r is None else r.status_code == 200
 
 
 # ------------------------------------------------------------------ main ----
@@ -577,8 +757,23 @@ def run(args):
             print(f"  ! {c.get('name', c.get('slug', '?'))}: {e}", file=sys.stderr)
         time.sleep(0.5)
 
+    # Feeds run AFTER the boards, and that order is load-bearing: the dedup below keeps
+    # whichever record it sees first, and a company's own board is the better record (real
+    # location strings, a true posted date, an id the liveness check can use).
+    dream_names = {norm(c.get("name", "")) for c in companies
+                   if c.get("tier") == "dream" and c.get("name")}
+    for src in (filt.get("sources") or []):
+        if not src.get("enabled", True):
+            continue
+        print(f"- {src.get('name', src.get('format', '?'))} [feed]")
+        try:
+            all_jobs.extend(fetch_feed(src, fields_cfg, dream_names))
+        except Exception as e:
+            print(f"  ! {src.get('name', '?')}: {e}", file=sys.stderr)
+
     # filter
     kept, seen, rescued = [], set(), []
+    seen_ats: set[tuple] = set()   # the same posting reached by two routes
     unplaceable: dict[str, int] = {}   # location -> count, so the lists can be extended
     for j in all_jobs:
         if j.field is None:                                   continue
@@ -596,6 +791,14 @@ def run(args):
         if not is_fresh(j.posted, filt.get("freshness_days", 14)): continue
         if j.dedup_key in applied:                            continue
         if j.dedup_key in seen:                               continue
+        # dedup_key is company|title|location, which only catches a duplicate when both
+        # sources word all three the same way — and they don't ("SF; NYC" vs
+        # "San Francisco, CA", "Motorola" vs "Motorola Solutions"). The ATS identity is
+        # the same posting by construction, so it catches what the text key can't.
+        ident = ats_identity(j)
+        if ident is not None:
+            if ident in seen_ats:                             continue
+            seen_ats.add(ident)
         seen.add(j.dedup_key)
         kept.append(j)
 
@@ -627,8 +830,13 @@ def run(args):
             time.sleep(0.3)
         kept = checked
 
-    pipeline = [j for j in kept if j.tier == "pipeline"]
+    # Tier decides dream vs the rest; the BOARD decides whether the rest can be automated.
+    # Splitting on tier alone is what used to be safe, and stopped being safe the moment a
+    # feed started producing roles on boards with no adapter.
     dream = [j for j in kept if j.tier == "dream"]
+    rest = [j for j in kept if j.tier != "dream"]
+    pipeline = [j for j in rest if fillable(j.ats)]
+    manual = [j for j in rest if not fillable(j.ats)]
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -639,14 +847,22 @@ def run(args):
     # hand / referral first); the extension never reads this file.
     (out / "dream.json").write_text(
         json.dumps([asdict(j) for j in dream], indent=2), encoding="utf-8")
+    # manual.json — same shape and same "extension never reads this" contract as dream,
+    # but for a different reason: not "too good to burn on an auto-apply" but "no adapter
+    # exists for this board". Kept separate from dream so the Dream badge keeps meaning
+    # what it means.
+    (out / "manual.json").write_text(
+        json.dumps([asdict(j) for j in manual], indent=2), encoding="utf-8")
     (out / f"raw_{datetime.now():%Y%m%d}.json").write_text(
         json.dumps([asdict(j) for j in all_jobs], indent=2), encoding="utf-8")
-    (out / "digest.md").write_text(render_digest(pipeline, dream), encoding="utf-8")
-    (out / "digest.html").write_text(render_digest_html(pipeline, dream), encoding="utf-8")
-    print(f"\n{len(pipeline)} pipeline + {len(dream)} dream roles -> {out}/queue.json")
+    (out / "digest.md").write_text(render_digest(pipeline, dream, manual), encoding="utf-8")
+    (out / "digest.html").write_text(render_digest_html(pipeline, dream, manual), encoding="utf-8")
+    print(f"\n{len(pipeline)} pipeline + {len(dream)} dream + {len(manual)} manual "
+          f"roles -> {out}/queue.json")
 
 
-def render_digest(pipeline: list[Job], dream: list[Job]) -> str:
+def render_digest(pipeline: list[Job], dream: list[Job], manual: list[Job] | None = None) -> str:
+    manual = manual or []
     lines = [f"# Job queue — {datetime.now():%Y-%m-%d}", ""]
     for fld in FIELD_PRIORITY:
         group = [j for j in pipeline if j.field == fld]
@@ -662,6 +878,12 @@ def render_digest(pipeline: list[Job], dream: list[Job]) -> str:
         lines.append("> ⚠️ The auto-apply loop skips these — apply by hand (referral first).")
         for j in dream:
             lines.append(f"- [{j.title}]({j.url}) — {j.company} · {j.field}")
+        lines.append("")
+    if manual:
+        lines.append(f"## ✋ BY HAND ({len(manual)})")
+        lines.append("> No adapter for these boards — the extension can't fill them.")
+        for j in manual:
+            lines.append(f"- [{j.title}]({j.url}) — {j.company} · {j.location} · {j.ats_slug}")
     return "\n".join(lines)
 
 
@@ -669,14 +891,16 @@ def _esc(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def render_digest_html(pipeline: list[Job], dream: list[Job]) -> str:
+def render_digest_html(pipeline: list[Job], dream: list[Job],
+                       manual: list[Job] | None = None) -> str:
     """Email-safe HTML (inline styles) so the digest renders formatted, not as raw markdown."""
+    manual = manual or []
     P = "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;"
     parts = [
         f'<div style="{P}max-width:720px;margin:0 auto;color:#1a1a1a;line-height:1.5;">',
         f'<h1 style="font-size:22px;margin:0 0 4px;">Job queue</h1>',
         f'<div style="color:#888;font-size:13px;margin-bottom:20px;">{datetime.now():%A, %d %b %Y} · '
-        f'{len(pipeline)} pipeline · {len(dream)} dream</div>',
+        f'{len(pipeline)} pipeline · {len(dream)} dream · {len(manual)} by hand</div>',
     ]
 
     def item(j: "Job", show_field: bool) -> str:
@@ -710,6 +934,19 @@ def render_digest_html(pipeline: list[Job], dream: list[Job]) -> str:
                      '(referral first) — they are not in the queue the extension works.</div>')
         parts.append('<ul style="list-style:none;padding:0;margin:0;">')
         parts += [item(j, True) for j in dream]
+        parts.append('</ul>')
+
+    if manual:
+        parts.append(f'<h2 style="font-size:15px;border-bottom:1px solid #eee;padding-bottom:6px;'
+                     f'margin:28px 0 12px;">✋ BY HAND <span style="color:#aaa;font-weight:400;">'
+                     f'({len(manual)})</span></h2>')
+        parts.append('<div style="background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;'
+                     'border-radius:6px;padding:10px 12px;font-size:13px;margin:0 0 12px;">'
+                     'These are on boards with <b>no adapter</b> (Apple, Amazon, '
+                     'SmartRecruiters, iCIMS...). The extension cannot fill them, so they '
+                     'stay out of the queue — apply to any you like by hand.</div>')
+        parts.append('<ul style="list-style:none;padding:0;margin:0;">')
+        parts += [item(j, False) for j in manual]
         parts.append('</ul>')
 
     parts.append('</div>')
@@ -823,6 +1060,80 @@ def selftest():
     # a "30+ Days Ago" role must fall out of a 30-day window, never sneak in as fresh
     assert is_fresh(parse_workday_relative("Posted 30+ Days Ago"), 30) is False
     assert is_fresh(parse_workday_relative("Posted 3 Days Ago"), 30) is True
+
+    # --- ATS identity recovered from a bare posting URL ----------------------
+    # Every shape below is a real URL from the SimplifyJobs feed.
+    assert ats_from_url("https://job-boards.greenhouse.io/fiveringsllc/jobs/5047415008") == \
+        ("greenhouse", "fiveringsllc", "5047415008")
+    assert ats_from_url("https://boards.greenhouse.io/embed/job_app?token=6099883&for=block") == \
+        ("greenhouse", "block", "6099883")
+    assert ats_from_url("https://jobs.lever.co/wyetechllc/e0670581-cfb1-4400-be91-8813416f95ca/apply") == \
+        ("lever", "wyetechllc", "e0670581-cfb1-4400-be91-8813416f95ca")
+    # Ashby serves the same posting with and without the /application suffix
+    for u in ("https://jobs.ashbyhq.com/sentra/3c9729ca-67b3-4f9f-9c64-5e1e10be1719",
+              "https://jobs.ashbyhq.com/sentra/3c9729ca-67b3-4f9f-9c64-5e1e10be1719/application"):
+        assert ats_from_url(u) == ("ashby", "sentra", "3c9729ca-67b3-4f9f-9c64-5e1e10be1719")
+    # Workday, with and without the locale segment ahead of the board name
+    assert ats_from_url("https://parsons.wd5.myworkdayjobs.com/en-US/search/job/"
+                        "US---VA-Centreville/Software-Engineer_R175644-1") == \
+        ("workday", "parsons/search", "R175644-1")
+    assert ats_from_url("https://entrust.wd1.myworkdayjobs.com/entrustcareers/job/"
+                        "United-Kingdom---London-Onfido/Applied-Scientist-I_R003921") == \
+        ("workday", "entrust/entrustcareers", "R003921")
+    # No adapter -> 'other' + the host, so the manual pile still says where the role lives
+    assert ats_from_url("https://jobs.smartrecruiters.com/x/y")[0] == "other"
+    assert ats_from_url("https://jobs.apple.com/en-us/details/200612")[:2] == \
+        ("other", "jobs.apple.com")
+    assert ats_from_url("") == ("other", "", "")
+    assert fillable("greenhouse") and fillable("workday") and not fillable("other")
+
+    def _job(ats, slug, jid):
+        return Job("A", "T", "L", "", ats, slug, jid, None, None, "pipeline")
+    # the SAME Workday requisition, once from the detail API and once from its public URL
+    assert ats_identity(_job("workday", "parsons/search", "R175644")) == \
+           ats_identity(_job("workday", "parsons/search", "R175644-1"))
+    assert ats_identity(_job("greenhouse", "Block", "123")) == \
+           ats_identity(_job("greenhouse", "block", "123"))
+    assert ats_identity(_job("greenhouse", "block", "123")) != \
+           ats_identity(_job("greenhouse", "block", "124"))
+    # unknowable identity must be None, never a key that collides with another unknown
+    assert ats_identity(_job("other", "jobs.apple.com", "")) is None
+    assert ats_identity(_job("greenhouse", "block", "")) is None
+
+    # --- the SimplifyJobs feed ------------------------------------------------
+    _feed = [
+        {"company_name": "DRW", "title": "Software Developer", "active": True,
+         "is_visible": True, "date_posted": 1767841111, "locations": ["Chicago, IL"],
+         "url": "https://job-boards.greenhouse.io/drw/jobs/123", "sponsorship": "Other"},
+        {"company_name": "Closed Co", "title": "Software Engineer", "active": False,
+         "is_visible": True, "date_posted": 1767841111, "locations": ["NYC"],
+         "url": "https://job-boards.greenhouse.io/closed/jobs/1", "sponsorship": "Other"},
+        {"company_name": "Hidden Co", "title": "Software Engineer", "active": True,
+         "is_visible": False, "date_posted": 1767841111, "locations": ["NYC"],
+         "url": "https://job-boards.greenhouse.io/hidden/jobs/2", "sponsorship": "Other"},
+        {"company_name": "Cleared Co", "title": "Software Engineer", "active": True,
+         "is_visible": True, "date_posted": 1767841111, "locations": ["MD"],
+         "url": "https://job-boards.greenhouse.io/cleared/jobs/3",
+         "sponsorship": "U.S. Citizenship is Required"},
+        {"company_name": "Apple", "title": "Machine Learning Engineer", "active": True,
+         "is_visible": True, "date_posted": 1767841111, "locations": ["Cupertino, CA"],
+         "url": "https://jobs.apple.com/en-us/details/200612", "sponsorship": "Other"},
+    ]
+    got = parse_simplify(_feed, dream_names={norm("Apple")})
+    # inactive, invisible and citizenship-only postings are all dropped at parse time
+    assert [j.company for j in got] == ["DRW", "Apple"], [j.company for j in got]
+    assert (got[0].ats, got[0].ats_slug, got[0].ats_job_id) == ("greenhouse", "drw", "123")
+    assert got[0].tier == "pipeline" and got[1].tier == "dream"   # dream tier carried over
+    assert got[1].ats == "other"                                  # -> manual.json, not queue
+    assert got[0].posted and got[0].posted.startswith("20")
+    assert parse_simplify([{"active": True}]) [0].ats == "other"  # a row with no url at all
+    assert parse_simplify(None) == [] and parse_simplify(["junk"]) == []
+    # multi-location rows keep every location, so passes_location can see the US one
+    _multi = parse_simplify([{"company_name": "C", "title": "T", "active": True,
+                              "is_visible": True, "date_posted": 1767841111,
+                              "locations": ["SF", "NYC"], "url": "", "sponsorship": "Other"}])
+    assert _multi[0].location == "SF; NYC"
+    assert passes_location(_multi[0].location, location) is True
     print("selftest OK")
 
 

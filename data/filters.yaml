@@ -5,6 +5,22 @@
 # 10d gave 64 eligible roles, 30d gives 161, no limit at all gives 852. Widened 2026-08-01.
 freshness_days: 30
 
+# Whole-list sources, fetched IN ADDITION to every board in companies.yaml. companies.yaml
+# can only find roles at companies already on it; a feed is how employers nobody thought to
+# add get discovered at all. Everything below still goes through the same fields /
+# seniority / location / freshness filters — a feed entry is a lead, not a verdict.
+#
+# Roles whose posting URL is on a board the extension has no adapter for do NOT enter
+# queue.json. They are written to out/manual.json and shown in the console as apply-by-hand
+# (see the module docstring in core/scraper.py). Set `enabled: false` to turn a feed off.
+sources:
+  - name: SimplifyJobs New-Grad
+    format: simplify
+    enabled: true
+    # The bot-maintained JSON behind github.com/SimplifyJobs/New-Grad-Positions. `dev` is
+    # the branch its bot writes to; `main` lags. ~12MB, one GET per run.
+    url: https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json
+
 fields:
   quant:
     [quant, quantitative]

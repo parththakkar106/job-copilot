@@ -2,7 +2,7 @@
 // Mirrors web/app/services.py (dashboard buckets) and docs/dashboard_spec.md §2.
 
 /** Buckets still waiting on Parth to apply. Matches services.TO_APPLY. */
-export const TO_APPLY = ['discovered', 'in_queue', 'filled', 'dream']
+export const TO_APPLY = ['discovered', 'in_queue', 'filled', 'dream', 'manual']
 
 export const BUCKETS = [
   { id: 'to_apply', label: 'To apply', of: TO_APPLY },
@@ -10,6 +10,7 @@ export const BUCKETS = [
   { id: 'in_queue', label: 'In queue' },
   { id: 'filled', label: 'Ready' },
   { id: 'dream', label: 'Dream' },
+  { id: 'manual', label: 'By hand' },
   { id: 'submitted', label: 'Sent' },
   { id: 'blocked', label: 'Blocked' },
   { id: 'all', label: 'Everything' },
@@ -17,7 +18,7 @@ export const BUCKETS = [
 
 export const BUCKET_LABEL = {
   discovered: 'Discovered', in_queue: 'In queue', filled: 'Ready',
-  dream: 'Dream', submitted: 'Sent', blocked: 'Blocked',
+  dream: 'Dream', manual: 'By hand', submitted: 'Sent', blocked: 'Blocked',
 }
 
 /**
@@ -27,8 +28,8 @@ export const BUCKET_LABEL = {
  * one is reversible (blocking archives the record rather than deleting it) and the views
  * offer an undo, so a modal on each move was pure friction.
  *
- * `discovered` and `dream` roles have no pending record on disk — only the applied-log
- * moves work on them, which is why they get a shorter list.
+ * `discovered`, `dream` and `manual` roles have no pending record on disk — only the
+ * applied-log moves work on them, which is why they get a shorter list.
  */
 export const MOVES = {
   discovered: [
@@ -51,6 +52,12 @@ export const MOVES = {
     { target: 'submitted', label: 'Mark applied by hand', hot: 'm' },
     { target: 'blocked', label: 'Not interested', hot: 'b' },
   ],
+  // No adapter for the board, so 'Approve → Ready' would be a lie: there is nothing to
+  // fill and nothing to send. Applying is something Parth does in the tab himself.
+  manual: [
+    { target: 'submitted', label: 'Mark applied by hand', hot: 'm' },
+    { target: 'blocked', label: 'Not interested', hot: 'b' },
+  ],
   submitted: [
     { target: 'in_queue', label: 'Un-send (back to queue)' },
     { target: 'blocked', label: 'Mark rejected', hot: 'b' },
@@ -64,12 +71,14 @@ export const MOVES = {
 /**
  * The move that puts a row back in the bucket it came FROM.
  *
- * `discovered` and `dream` aren't transition targets — they're derived from the scraped
- * files. The way back is the in_queue transition, which drops the applied-log row; the
- * dashboard then re-surfaces the role from queue.json / dream.json on its own.
+ * `discovered`, `dream` and `manual` aren't transition targets — they're derived from the
+ * scraped files. The way back is the in_queue transition, which drops the applied-log row;
+ * the dashboard then re-surfaces the role from queue.json / dream.json / manual.json.
  */
+const DERIVED = ['discovered', 'dream', 'manual']
+
 export function inverseMove(fromBucket) {
-  const back = fromBucket === 'discovered' || fromBucket === 'dream' ? 'in_queue' : fromBucket
+  const back = DERIVED.includes(fromBucket) ? 'in_queue' : fromBucket
   return { target: back, label: BUCKET_LABEL[fromBucket] || 'the queue' }
 }
 
@@ -79,18 +88,20 @@ export const isEditable = (bucket) => bucket === 'in_queue' || bucket === 'fille
 /**
  * Board columns, in left-to-right order.
  *
- * `droppable: false` means the column is not a transition TARGET — `discovered` and `dream`
- * are derived from the scraped files (out/queue.json, out/dream.json), so there's no state
- * to move a role INTO. Their cards still drag OUT (a dream role can be marked applied).
+ * `droppable: false` means the column is not a transition TARGET — `discovered`, `dream`
+ * and `manual` are derived from the scraped files (out/queue.json, out/dream.json,
+ * out/manual.json), so there's no state to move a role INTO. Their cards still drag OUT
+ * (a by-hand role can be marked applied).
  *
- * `hideWhenEmpty` keeps the two derived columns off the board on the usual day when they
- * read 0, so the four columns that matter get the width.
+ * `hideWhenEmpty` keeps the derived columns off the board on a day when they read 0, so
+ * the four columns that matter get the width.
  */
 export const COLUMNS = [
   { id: 'discovered', label: 'Discovered', droppable: false, hideWhenEmpty: true },
   { id: 'in_queue', label: 'In queue', droppable: true },
   { id: 'filled', label: 'Ready', droppable: true },
   { id: 'dream', label: 'Dream', droppable: false, hideWhenEmpty: true },
+  { id: 'manual', label: 'By hand', droppable: false, hideWhenEmpty: true },
   { id: 'submitted', label: 'Sent', droppable: true },
   { id: 'blocked', label: 'Blocked', droppable: true },
 ]

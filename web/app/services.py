@@ -24,6 +24,7 @@ from .paths import (
     COMPANIES_WRITE,
     DREAM_PATH,
     FLUSH_TRIGGER,
+    MANUAL_PATH,
     PROFILE_PATH,
     PROFILE_WRITE,
     QUEUE_PATH,
@@ -160,12 +161,18 @@ def _queue_rows(seen_keys: set[str]) -> list[dict]:
     return out
 
 
-def _dream_rows(seen_keys: set[str]) -> list[dict]:
-    """Discovered dream roles not yet acted on, as a manual-only 'dream' pile. Excludes any
-    dedup_key already surfaced by another pile (pending/applied) so a manually-applied or
-    collected dream role shows in that pile instead, never twice."""
+def _byhand_rows(roles: list[dict], bucket: str, tag: str, tier: str,
+                 seen_keys: set[str]) -> list[dict]:
+    """Discovered roles the extension will never touch, as a manual-only pile.
+
+    Two piles share this shape — 'dream' (too good to spend an auto-apply on) and 'manual'
+    (no adapter for the board) — because from the console's side they behave identically:
+    derived from a scraped file, no pending record, no transition target, apply by hand.
+    Excludes any dedup_key another pile already surfaced, so a role that HAS been collected
+    or applied to shows in that pile instead, never twice.
+    """
     out = []
-    for j in load_dream():
+    for j in roles:
         key = j.get("dedup_key")
         if not key or key in seen_keys:
             continue
@@ -176,15 +183,28 @@ def _dream_rows(seen_keys: set[str]) -> list[dict]:
             "title": j.get("title", ""),
             "location": j.get("location", ""),
             "url": j.get("url", ""),
-            "bucket": "dream",
-            "tag": "apply by hand",
-            "status": "dream",
-            "tier": "dream",
+            "bucket": bucket,
+            "tag": tag,
+            "status": bucket,
+            "tier": tier,
             "date": (j.get("posted") or "")[:10],
             "unanswered": 0,
             "resume": "",
         })
     return out
+
+
+def _dream_rows(seen_keys: set[str]) -> list[dict]:
+    return _byhand_rows(load_dream(), "dream", "apply by hand", "dream", seen_keys)
+
+
+def _manual_rows(seen_keys: set[str], tiers: dict) -> list[dict]:
+    """out/manual.json as its own pile. Tier comes from companies.yaml where the company is
+    on it at all — most of these arrive from a feed, so most are plain pipeline."""
+    rows = _byhand_rows(load_manual(), "manual", "no adapter", "pipeline", seen_keys)
+    for r in rows:
+        r["tier"] = tiers.get((r["company"] or "").casefold(), "pipeline")
+    return rows
 
 
 def dashboard_rows(since_days: int | None = 60) -> list[dict]:
@@ -217,12 +237,13 @@ def dashboard_rows(since_days: int | None = 60) -> list[dict]:
     seen = {r.get("dedup_key") for r in rows if r.get("dedup_key")}
     rows.extend(_queue_rows(seen))
     rows.extend(_dream_rows(seen))
+    rows.extend(_manual_rows(seen, tiers))
     rows.sort(key=lambda r: r.get("date") or "", reverse=True)
     return rows
 
 
 # Buckets whose roles are still waiting on Parth to apply — the console's default view.
-TO_APPLY = ("discovered", "in_queue", "filled", "dream")
+TO_APPLY = ("discovered", "in_queue", "filled", "dream", "manual")
 
 
 def count_rows(rows: list[dict]) -> dict:
@@ -233,7 +254,7 @@ def count_rows(rows: list[dict]) -> dict:
     the view is showing — computing counts over all history while the rows were windowed to
     60 days made the numbers disagree with the list underneath them."""
     out = {"all": len(rows), "discovered": 0, "in_queue": 0, "filled": 0, "submitted": 0,
-           "blocked": 0, "dream": 0, "tier_pipeline": 0, "tier_dream": 0}
+           "blocked": 0, "dream": 0, "manual": 0, "tier_pipeline": 0, "tier_dream": 0}
     for r in rows:
         out[r["bucket"]] = out.get(r["bucket"], 0) + 1
         out["tier_" + r["tier"]] = out.get("tier_" + r["tier"], 0) + 1
@@ -314,7 +335,7 @@ def apply_transition(key: str, target: str, reason: str | None = None,
             # the console to show until discovery finds it again — say which, rather than
             # leaving Parth staring at a row that just disappeared.
             still_listed = any(j.get("dedup_key") == key
-                               for j in (load_queue() + load_dream()))
+                               for j in (load_queue() + load_dream() + load_manual()))
             if still_listed:
                 return {"ok": True, "bucket": "discovered"}
             return {"ok": True, "bucket": "in_queue", "vanishes": True,
@@ -439,24 +460,34 @@ def bank_delete(_id: str) -> bool:
 
 # ── Scraped queue ────────────────────────────────────────────────────────────────────
 
-def load_queue() -> list[dict]:
-    if not QUEUE_PATH.exists():
+def _load_roles(path: Path) -> list[dict]:
+    """One of the scraper's role files, or [] if it isn't there / isn't readable yet.
+
+    Absent is the NORMAL state for these, not an error: out/ is gitignored, so a fresh
+    checkout has none of them until the first scrape runs.
+    """
+    if not path.exists():
         return []
     try:
-        return json.loads(QUEUE_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
+
+
+def load_queue() -> list[dict]:
+    return _load_roles(QUEUE_PATH)
 
 
 def load_dream() -> list[dict]:
     """Discovered dream roles (out/dream.json). Same shape as queue.json; the extension
     never touches these — the console surfaces them as a manual-only pile."""
-    if not DREAM_PATH.exists():
-        return []
-    try:
-        return json.loads(DREAM_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
+    return _load_roles(DREAM_PATH)
+
+
+def load_manual() -> list[dict]:
+    """Roles on a board with no adapter (out/manual.json). Same shape and same manual-only
+    handling as dream, but for a different reason — see core/scraper.py."""
+    return _load_roles(MANUAL_PATH)
 
 
 # ── First-run setup ──────────────────────────────────────────────────────────────────

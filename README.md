@@ -160,10 +160,22 @@ Run these from the repo root — `-m` resolves `core.*` off the working director
 
 Outputs (written to `out/`):
 
-- `queue.json` — pipeline roles: live, fresh, US, not-yet-applied, freshest first. This
-  is what the apply engine feeds off.
-- `digest.md` / `digest.html` — human-readable, grouped by field; dream roles flagged.
+- `queue.json` — pipeline roles: live, fresh, US, not-yet-applied, freshest first, **and
+  on a board the extension has an adapter for**. This is what the apply engine feeds off.
+- `dream.json` — dream-tier roles. Apply-by-hand (referral first); the extension skips them.
+- `manual.json` — roles on a board with no adapter (Apple, Amazon, SmartRecruiters, iCIMS).
+  Also apply-by-hand, for a different reason. Kept out of `queue.json` deliberately: a
+  collection run that opened one would get a tab where no content script mounts.
+- `digest.md` / `digest.html` — human-readable, grouped by field; dream and by-hand flagged.
 - `raw_YYYYMMDD.json` — everything fetched that run (audit).
+
+Sources are two kinds. Every board in `companies.yaml` is fetched directly, and on top of
+that `filters.yaml` lists **feeds** — aggregated postings that surface employers who aren't
+on your company list at all. One ships enabled: the public
+[SimplifyJobs/New-Grad-Positions](https://github.com/SimplifyJobs/New-Grad-Positions) JSON,
+one GET per run. Feed entries are judged by the same filters as everything else, and a
+posting reached by both routes is deduped on its ATS identity (board + job id), so the
+company's own board record — which has the better location and a true posted date — wins.
 
 Dedup is against `applied.json`. The bridge writes it on every confirmed submit; to add a
 role you applied to by hand:

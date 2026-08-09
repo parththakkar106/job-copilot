@@ -29,6 +29,7 @@ ok(canDrop("blocked", "submitted"), "blocked -> submitted (actually applied)");
 ok(canDrop("submitted", "blocked"), "submitted -> blocked (marked rejected)");
 ok(canDrop("submitted", "in_queue"), "submitted -> in_queue un-sends it");
 ok(canDrop("dream", "submitted"), "a dream role can be marked applied by hand");
+ok(canDrop("manual", "submitted"), "a no-adapter role can be marked applied by hand");
 ok(canDrop("discovered", "blocked"), "a discovered role can be marked not-interested");
 
 ok(!canDrop("in_queue", "in_queue"), "a drop on its own column is a no-op, not a move");
@@ -37,9 +38,14 @@ ok(!canDrop("filled", "filled"), "same, from filled");
 ok(!canDrop("discovered", "filled"), "discovered -> filled has no record to fill");
 ok(!canDrop("discovered", "in_queue"), "discovered -> in_queue is not a transition");
 ok(!canDrop("dream", "filled"), "dream -> filled has no record to fill");
+// 'manual' means the extension has no adapter for the board, so Ready would be a lie:
+// there is nothing to fill and nothing for a flush to send.
+ok(!canDrop("manual", "filled"), "manual -> filled has no board we can fill");
 // The two derived columns are never destinations, from anywhere.
-for (const from of ["in_queue", "filled", "submitted", "blocked", "discovered", "dream"]) {
+for (const from of ["in_queue", "filled", "submitted", "blocked", "discovered", "dream",
+                    "manual"]) {
   ok(!canDrop(from, "dream"), `${from} -> dream is never droppable (derived from dream.json)`);
+  ok(!canDrop(from, "manual"), `${from} -> manual is never droppable (derived from manual.json)`);
   ok(!canDrop(from, "discovered"), `${from} -> discovered is never droppable (derived from queue.json)`);
 }
 ok(!canDrop(undefined, "filled"), "a drag with no source bucket can't land");
@@ -63,7 +69,7 @@ for (const from of COLUMNS.map((c) => c.id)) {
 }
 
 // ── Column shape ─────────────────────────────────────────────────────────────────────
-ok(COLUMNS.length === 6, "six columns");
+ok(COLUMNS.length === 7, "seven columns");
 ok(COLUMNS.filter((c) => c.droppable).length === 4, "four of them accept drops");
 ok(COLUMNS.every((c) => c.droppable || c.hideWhenEmpty),
    "the non-droppable columns are exactly the ones hidden when empty");
@@ -83,5 +89,7 @@ ok(readView(null) === "focus", "a first-run empty localStorage falls back to foc
 // inverseMove is what undo leans on, and the board calls the same move() path.
 ok(inverseMove("in_queue").target === "in_queue", "undo puts a queued role back in the queue");
 ok(inverseMove("dream").target === "in_queue", "dream has no transition, so undo goes via in_queue");
+ok(inverseMove("manual").target === "in_queue", "manual has no transition either");
+ok(inverseMove("manual").label === "By hand", "and undo names the pile it came from");
 
 console.log(`piles units: ${n}/${n} checks passed`);

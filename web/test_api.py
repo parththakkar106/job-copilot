@@ -51,6 +51,14 @@ def _isolate(tmp: Path) -> None:
         {"dedup_key": "dk1", "company": "Citadel", "title": "Quant Researcher",
          "location": "NYC", "url": "https://c", "posted": "2026-07-22", "tier": "dream"},
     ]), encoding="utf-8")
+    # A role on a board with no adapter. Its `ats` is exactly what the scraper writes for
+    # one, and the tier is plain pipeline - what makes it manual is the BOARD, not the
+    # company, which is the whole distinction manual.json exists to keep separate.
+    (tmp / "out" / "manual.json").write_text(json.dumps([
+        {"dedup_key": "mk1", "company": "Apple", "title": "ML Engineer",
+         "location": "Cupertino, CA", "url": "https://jobs.apple.com/x",
+         "posted": "2026-07-23", "tier": "pipeline", "ats": "other"},
+    ]), encoding="utf-8")
 
     prefs.PREFS_PATH = tmp / "prefs.json"        # keep the real prefs.json untouched
     drafter_mod._ENABLED = None                  # production path: read from prefs
@@ -66,6 +74,7 @@ def _isolate(tmp: Path) -> None:
     svc.PROFILE_WRITE = tmp / "profile.json"
     svc.QUEUE_PATH = tmp / "out" / "queue.json"
     svc.DREAM_PATH = tmp / "out" / "dream.json"
+    svc.MANUAL_PATH = tmp / "out" / "manual.json"
 
 
 def _seed_pending() -> None:
@@ -100,6 +109,15 @@ def main() -> None:
         assert dk and dk["bucket"] == "dream" and dk["tier"] == "dream", dk; checks += 1
         assert r["counts"].get("dream") == 1 and r["counts"].get("tier_dream") == 1, r["counts"]; checks += 1
 
+        # 2b-ii. Roles on a board with no adapter get their OWN pile, not the dream one.
+        # Folding them into dream would have been cheaper and would have quietly broken
+        # what the Dream badge means, so the two are asserted apart on purpose.
+        mk = next((row for row in r["rows"] if row["dedup_key"] == "mk1"), None)
+        assert mk and mk["bucket"] == "manual", mk; checks += 1
+        assert mk["tier"] == "pipeline", mk        # a by-hand board is not a dream company
+        checks += 1
+        assert r["counts"].get("manual") == 1, r["counts"]; checks += 1
+
         # 2c. Marking a dream role applied-by-hand moves it to submitted and out of the pile.
         assert c.post("/api/jobs/dk1/state", json={"target": "submitted",
                       "meta": {"company": "Citadel", "title": "Quant Researcher",
@@ -129,8 +147,22 @@ def main() -> None:
         # to-apply bucket rolls up into the count the default view is keyed on.
         assert b3.get("qk1") == "discovered", b3; checks += 1
         cnt = c.get("/api/dashboard").json()["counts"]
-        assert cnt["to_apply"] == cnt["discovered"] + cnt["in_queue"] + cnt["filled"] + cnt["dream"], cnt
+        assert cnt["to_apply"] == (cnt["discovered"] + cnt["in_queue"] + cnt["filled"]
+                                   + cnt["dream"] + cnt["manual"]), cnt
         checks += 1
+        # 2e-ii. A by-hand role is applied to in the tab, so the only move it offers is the
+        # same applied-by-hand one dream gets - and it must leave the pile afterwards.
+        assert c.post("/api/jobs/mk1/state", json={"target": "submitted",
+                      "meta": {"company": "Apple", "title": "ML Engineer",
+                               "location": "Cupertino, CA",
+                               "url": "https://jobs.apple.com/x"}}).json()["ok"]; checks += 1
+        b4 = {row["dedup_key"]: row["bucket"] for row in c.get("/api/dashboard").json()["rows"]}
+        assert b4.get("mk1") == "submitted", b4; checks += 1
+        assert c.get("/api/dashboard").json()["counts"]["manual"] == 0; checks += 1
+        # ...and undo puts it back where it came from, reading manual.json again.
+        assert c.post("/api/jobs/mk1/state", json={"target": "in_queue"}).json()["ok"]; checks += 1
+        b5 = {row["dedup_key"]: row["bucket"] for row in c.get("/api/dashboard").json()["rows"]}
+        assert b5.get("mk1") == "manual", b5; checks += 1
         # Counts describe exactly the rows returned, not a differently-windowed set.
         dash = c.get("/api/dashboard").json()
         assert dash["counts"]["all"] == len(dash["rows"]), (dash["counts"]["all"], len(dash["rows"]))

@@ -40,6 +40,9 @@ ANSWER_BANK_WRITE = core_paths.ANSWER_BANK_WRITE
 COMPANIES_WRITE = core_paths.COMPANIES_WRITE
 QUEUE_PATH = core_paths.QUEUE
 DREAM_PATH = core_paths.OUT / "dream.json"
+# Roles on a board with no adapter (see core/scraper.py). Same shape as queue.json, same
+# "the extension never reads this" contract as dream.json, different reason.
+MANUAL_PATH = core_paths.OUT / "manual.json"
 APPLIED_PATH = core_paths.APPLIED
 SCRAPER_MODULE = "core.scraper"   # invoked as `python -m core.scraper` from REPO_ROOT
 EXTENSION_BUILD = REPO_ROOT / "extension" / "build.py"
