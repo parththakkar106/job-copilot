@@ -390,6 +390,77 @@ function liveControl(control, field, dd) {
   return null;
 }
 
+// Re-find a plain control (text/textarea/select/checkbox/radio) the page may have replaced
+// since the scan captured it. The general-purpose sibling of liveControl(), which does the
+// same job for react-select wrappers.
+//
+// WHY THIS EXISTS: runFill captures a node per unresolved question and then WAITS — for
+// Parth to answer in the panel, or for phase 3 to replay a stored answer. The page does not
+// wait. Greenhouse rebuilds its Education block once the resume parses (re-keying
+// school--0 -> school--1) and Ashby re-inits its form after hydration; either way the
+// captured node is detached. Writing to a detached input SUCCEEDS — nothing throws, the
+// value sets — so the answer was reported as filled while the visible field stayed empty.
+// That silent success is the bug; re-finding the node is half the cure and reading the
+// value back (see currentValue) is the other half.
+//
+// Order: the same node if it is still in the document, then its id, then its name (+ value,
+// so one radio option resolves to itself and not a sibling), then its label text.
+function liveField(el, adapter) {
+  if (!el) return null;
+  if (el.isConnected) return el;
+  if (el.id) {
+    const byId = document.getElementById(el.id);
+    if (byId) return byId;
+  }
+  if (el.name) {
+    const named = [...document.getElementsByName(el.name)];
+    const byValue = named.find(c => c.value === el.value);
+    // One candidate is unambiguous. Several that all miss on value is NOT: a radio group
+    // shares one name, and handing back the wrong option would tick the wrong answer —
+    // worse than admitting we lost the field.
+    if (byValue) return byValue;
+    if (named.length === 1) return named[0];
+    if (named.length > 1) return null;
+  }
+  // Last resort. ONE label can legitimately cover two different controls — Ashby's compound
+  // PhoneField resolves both a tel input and a texting-consent radio group to "Phone" — so
+  // require the same tag and type too, or a phone number could land on a consent radio.
+  const want = norm(labelFor(el) || "");
+  if (want) {
+    const tag = el.tagName, type = (el.type || "").toLowerCase();
+    for (const c of document.querySelectorAll("input, select, textarea")) {
+      if (c.tagName !== tag || (c.type || "").toLowerCase() !== type) continue;
+      if (norm(labelFor(c) || "") === want) return c;
+    }
+  }
+  return null;
+}
+
+// What one control currently HOLDS, as the text a human would read off the page. Returns ""
+// for "nothing committed", which is the signal that a write did not land. Mirrors the field
+// walk in reviewValueSummary, narrowed to a single element.
+function currentValue(el, adapter) {
+  if (!el || !el.isConnected) return "";
+  const tag = el.tagName.toLowerCase();
+  if (tag === "select") {
+    const o = el.options[el.selectedIndex];
+    const t = o ? o.text.trim() : "";
+    return /^select\.*\.?$/i.test(t) ? "" : t;     // still on its placeholder = empty
+  }
+  const dd = (adapter && adapter.dropdown) || {};
+  const rs = el.closest && el.closest(dd.control || ".select__control");
+  if (rs) {
+    // A react-select holds its answer in a value chip, NOT in the input — the input still
+    // shows whatever was typed to search, so reading .value here would call a failed pick
+    // a success.
+    const chips = [...rs.querySelectorAll(dd.committed || ".select__single-value, .select__multi-value")];
+    return chips.length ? chips.map(cleanText).join(", ") : "";
+  }
+  const t = (el.type || "text").toLowerCase();
+  if (t === "checkbox" || t === "radio") return el.checked ? (optionText(el, adapter) || "Yes") : "";
+  return String(el.value == null ? "" : el.value).trim();
+}
+
 // ── react-select (Greenhouse, CDP trusted clicks) ─────────────────────────────
 const rsCommitted = (control, dd) =>
   !!control.querySelector(dd.committed || ".select__single-value, .select__multi-value");
@@ -772,6 +843,11 @@ function clickOption(input) {
 // Route a resolved value to the right setter by control kind. Returns {ok, why}.
 async function applyValue(el, value, adapter) {
   const dd = adapter.dropdown || { kind: "native" };
+  // The node may have been captured before an async page event (resume parse, hydration)
+  // replaced it. Re-point first: a detached element accepts every write and shows none.
+  const live = liveField(el, adapter);
+  if (!live) return { ok: false, why: "that field is no longer on the page — re-run Fill" };
+  el = live;
   const tag = el.tagName.toLowerCase();
   // A pick-list wants the LEVEL, a text box wants the credential — see degreeLevel().
   // Done here because this is the only place that knows the widget kind: the taxonomy
@@ -788,11 +864,24 @@ async function applyValue(el, value, adapter) {
   if (el.getAttribute && el.getAttribute("role") === "combobox") {
     if (dd.kind === "comboboxTypeahead") return await pickComboboxTypeahead(el, value, dd);
   }
-  if (tag === "textarea") { setText(el, value); return { ok: true }; }
+  // Text-ish controls: WRITE THEN READ BACK. setText() reports nothing and swallows a
+  // detached-node focus error, so "return {ok:true}" here used to be a promise the code had
+  // no evidence for — the origin of a green ✓ over an empty field.
+  //
+  // Only an EMPTY read-back counts as failure. A field that reformats what it was given
+  // (phone punctuation, date pickers, a masked input) genuinely holds the answer, so the
+  // committed text is reported as `value` rather than treated as a miss — inventing false
+  // failures would just move the dishonesty to the other side.
+  const verified = () => {
+    const got = currentValue(el, adapter);
+    if (!got) return { ok: false, why: "wrote it but the field is still empty — the page may have replaced it" };
+    return { ok: true, value: sameAnswer(got, value) ? value : got };
+  };
+  if (tag === "textarea") { setText(el, value); return verified(); }
   if (tag === "input") {
     const t = (el.type || "text").toLowerCase();
     if (t === "checkbox") return { ok: setCheckbox(el, value) };
-    if (["text", "email", "tel", "url", "search", ""].includes(t)) { setText(el, value); return { ok: true }; }
+    if (["text", "email", "tel", "url", "search", ""].includes(t)) { setText(el, value); return verified(); }
     // radios handled by group elsewhere; skip here.
   }
   return { ok: false, why: "unsupported control type" };
@@ -891,13 +980,17 @@ function questionLabel(group, adapter) {
 // escalate() captured for it, and move it out of its pending bucket. Module-level rather
 // than a runFill local because the panel answers questions AFTER runFill has returned —
 // the ask closures outlive the call.
+// Returns the setter's own {ok, why, value} rather than a bare boolean, so a caller can
+// tell Parth WHY an answer didn't land ("that field is no longer on the page — re-run
+// Fill") instead of the generic "couldn't write that". Callers must test `.ok` — the
+// object itself is always truthy.
 async function applyAskAnswer(report, a, raw) {
-  if (raw == null || String(raw).trim() === "") return false;  // deliberately blank
+  if (raw == null || String(raw).trim() === "") return { ok: false, why: "left blank" };
   const v = String(raw).trim();
   let r;
   try { r = await a.apply(v); } catch (e) { r = { ok: false, why: String((e && e.message) || e) }; }
   resolveAsk(report, a.id, v, r);
-  return !!r.ok;
+  return r;
 }
 
 // After Parth answers on Telegram, move a resolved field out of its needs/flag bucket:
@@ -981,6 +1074,41 @@ function reviewValueSummary(adapter) {
 // application to a real employer.
 // Only checks fields he was actually SHOWN — a field that appears now but wasn't in the
 // approved summary is left to the ATS's own validation.
+// Is what the form now HOLDS the same answer we tried to put there? Lifted out of
+// diffApproved so the submit gate and the post-write read-back judge equivalence by one
+// rule — if they drifted, a value could pass the write check and then trip the gate.
+//
+// Phone equivalence: a site often reformats the number it's given — "(555) 012-3456" comes
+// back as "555-012-3456", the SAME number. Narrowly guarded (phone punctuation only, 7+
+// digits) so it can never equate two different numeric answers or anything with letters.
+// Declarations, not const arrows: these are defined far below the norm/canon/wb block they
+// depend on and far above some callers, and a function declaration hoists so neither
+// ordering can produce a temporal-dead-zone error at runtime or in the unit harness.
+function onlyDigits(s) { return String(s).replace(/\D/g, ""); }
+function phoneish(s) {
+  return /^[+()\-.\s\d]+$/.test(String(s).trim()) && onlyDigits(s).length >= 7;
+}
+function phoneEq(a, b) {
+  if (!phoneish(a) || !phoneish(b)) return false;
+  const da = onlyDigits(a).replace(/^1(?=\d{10}$)/, "");
+  const db = onlyDigits(b).replace(/^1(?=\d{10}$)/, "");
+  return da === db;
+}
+// The same equivalence tiers the matcher uses to COMMIT a value (exact after canon, then
+// whole-word either way), and nothing looser — token-overlap fuzziness has no place in a
+// correctness check. A typed answer and the option it lands on rarely match verbatim.
+function sameAnswer(a, b) {
+  const na = String(a == null ? "" : a).toLowerCase().replace(/\s+/g, " ").trim();
+  const nb = String(b == null ? "" : b).toLowerCase().replace(/\s+/g, " ").trim();
+  if (na === nb) return true;
+  if (phoneEq(na, nb)) return true;
+  const ca = canon(na), cb = canon(nb);
+  if (ca === cb) return true;
+  if (ca.length >= 2 && wb(ca).test(cb)) return true;
+  if (cb.length >= 2 && wb(cb).test(ca)) return true;
+  return false;
+}
+
 function diffApproved(approved, current) {
   if (!approved || !approved.length) return [];
   const norm = v => String(v == null ? "" : v)
@@ -1013,29 +1141,9 @@ function diffApproved(approved, current) {
   // the matcher's own successful mapping. So accept the same equivalence tiers the
   // matcher uses to COMMIT a value (exact after canon, whole-word either way), and
   // nothing looser: token-overlap fuzziness has no place in a submit gate.
-  // Phone equivalence: a site often reformats the number it's given on load — Cloudflare
-  // turned approved "(555) 012-3456" into "555-012-3456", which is the SAME number and must
-  // not trip the submit gate. Compare digits only (a leading US country code optional).
-  // Narrowly guarded — the value must be phone-punctuation-only with 7+ digits — so it can't
-  // wrongly equate two different numeric answers (different digits never match) or any field
-  // containing letters.
-  const onlyDigits = s => String(s).replace(/\D/g, "");
-  const phoneish = s => /^[+()\-.\s\d]+$/.test(String(s).trim()) && onlyDigits(s).length >= 7;
-  const phoneEq = (a, b) => {
-    if (!phoneish(a) || !phoneish(b)) return false;
-    const da = onlyDigits(a).replace(/^1(?=\d{10}$)/, "");
-    const db = onlyDigits(b).replace(/^1(?=\d{10}$)/, "");
-    return da === db;
-  };
-  const equiv = (a, b) => {
-    if (a === b) return true;
-    if (phoneEq(a, b)) return true;
-    const ca = canon(a), cb = canon(b);
-    if (ca === cb) return true;
-    if (ca.length >= 2 && wb(ca).test(cb)) return true;
-    if (cb.length >= 2 && wb(cb).test(ca)) return true;
-    return false;
-  };
+  // (Phone equivalence and the tier list now live in module-level sameAnswer, shared with
+  // the post-write read-back so both judge "is this the same answer?" identically.)
+  const equiv = sameAnswer;
   const now = group(current);
   const out = [];
   for (const [key, { label, values }] of group(approved)) {
@@ -1344,12 +1452,21 @@ async function runFill(autoSubmit = false, opts = {}) {
       const groupOptions = group.inputs.map(i => optionText(i, adapter));
       const req = group.inputs.some(i => isRequired(i, adapter)) || /\*|✱/.test(label);
       // Writes Parth's Telegram answer back by matching it to one of the group's options.
+      // Re-points at the live inputs first and confirms the option actually went checked:
+      // this closure runs long after the scan (he answers in the panel minutes later, or
+      // phase 3 replays a stored answer into a freshly loaded page), by which time the
+      // captured radios may be detached — and clicking a detached radio does nothing at all
+      // while the old code still reported success.
       const applyGroup = async (v) => {
-        const opts = group.inputs.map(i => ({ textContent: optionText(i, adapter), input: i }));
+        const live = group.inputs.map(i => liveField(i, adapter)).filter(Boolean);
+        if (!live.length) return { ok: false, why: "that question is no longer on the page — re-run Fill" };
+        const opts = live.map(i => ({ textContent: optionText(i, adapter), input: i }));
         const hit = matchOption(opts, v);
         if (!hit) return { ok: false, why: `no option matched "${v}"` };
         clickOption(hit.input);
-        return { ok: true };
+        await sleep(60);
+        if (!hit.input.checked) return { ok: false, why: "clicked the option but it did not stick" };
+        return { ok: true, value: hit.textContent };
       };
       if (c.bucket !== "deterministic") {
         if (c.bucket === "draftable") escalate("needsInput", { label, why: `draftable -> ${c.answer_key} (Tier 2)`, answer_key: c.answer_key, required: req, options: groupOptions, kind: "group" }, applyGroup);
@@ -1365,7 +1482,12 @@ async function runFill(autoSubmit = false, opts = {}) {
       const pick = matchFirstCandidate(items, c);
       if (!pick) { escalate("flagged", { label, value: c.rendered, why: `no option matched (options: ${items.map(o => o.textContent).slice(0, 6).join(" | ")})`, required: req, options: groupOptions, kind: "group" }, applyGroup); continue; }
       clickOption(pick.hit.input);
-      report.filled.push({ label, value: pick.hit.textContent, ...(pick.viaAlternate ? { via: pick.want } : {}) });
+      await sleep(60);
+      // Same read-back the yes/no path has always done: a click that didn't take must not
+      // be recorded as filled, or the end-of-form review vouches for an empty question.
+      const stuck = pick.hit.input.checked;
+      (stuck ? report.filled : report.flagged).push({ label, value: pick.hit.textContent,
+        ...(pick.viaAlternate ? { via: pick.want } : {}), ...(stuck ? {} : { why: "clicked but did not commit" }) });
     }
 
     // 3a) LONE radios: a radio whose siblings are hidden forms no group (needs >= 2
@@ -1551,7 +1673,7 @@ async function runFill(autoSubmit = false, opts = {}) {
       // PHASE 3: he answered these already. Ids are label-derived, so they still match
       // even if this fill's field set came out different from phase 1's.
       let applied = 0;
-      for (const a of asks) if (await applyAnswer(a, (opts.answers || {})[a.id])) applied++;
+      for (const a of asks) if ((await applyAnswer(a, (opts.answers || {})[a.id])).ok) applied++;
       report.answered = applied;
       report.unanswered = asks.filter(a => !((opts.answers || {})[a.id] || "").trim())
                               .map(a => a.label);
@@ -1564,7 +1686,7 @@ async function runFill(autoSubmit = false, opts = {}) {
         if (!res || !res.ok) throw new Error((res && res.error) || "no response from the control plane");
         const answers = res.answers || {};
         let applied = 0;
-        for (const a of asks) if (await applyAnswer(a, answers[a.id])) applied++;
+        for (const a of asks) if ((await applyAnswer(a, answers[a.id])).ok) applied++;
         report.answered = applied;
       } catch (e) {
         report.errors.push("control plane: " + String((e && e.message) || e));
@@ -2214,13 +2336,17 @@ function mountPanel() {
       const answer = async (value, fromBankId) => {
         const a = (PANEL_ASKS || []).find(x => x.id === q.id);
         if (!a) return finish(value, false, "that field is gone from the page — re-run Fill");
-        const ok = await applyAskAnswer(PANEL_REPORT, a, value);
-        if (ok && fromBankId) {
+        const r = await applyAskAnswer(PANEL_REPORT, a, value);
+        if (r.ok && fromBankId) {
           // Only an ACCEPTED draft counts as a use — same rule as the Telegram path, so an
           // answer he keeps rewriting still goes stale and surfaces for a rewrite.
           rpc({ type: "BANK_TOUCH", bankId: fromBankId }).catch(() => {});
         }
-        finish(value, ok, ok ? "" : "couldn't write that into the field — set it by hand");
+        // Report the setter's own reason. "couldn't write that into the field" was true of
+        // every failure and told him nothing; the field having left the page and the value
+        // matching no option need different responses from him.
+        finish(r.ok && r.value ? r.value : value, r.ok,
+               r.ok ? "" : `${r.why || "the field didn't take it"} — set it by hand`);
       };
 
       let d = (drafts && drafts[q.id]) || (q.draft ? { draft: q.draft, bank_id: null } : null);
@@ -2350,7 +2476,7 @@ function mountPanel() {
           for (const q of qs) {
             const v = byLabel.get(key(q.label));
             const a = (v != null && v !== "") ? (PANEL_ASKS || []).find(x => x.id === q.id) : null;
-            if (a && await applyAskAnswer(PANEL_REPORT, a, v)) applied++;
+            if (a && (await applyAskAnswer(PANEL_REPORT, a, v)).ok) applied++;
             else remaining.push(q);
           }
           if (applied) log(`Restored ${applied} answer(s) you'd already saved.`, "ok");

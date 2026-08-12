@@ -54,10 +54,12 @@ function extractConst(name) {
 // than a real one — enough to pin the matching ORDER and the detached-node rule, which is
 // the part that broke (a detached control clicks at 0,0 and fails as "no options").
 const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,
-        isPickList, makeDegreeLevel, makePageCompany, canon, wb,
+        isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer,
+        makeLiveField, makeCurrentValue,
         answerCandidates, matchFirstCandidate, matchOption } =
   new Function(
   `${extract("matchOption")}\n${extract("answerCandidates")}\n${extract("matchFirstCandidate")}\n` +
+  `${extract("onlyDigits")}\n${extract("phoneish")}\n${extract("phoneEq")}\n${extract("sameAnswer")}\n` +
   `${extractConsts()}\n${extract("askId")}\n${extract("diffApproved")}\n` +
   `${extractConst("searchable")}\n${extractConst("GENERIC_SEARCH_WORD")}\n${extract("searchCandidates")}\n` +
   `${extractConst("OTHER_OK_FIELD")}\n${extractConst("otherOption")}\n` +
@@ -65,9 +67,12 @@ const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, make
   `${extractConst("DEGREE_FIELD")}\n${extractConst("DEGREE_LEVELS")}\n` +
   `const makeDegreeLevel = (labelFor) => { ${extract("degreeLevel")} return degreeLevel; };\n` +
   `const makeLiveControl = (document, labelFor) => { ${extract("liveControl")} return liveControl; };\n` +
+  `const makeLiveField = (document, labelFor) => { ${extract("liveField")} return liveField; };\n` +
+  `const makeCurrentValue = (cleanText, optionText) => { ${extract("currentValue")} return currentValue; };\n` +
   `const makePageCompany = (location, document) => { ${extract("pageCompany")} return pageCompany; };\n` +
   `return { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,` +
-  ` isPickList, makeDegreeLevel, makePageCompany, canon, wb,` +
+  ` isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer,` +
+  ` makeLiveField, makeCurrentValue,` +
   ` answerCandidates, matchFirstCandidate, matchOption };`)();
 
 let n = 0;
@@ -283,6 +288,108 @@ ok(!searchCandidates("Ashford Institute of Technology and Science (AITS), Norhav
 ok(searchCandidates("").length === 0, "an empty value yields no queries rather than typing junk");
 ok(new Set(searchCandidates("MIT")).size === searchCandidates("MIT").length,
    "a one-word value must not produce duplicate queries");
+
+// --- liveField / currentValue: the cure for the green tick over an empty field --------
+// THE BUG: runFill captures a node per unresolved question, then waits — for a panel tap
+// or a phase-3 replay. Greenhouse re-keys its Education rows once the resume parses and
+// Ashby re-inits after hydration, so the captured node is detached by then. Writing to a
+// detached input SUCCEEDS silently, so the answer was reported filled while the visible
+// field stayed empty. liveField re-points; currentValue proves the write landed.
+{
+  const el = (o = {}) => ({ tagName: "INPUT", type: "text", value: "", isConnected: true,
+                            id: "", name: "", closest: () => null, ...o });
+  const mkDoc = (nodes) => ({
+    getElementById: (id) => nodes.find(n => n.id === id && n.isConnected) || null,
+    getElementsByName: (nm) => nodes.filter(n => n.name === nm && n.isConnected),
+    querySelectorAll: () => nodes.filter(n => n.isConnected),
+  });
+  const labelOfNode = (n) => (n && n._label) || "";
+
+  // Still on the page: hand back the very same node, no searching.
+  {
+    const a = el({ id: "school--0" });
+    const live = makeLiveField(mkDoc([a]), labelOfNode);
+    ok(live(a, {}) === a, "a still-connected field is returned as-is");
+  }
+  // THE GREENHOUSE CASE: the node was replaced but kept its id.
+  {
+    const stale = el({ id: "phone", isConnected: false });
+    const fresh = el({ id: "phone" });
+    const live = makeLiveField(mkDoc([stale, fresh]), labelOfNode);
+    ok(live(stale, {}) === fresh, "a detached field is re-found by id");
+  }
+  // A radio must resolve to ITSELF, not whichever sibling shares its name.
+  {
+    const stale = el({ type: "radio", name: "consent", value: "No", isConnected: false });
+    const yes = el({ type: "radio", name: "consent", value: "Yes" });
+    const no = el({ type: "radio", name: "consent", value: "No" });
+    const live = makeLiveField(mkDoc([stale, yes, no]), labelOfNode);
+    ok(live(stale, {}) === no, "name lookup picks the option with the SAME value, not a sibling");
+  }
+  // Ambiguous is worse than lost: several same-name options and none matching on value
+  // means we cannot say WHICH one, and ticking the wrong radio is worse than reporting a
+  // miss. (A single same-name candidate is unambiguous and is still returned.)
+  {
+    const stale = el({ type: "radio", name: "g", value: "Maybe", isConnected: false });
+    const a = el({ type: "radio", name: "g", value: "Yes" });
+    const b = el({ type: "radio", name: "g", value: "No" });
+    ok(makeLiveField(mkDoc([a, b]), labelOfNode)(stale, {}) === null,
+       "several same-name options and no value match resolves to null, never a guess");
+    const lone = el({ name: "solo", value: "x" });
+    ok(makeLiveField(mkDoc([lone]), labelOfNode)(el({ name: "solo", value: "y", isConnected: false }), {}) === lone,
+       "a single same-name candidate is unambiguous and is returned");
+  }
+  // The label tier must not cross control kinds: Ashby's compound PhoneField resolves BOTH
+  // a tel input and a texting-consent radio group to "Phone", and putting the number on the
+  // consent radio would be a wrong answer, not a failed one.
+  {
+    const stale = el({ type: "tel", _label: "Phone", isConnected: false });
+    const consent = el({ type: "radio", _label: "Phone", _opt: "Yes" });
+    const tel = el({ type: "tel", _label: "Phone" });
+    const live = makeLiveField(mkDoc([consent, tel]), labelOfNode);
+    ok(live(stale, {}) === tel, "the label fallback requires a matching tag AND type");
+  }
+  // Nothing findable: report it. Returning the stale node would restore the silent bug.
+  {
+    const stale = el({ id: "gone", isConnected: false });
+    const live = makeLiveField(mkDoc([]), labelOfNode);
+    ok(live(stale, {}) === null, "an unfindable field returns null so the caller can say so");
+  }
+
+  const cleanTextF = (n) => String((n && n.textContent) || "").trim();
+  const optionTextF = (n) => (n && n._opt) || "";
+  const cur = makeCurrentValue(cleanTextF, optionTextF);
+
+  ok(cur(el({ value: "Parth" }), {}) === "Parth", "a text input reads back its value");
+  ok(cur(el({ value: "x", isConnected: false }), {}) === "",
+     "a DETACHED field reads back empty — this is what turns a false tick into a failure");
+  // A react-select keeps its answer in a value chip; the input still holds the search text,
+  // so reading .value there would call a FAILED pick a success.
+  {
+    const chipless = { querySelectorAll: () => [] };
+    const typed = el({ value: "Ashford", closest: () => chipless });
+    ok(cur(typed, {}) === "", "a react-select with no committed chip reads empty despite typed text");
+    const chipped = { querySelectorAll: () => [{ textContent: " Other " }] };
+    ok(cur(el({ value: "Ashford", closest: () => chipped }), {}) === "Other",
+       "a committed react-select reads back the chip, not the search box");
+  }
+  // A <select> still on its placeholder is empty, not filled with the word "Select...".
+  {
+    const sel = (idx, ...texts) => ({ tagName: "SELECT", isConnected: true, selectedIndex: idx,
+                                      options: texts.map(text => ({ text })), closest: () => null });
+    ok(cur(sel(0, "Select...", "Yes", "No"), {}) === "", "a placeholder selection reads empty");
+    ok(cur(sel(1, "Select...", "Yes", "No"), {}) === "Yes", "a real selection reads its option text");
+  }
+  ok(cur(el({ type: "radio", checked: false, _opt: "Yes" }), {}) === "", "an unchecked radio reads empty");
+  ok(cur(el({ type: "radio", checked: true, _opt: "Yes" }), {}) === "Yes", "a checked radio reads its option");
+}
+
+// sameAnswer is the shared judge for "did the write land?" and the submit gate. A field
+// that REFORMATS what it was given still holds the answer and must not read as a failure.
+ok(sameAnswer("+1 555-012-3456", "555-012-3456"), "a reformatted phone is the same answer");
+ok(sameAnswer("Bachelor", "Bachelor's Degree"), "the option text the matcher committed still matches");
+ok(!sameAnswer("Yes", "No"), "genuinely different answers stay different");
+ok(!sameAnswer("Parth", ""), "an empty read-back never equals a real answer");
 
 // --- the answer chain: profile value first, then alternates ---------------------------
 // Every case here is a control that flagged on a live board because the FIRST answer
