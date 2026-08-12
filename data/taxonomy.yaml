@@ -8,6 +8,20 @@
 #   draftable     -> Tier 2: Claude drafts from answer_bank, user approves (answer_key)
 #   always_ask    -> never auto-filled; always surfaced to the user (phone)
 #
+# A deterministic rule may also carry `alternates: [...]` — a SECOND, THIRD, … answer to
+# try when the first one matches none of the control's options. This exists because the
+# same question text can front two different widget kinds: "Phone Number" labels a text
+# box on most boards and, on Ashby, an SMS-consent Yes/No group. Rather than reorder the
+# rules (which changes what wins everywhere) or guess the widget from the label (which is
+# what the label cannot tell us), the rule names its fallbacks and the fill engine walks
+# them in order, keeping the first that the control actually accepts.
+#
+# Each entry is either a dotted profile path (resolved against profile.json — this is the
+# common case) or, if it resolves to nothing, the literal string itself. Per-value
+# fallbacks that are about the ANSWER rather than the question — tenant wordings, ranked
+# preferences — belong in profile.json's `answer_alternates` instead, keyed by value_key;
+# both sources are tried, rule alternates first.
+#
 # always_ask is checked FIRST so a "current salary" field can never be captured by a
 # looser deterministic rule. Per-company overrides (bottom) prepend extra patterns to a
 # bucket for that company only — e.g. force a dream company's "why us" to always_ask.
@@ -34,6 +48,52 @@ buckets:
     # name (Zipline -> zip, T-Mobile -> mobile). The phrasing is ultra-specific, so
     # placing it this early is safe.
     - {pattern: 'how (did|do) you (first |initially |originally )?(hear|learn|find out)|how were you referred|(hear|learn) about (us|this|the (role|position|job|company))|referral source|source of application', value_key: preferences.referral_source}
+
+    # ── OBSERVED PHRASINGS — an APPEND-ONLY rule book ────────────────────────────
+    # Exact question wordings seen on real boards that the general rules further down
+    # miss. Read `logs/fill_reports.jsonl` after a run: anything in `questions` whose
+    # `why` is "unrecognized required field" or "no rule matched" is a candidate, and
+    # if profile.json already holds the answer it belongs here. Append freely — that is
+    # the point of the block.
+    #
+    # WHY THEY LIVE UP HERE, not next to their own value_key's general rule: each is a
+    # near-verbatim question sentence, so it is far more specific than anything below
+    # and cannot be stolen from a looser rule by accident. Same reasoning that already
+    # hoists the referral-source rule above the phone/zip rules. (always_ask is a
+    # separate bucket checked BEFORE this one, so nothing here can outrank it.)
+    #
+    # THE TRAP THESE AVOID: several general rules below deliberately end-anchor with
+    # `\s*[:*]?\s*$` to exclude a trailing "?", because that is what stops an essay
+    # ("Why do you want to leave your current employer?") from being answered with a
+    # value. Widening those anchors to admit "?" would reopen exactly that hole — live
+    # proof: Babel Street asks "is <company> considered a competitor to your most
+    # recent employer?", which is a Yes/No and must NOT be filled with an employer
+    # name. So these rules keep the interrogative lead-in ("what is your…") instead,
+    # which is specific enough to tell the two shapes apart.
+    #
+    # Each entry ends with the board it was observed on and the date.
+    - {pattern: '(what|which) (is|was) your most recent (company|employer)', value_key: employment.current_employer}   # SentiLink, 2026-08-12
+    - {pattern: '(what|which) (is|was) your most recent (job )?(title|role|position)', value_key: employment.current_title}  # SentiLink, 2026-08-12
+    - {pattern: 'country do you currently (reside|live)|(what|which) country are you (based|located|living) in', value_key: identity.address.country}  # DV Trading / Nova Talent, 2026-08-12
+    # "Do you live in the US…?" and "Are you based in a US equivalent timezone?" are
+    # Yes/No, so the country rules above would answer "United States" and match nothing.
+    - {pattern: '(live|living|reside|residing|based) in the (us\b|u\.s\.|usa|united states)|u\.?s\.? equivalent time ?zone', value_key: identity.based_in_us}  # SentiLink / Nova Talent, 2026-08-12
+    # "Military status" never contains the word "veteran", so the veteran rule missed it.
+    - {pattern: 'military status|military service', value_key: eeo.veteran_status}   # Robinhood, 2026-08-12
+    # The general previously_employed rule needs "us"/"this company"/"before" within 25
+    # chars of the verb; a board that names itself ("worked for Robinhood as an…") blows
+    # that budget, and we cannot know the company name at pattern-write time.
+    - {pattern: '(have|had) you ever (worked|been employed|interned) (for|at|with|by)\b', value_key: affiliations.previously_employed}  # Robinhood, 2026-08-12
+    - {pattern: 'how did you discover (us|our)|where did you (find|discover) (us|this)', value_key: preferences.referral_source}  # Luma AI, 2026-08-12
+    # "locations ARE YOU open to" has a word between "locations" and "you", which the
+    # general locations rule's `locations? you.{0,15}open` alternative cannot span.
+    - {pattern: 'locations? are you open to|open to working (from|in)|preferred office location|office location preference', value_key: preferences.locations}  # SentiLink / Robinhood, 2026-08-12
+    # An honest SMS-consent label. When the group is instead mislabelled with the phone
+    # field's own text (Ashby does this — see the phone rule's `alternates`), the phone
+    # rule catches it and falls back to this same value.
+    - {pattern: 'consent to receiv\w*.{0,20}text|text message|\bsms\b', value_key: attestations.sms_consent}  # SentiLink, 2026-08-12
+    # ── end observed phrasings ───────────────────────────────────────────────────
+
     - {pattern: '\bfirst name\b',                                   value_key: identity.first_name}
     # "Preferred name" / "what should we call you" is the applicant's given name (Parth),
     # NOT a work-location preference — sits above the preferred-city/location rules below,
@@ -43,7 +103,13 @@ buckets:
     - {pattern: '\bfull name\b|^name$|your name|legal name',        value_key: identity.full_name}
     - {pattern: 'e-?mail',                                          value_key: identity.email}
     # mobile/cell word-bounded: bare substrings caught "T-Mobile"/"misCELLaneous" etc.
-    - {pattern: '\bphone\b|\bmobile\b|telephone|\bcell\b',          value_key: identity.phone}
+    # `alternates`: Ashby renders its SMS-consent radio group INSIDE the phone field's
+    # wrapper, so the group inherits the label "Phone Number" and this rule wins — then
+    # the phone number matches neither "Yes - I consent to receiving text messages" nor
+    # "No - …", and SentiLink flagged it on every single run. The consent value is the
+    # right answer for that widget, so try it once the number fails to match. A real
+    # phone text box never reaches the fallback (setText always accepts).
+    - {pattern: '\bphone\b|\bmobile\b|telephone|\bcell\b',          value_key: identity.phone, alternates: [attestations.sms_consent]}
     - {pattern: 'linkedin',                                         value_key: links.linkedin}
     - {pattern: 'github|git hub',                                   value_key: links.github}
     # url word-bounded: bare "url" caught "hoURLy rate" and silently skipped a comp question
@@ -119,7 +185,12 @@ buckets:
     - {pattern: 'relocation (assistance|package|support|bonus|benefit)|assist\w*.{0,20}relocat', value_key: preferences.relocation_assistance_needed}
     - {pattern: 'willing to relocate|open to relocation|able to relocate|relocat',           value_key: work_authorization.relocation}
     # EEO / voluntary self-identification — autofilled from profile.eeo (Parth's chosen answers)
-    - {pattern: '\bgender\b|\bsex\b|gender identity',              value_key: eeo.gender}
+    # `alternates`: "What gender pronouns do you prefer?" contains "gender", so this rule
+    # beats the pronoun rule below and offered "Male" against He/Him | She/Her | Them/They
+    # — flagged on every Robinhood run. The pronoun rule is NOT hoisted above this one on
+    # purpose: that would change which rule wins for every gender question everywhere.
+    # Falling back only when the gender value matches nothing is the narrower change.
+    - {pattern: '\bgender\b|\bsex\b|gender identity',              value_key: eeo.gender, alternates: [eeo.pronouns]}
     # The standard US EEO block asks "Are you Hispanic or Latino?" as its own Yes/No
     # BEFORE race — route it to its own answer so it fills instead of escalating on
     # every Greenhouse form. The race rule below keeps hispanic|latino as a fallback for
@@ -189,7 +260,12 @@ buckets:
     # to work onsite" wording) nor the work_arrangement string rule below. Renders full
     # availability (Parth is open to all arrangements).
     - {pattern: 'how many days.*(office|on-?site|in person|come in)|days (a|per) week.*(office|on-?site|in person|come in)', value_key: preferences.office_days_available}
-    - {pattern: '\bremote\b|hybrid|on-?site|in-office|work arrangement|willing to work (in|from|on-?site)', value_key: preferences.work_arrangement}
+    # `alternates`: "Are you willing to work from the office(s) listed on the job
+    # description?" is a Yes/No, but this rule renders the preference SENTENCE ("Open to
+    # remote, hybrid, or onsite") which matches no option — flagged live on Robinhood.
+    # The in-office acknowledgment (true -> "Yes") is the same commitment in Yes/No form,
+    # so it is the correct second try; free-text arrangement fields never reach it.
+    - {pattern: '\bremote\b|hybrid|on-?site|in-office|work arrangement|willing to work (in|from|on-?site)', value_key: preferences.work_arrangement, alternates: [attestations.in_office_acknowledgment]}
     - {pattern: 'preferred (location|city|work location)|desired (location|work location)|location preference|locations? (of interest|you.{0,15}(open|interested))|open to (which )?locations|where would you like to work', value_key: preferences.locations}
     # Attestations (yes/no; booleans render Yes/No)
     - {pattern: 'at least 18|18 (years )?(of age|or older)|are you (at least |over )?18|over 18|minimum age|of legal (working )?age', value_key: attestations.age_18_or_older}

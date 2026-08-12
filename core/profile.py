@@ -78,13 +78,50 @@ def _buckets_for(tax: dict, company: str | None) -> dict:
     return buckets
 
 
+def resolve_alternates(profile: dict, rule: dict, value_key: str) -> list[str]:
+    """Ordered fallback answers for a deterministic rule, rendered ready to match.
+
+    Two sources, in this order:
+      1. the rule's own `alternates:` — a DIFFERENT answer for the same question, used
+         when one question text fronts two widget kinds ("Phone Number" = a text box on
+         most boards, an SMS-consent Yes/No on Ashby). Each entry is a dotted profile
+         path if it resolves, else the literal string.
+      2. profile.json `answer_alternates[value_key]` — the SAME answer in other words
+         (tenant vocabularies), or a ranked list of equally-true answers.
+
+    Only the caller knows whether the first choice fit, so nothing is filtered here
+    beyond dropping blanks and unset placeholders. Duplicates are collapsed keeping
+    first position, since order is the whole meaning of the list.
+    """
+    out: list[str] = []
+    for entry in rule.get("alternates") or []:
+        val = dig(profile, entry) if isinstance(entry, str) else None
+        # A path that resolves wins; anything else is the literal answer itself. Human
+        # sentences ("I've already graduated") never resolve, so this stays unambiguous.
+        out.append(render(val) if val is not None else str(entry))
+    # NOT dig("answer_alternates.<value_key>"): the keys there contain literal dots
+    # ("eeo.veteran_status" is ONE key), so the block must be fetched and indexed whole —
+    # same access the Workday driver already uses.
+    out.extend(str(a) for a in ((dig(profile, "answer_alternates") or {}).get(value_key) or []))
+    seen, uniq = set(), []
+    for a in out:
+        if not a or a == FILL_ME or a in seen:
+            continue
+        seen.add(a)
+        uniq.append(a)
+    return uniq
+
+
 def classify(field_text: str, company: str | None = None,
              profile: dict | None = None, tax: dict | None = None) -> dict:
-    """Return {bucket, value_key?, answer_key?, value?, rendered?, filled?}.
+    """Return {bucket, value_key?, answer_key?, value?, rendered?, filled?, alternates?}.
 
     bucket is one of deterministic/draftable/always_ask, or None if no rule matched
     (caller escalates to Tier 1). For deterministic, value/rendered are resolved and
     filled=False flags an unset FILL_ME placeholder the user still owes.
+
+    `alternates` is the ordered list of OTHER answers to try when `rendered` matches none
+    of the control's options — see resolve_alternates().
     """
     profile = profile if profile is not None else load_profile()
     tax = tax if tax is not None else load_taxonomy()
@@ -99,7 +136,8 @@ def classify(field_text: str, company: str | None = None,
                     vk = rule["value_key"]
                     val = dig(profile, vk)
                     out.update(value_key=vk, value=val, rendered=render(val),
-                               filled=(val is not None and val != FILL_ME))
+                               filled=(val is not None and val != FILL_ME),
+                               alternates=resolve_alternates(profile, rule, vk))
                 elif bucket == "draftable":
                     out["answer_key"] = rule["answer_key"]
                 return out
@@ -240,6 +278,9 @@ MUST_REVIEW = [
     "affiliations.government_affiliation",
     "affiliations.external_business",
     "affiliations.related_to_employee",
+    # Both ship preset in profile.example.json, so nothing else would ever surface them.
+    "identity.based_in_us",
+    "attestations.sms_consent",
 ]
 
 
@@ -371,6 +412,34 @@ def selftest():
         ("Why this role?", None, "draftable", "why_role"),
         # an excitement verb with no role/company noun is not this family
         ("What excites you about the compensation package?", None, None, None),
+        # --- OBSERVED PHRASINGS block (added 2026-08-12 from logs/fill_reports.jsonl) ---
+        # Every one of these was surfaced as a question on a live board while the answer
+        # sat in profile.json. Append a case here whenever the rule book grows.
+        ("What is your most recent company?", None, "deterministic", "employment.current_employer"),
+        ("What is your most recent job title?", None, "deterministic", "employment.current_title"),
+        ("What country do you currently reside in?", None, "deterministic", "identity.address.country"),
+        ("What country are you based in?", None, "deterministic", "identity.address.country"),
+        ("Do you live in the US or plan to live in the US by the time you start working?",
+         None, "deterministic", "identity.based_in_us"),
+        ("Are you based in a US equivalent timezone?", None, "deterministic", "identity.based_in_us"),
+        ("What is your military status?", None, "deterministic", "eeo.veteran_status"),
+        ("Have you ever worked for Robinhood as an employee, intern or contractor?",
+         None, "deterministic", "affiliations.previously_employed"),
+        ("How did you discover us?", None, "deterministic", "preferences.referral_source"),
+        ("Which locations are you open to working from? (Select all that apply)",
+         None, "deterministic", "preferences.locations"),
+        ("What is your preferred office location?", None, "deterministic", "preferences.locations"),
+        ("Do you consent to receiving text messages?", None, "deterministic", "attestations.sms_consent"),
+        # THE REGRESSION THESE MUST NOT CAUSE: the employer/title rules end-anchor away a
+        # trailing "?" precisely so question-sentences aren't answered with a value. The
+        # new interrogative rules keep that property — Babel Street's competitor question
+        # is a live Yes/No that must never be filled with an employer name.
+        ("If yes, is Babel Street considered a competitor to your most recent employer?", None, None, None),
+        ("Describe your most recent role and responsibilities", None, None, None),
+        # An essay ABOUT the current job must reach the drafter, not be answered with the
+        # employer's name. It lands in draftable (checked after deterministic), which is
+        # proof the new interrogative rule declined it rather than that no rule saw it.
+        ("Why do you want to leave your most recent company?", None, "draftable", "why_company"),
     ]
     fails = 0
     for field, company, want_bucket, want_key in cases:
@@ -386,6 +455,40 @@ def selftest():
     # boolean rendering
     if render(True) != "Yes" or render(False) != "No":
         fails += 1; print("FAIL: boolean render")
+
+    # --- alternates: the "if the first answer doesn't fit, try the next" chain ---------
+    # Each case below is a question whose FIRST answer was flagged on a live board because
+    # it matched none of the control's options. The fill engine walks this list in order.
+    def alts(field):
+        return classify(field, None, profile, tax).get("alternates") or []
+
+    # rule-level: a different profile key entirely (the widget, not the wording, differs).
+    # Asserted against the profile's OWN value, never a literal — that keeps a personal
+    # answer out of this shareable file and makes the check hold for any user's profile.
+    if render(dig(profile, "eeo.pronouns")) not in alts("What gender pronouns do you prefer?"):
+        fails += 1; print("FAIL: pronouns not offered as an alternate to gender")
+    if render(dig(profile, "attestations.sms_consent")) not in alts("Phone Number"):
+        fails += 1; print("FAIL: sms_consent not offered as an alternate to phone")
+    if "Yes" not in alts("Are you willing to work from the office(s) listed on the job description?"):
+        fails += 1; print("FAIL: in-office acknowledgment not offered for a Yes/No office question")
+    # ORDER IS THE MEANING of the list: the profile's own value is never in it (it is
+    # tried first by the caller), and rule alternates precede answer_alternates.
+    g = classify("Gender", None, profile, tax)
+    if g.get("rendered") in g.get("alternates", []):
+        fails += 1; print("FAIL: the primary value must not repeat inside alternates")
+    # profile-level: same answer, other wordings — and a literal that is not a profile path
+    if "I've already graduated" not in alts("Expected graduation date"):
+        fails += 1; print("FAIL: graduation-date literal alternate missing")
+    loc = alts("What is your preferred office location?")
+    if loc[:1] != ["San Francisco"] or "New York" not in loc:
+        fails += 1; print(f"FAIL: ranked location alternates wrong -> {loc[:3]}")
+    # a rule with no alternates anywhere resolves to an empty list, never None
+    if classify("First Name", None, profile, tax).get("alternates") != []:
+        fails += 1; print("FAIL: a rule with no alternates should yield []")
+    # an unset/blank entry is dropped rather than offered as an answer
+    fake_profile = {"a": {"b": FILL_ME}, "answer_alternates": {"a.b": ["", FILL_ME, "Real"]}}
+    if resolve_alternates(fake_profile, {"alternates": ["a.b"]}, "a.b") != ["Real"]:
+        fails += 1; print("FAIL: blank/FILL_ME alternates must be dropped")
     # override: force a company's "why us" to always_ask
     tax2 = json.loads(json.dumps(tax))
     tax2["overrides"] = {"Jane Street": {"always_ask": [{"pattern": "why .*(work|join)"}]}}

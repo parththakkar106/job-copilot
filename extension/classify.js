@@ -52,9 +52,26 @@ function bucketsFor(tax, company) {
   return buckets;
 }
 
+// Ordered fallback answers for a deterministic rule, rendered ready to match. Mirrors
+// profile.py resolve_alternates() — see the docstring there for the two sources and why
+// a dotted entry that resolves beats treating it as a literal. Parity-tested.
+export function resolveAlternates(profile, rule, valueKey) {
+  const out = [];
+  for (const entry of rule.alternates || []) {
+    const val = typeof entry === "string" ? dig(profile, entry) : null;
+    out.push(val !== null && val !== undefined ? render(val) : String(entry));
+  }
+  // The answer_alternates keys contain literal dots ("eeo.veteran_status" is ONE key),
+  // so index the block whole rather than digging a compound path.
+  const bank = dig(profile, "answer_alternates") || {};
+  for (const a of bank[valueKey] || []) out.push(String(a));
+  const seen = new Set();
+  return out.filter(a => a && a !== FILL_ME && !seen.has(a) && seen.add(a));
+}
+
 // Core: given a field's visible text, return which bucket it falls in and — for
 // deterministic — the resolved render-ready value.
-// Returns { bucket, matched?, value_key?, value?, rendered?, filled?, answer_key? }.
+// Returns { bucket, matched?, value_key?, value?, rendered?, filled?, alternates?, answer_key? }.
 export function classify(fieldText, company, profile, tax) {
   const text = (fieldText || "").toLowerCase();
   const buckets = bucketsFor(tax, company);
@@ -75,6 +92,7 @@ export function classify(fieldText, company, profile, tax) {
           out.value = val;
           out.rendered = render(val);
           out.filled = val !== null && val !== FILL_ME;
+          out.alternates = resolveAlternates(profile, rule, vk);
         } else if (bucket === "draftable") {
           out.answer_key = rule.answer_key;
         }

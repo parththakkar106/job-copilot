@@ -309,6 +309,42 @@ function matchOption(optEls, wantRaw) {
   return (best && bestScore >= 0.5 && bestScore > second) ? best.el : null;
 }
 
+// The ordered answers to try for one classified field: the profile's own value first,
+// then the rule's `alternates` and the profile's `answer_alternates` (classify.js has
+// already resolved and merged those, in order).
+//
+// The point is that a LABEL cannot tell you what widget is behind it. "Phone Number"
+// fronts a text box on most boards and an SMS-consent Yes/No group on Ashby; "What
+// gender pronouns do you prefer?" reads as a gender question and offers He/Him. Rather
+// than guess, we let the control itself decide: offer each answer in turn and keep the
+// first one it accepts. A control that accepts the first (every text field does) never
+// sees the rest, so this is inert everywhere it isn't needed.
+//
+// An empty rendered value is NOT a candidate but is also NOT a failure — links.portfolio
+// and links.twitter are deliberately "" so those fields stay silent instead of escalating
+// on every form that asks. Callers treat an empty candidate list as "skip, on purpose".
+function answerCandidates(c) {
+  const out = [];
+  if (c.rendered !== undefined && c.rendered !== null && String(c.rendered).trim() !== "") out.push(String(c.rendered));
+  for (const a of c.alternates || []) {
+    const s = String(a == null ? "" : a).trim();
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out;
+}
+
+// Walk answerCandidates() against a set of option elements, returning the first that
+// matches — plus which candidate it was, so the report can say an alternate was used
+// rather than silently claiming the profile's own value went in.
+function matchFirstCandidate(items, c) {
+  const tried = answerCandidates(c);
+  for (let i = 0; i < tried.length; i++) {
+    const hit = matchOption(items, tried[i]);
+    if (hit) return { hit, want: tried[i], viaAlternate: i > 0 };
+  }
+  return null;
+}
+
 // Re-find a dropdown control that the page may have replaced since the scan captured it.
 //
 // Greenhouse REBUILDS its Education block after the resume parses, re-keying the rows
@@ -1326,10 +1362,10 @@ async function runFill(autoSubmit = false, opts = {}) {
       }
       if (!c.filled) { escalate("needsInput", { label, why: `profile ${c.value_key} unset`, required: req, options: groupOptions, kind: "group" }, applyGroup); continue; }
       const items = group.inputs.map(i => ({ textContent: optionText(i, adapter), input: i }));
-      const hit = matchOption(items, c.rendered);
-      if (!hit) { escalate("flagged", { label, value: c.rendered, why: `no option matched (options: ${items.map(o => o.textContent).slice(0, 6).join(" | ")})`, required: req, options: groupOptions, kind: "group" }, applyGroup); continue; }
-      clickOption(hit.input);
-      report.filled.push({ label, value: hit.textContent });
+      const pick = matchFirstCandidate(items, c);
+      if (!pick) { escalate("flagged", { label, value: c.rendered, why: `no option matched (options: ${items.map(o => o.textContent).slice(0, 6).join(" | ")})`, required: req, options: groupOptions, kind: "group" }, applyGroup); continue; }
+      clickOption(pick.hit.input);
+      report.filled.push({ label, value: pick.hit.textContent, ...(pick.viaAlternate ? { via: pick.want } : {}) });
     }
 
     // 3a) LONE radios: a radio whose siblings are hidden forms no group (needs >= 2
@@ -1375,12 +1411,13 @@ async function runFill(autoSubmit = false, opts = {}) {
       }
       if (!c.filled) { escalate("needsInput", { label, why: `profile ${c.value_key} unset`, required: req, options: ynOptions, kind: "yesno" }, applyYesNo); continue; }
       const items = g.buttons.map(b => ({ textContent: cleanText(b), el: b }));
-      const hit = matchOption(items, c.rendered);
-      if (!hit) { escalate("flagged", { label, value: c.rendered, why: `no button matched (options: ${items.map(o => o.textContent).join(" | ")})`, required: req, options: ynOptions, kind: "yesno" }, applyYesNo); continue; }
-      hit.el.click();
+      const pick = matchFirstCandidate(items, c);
+      if (!pick) { escalate("flagged", { label, value: c.rendered, why: `no button matched (options: ${items.map(o => o.textContent).join(" | ")})`, required: req, options: ynOptions, kind: "yesno" }, applyYesNo); continue; }
+      pick.hit.el.click();
       await sleep(60);
-      const committed = hit.el.matches(adapter.yesNo.committed) || (cb && cb.checked);
-      (committed ? report.filled : report.flagged).push({ label, value: hit.textContent, ...(committed ? {} : { why: "clicked but did not commit" }) });
+      const committed = pick.hit.el.matches(adapter.yesNo.committed) || (cb && cb.checked);
+      (committed ? report.filled : report.flagged).push({ label, value: pick.hit.textContent,
+        ...(pick.viaAlternate ? { via: pick.want } : {}), ...(committed ? {} : { why: "clicked but did not commit" }) });
     }
 
     // 4) every other control -> classify by label
@@ -1411,9 +1448,20 @@ async function runFill(autoSubmit = false, opts = {}) {
         : (el.getAttribute && el.getAttribute("role")) === "combobox" ? "combobox" : "text";
       if (c.bucket === "deterministic") {
         if (!c.filled) { escalate("needsInput", { label, why: `profile ${c.value_key} unset`, required: req, options: await optsFor(), kind: ctlKind }, applyCtl); continue; }
-        const r = await applyValue(el, c.rendered, adapter);
-        if (r.ok) report.filled.push({ label, value: r.value || c.rendered });
-        else escalate("flagged", { label, value: c.rendered, why: r.why || "setter failed", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
+        // A value_key that is deliberately "" (links.portfolio, links.twitter — Parth has
+        // neither) used to be written anyway: setText("") returns ok, so the report logged
+        // a successful fill of an empty string and could clear a field the ATS prefilled.
+        // Skip the write, but do NOT escalate — surfacing these on every form is exactly
+        // what the empty string is there to avoid.
+        const tries = answerCandidates(c);
+        if (!tries.length) { report.skipped.push({ label, why: `profile ${c.value_key} is blank on purpose` }); continue; }
+        let r = null, used = null;
+        for (const want of tries) {
+          r = await applyValue(el, want, adapter);
+          if (r.ok) { used = want; break; }
+        }
+        if (r && r.ok) report.filled.push({ label, value: r.value || used, ...(used !== tries[0] ? { via: used } : {}) });
+        else escalate("flagged", { label, value: c.rendered, why: (r && r.why) || "setter failed", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
       } else if (c.bucket === "draftable") {
         escalate("needsInput", { label, why: `draftable -> ${c.answer_key} (Tier 2)`, answer_key: c.answer_key, required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
       } else if (c.bucket === "always_ask") {

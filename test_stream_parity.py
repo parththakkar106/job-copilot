@@ -55,15 +55,42 @@ DIG_KEYS = [
     "work_history.0.by_stream",       # must be GONE after resolution
 ]
 
+# resolve_alternates decides the ORDER answers are offered to a control, so a drift
+# between the two ports means the backend and the extension would fill different values
+# into the same field — the same class of silent mismatch resolve_stream guards against.
+# Cases cover both entry kinds (a dotted path that resolves vs a literal), the merge with
+# answer_alternates, de-duplication, and the FILL_ME/blank drops.
+# Deliberately NON-personal key names: this checks merge order and de-duplication, which
+# have nothing to do with what the values mean, and a fixture spelling out real EEO
+# answers is exactly what pii_guard exists to keep out of this repo.
+ALT_PROFILE = {
+    "colour": {"primary": "Blue", "secondary": "Green"},
+    "flags": {"agreed": True, "unset": "FILL_ME"},
+    "answer_alternates": {
+        "colour.primary": ["Azure", "Blue", ""],    # dupe + blank, both dropped
+        "shape.side": ["Round"],
+    },
+}
+ALT_CASES = [
+    # (rule, value_key)
+    ({"alternates": ["colour.secondary"]}, "colour.primary"),    # path resolves -> its value
+    ({"alternates": ["flags.agreed"]}, "shape.side"),            # boolean -> "Yes"
+    ({"alternates": ["I've already graduated"]}, "when.done"),   # literal, not a path
+    ({"alternates": ["flags.unset"]}, "colour.primary"),         # FILL_ME dropped
+    ({}, "colour.primary"),                                      # bank only
+    ({}, "nothing.here"),                                        # neither source -> []
+]
+
 JS = r"""
 import { resolveStream } from "./stream.js";
-import { dig } from "./classify.js";
-const [fixture, tags, keys] = JSON.parse(process.argv[2]);
+import { dig, resolveAlternates } from "./classify.js";
+const [fixture, tags, keys, altProfile, altCases] = JSON.parse(process.argv[2]);
 const out = {};
 for (const tag of tags) {
   const resolved = resolveStream(fixture, tag);
   out[tag] = { resolved, dug: Object.fromEntries(keys.map(k => [k, dig(resolved, k)])) };
 }
+out._alternates = altCases.map(([rule, vk]) => resolveAlternates(altProfile, rule, vk));
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -87,7 +114,8 @@ def main() -> int:
         shutil.copy(runner, EXT / "_parity_tmp.mjs")
         try:
             r = subprocess.run(
-                [node, "_parity_tmp.mjs", json.dumps([FIXTURE, TAGS, DIG_KEYS])],
+                [node, "_parity_tmp.mjs",
+                 json.dumps([FIXTURE, TAGS, DIG_KEYS, ALT_PROFILE, ALT_CASES])],
                 cwd=EXT, capture_output=True, text=True)
         finally:
             (EXT / "_parity_tmp.mjs").unlink(missing_ok=True)
@@ -107,6 +135,11 @@ def main() -> int:
             p, j = py[tag]["dug"][k], js[tag]["dug"][k]
             if p != j:
                 fails.append(f"  [{tag}] dig({k!r}): py={p!r} js={j!r}")
+
+    for (rule, vk), j in zip(ALT_CASES, js["_alternates"]):
+        p = P.resolve_alternates(ALT_PROFILE, rule, vk)
+        if p != j:
+            fails.append(f"  resolve_alternates({rule}, {vk!r}): py={p!r} js={j!r}")
 
     # Content assertions — parity alone would pass if BOTH sides were wrong together.
     q = py["quant"]["resolved"]["work_history"][0]
@@ -140,6 +173,7 @@ def main() -> int:
         print("\n".join(fails))
         return 1
     print(f"OK: {len(TAGS)} tags x {len(DIG_KEYS)} keys in parity, "
+          f"{len(ALT_CASES)} alternates cases in parity, "
           f"{len(checks)} behaviour checks green")
     return 0
 

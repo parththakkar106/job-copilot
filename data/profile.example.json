@@ -18,7 +18,9 @@
       "country_full": "United States of America"
     },
     "_location_display_note": "How a single-box location field should read. Many ATS location pickers search server-side on what is typed, so use the form their dropdown expects, e.g. 'City, State, Country'.",
-    "location_display": "FILL_ME"
+    "location_display": "FILL_ME",
+    "_based_in_us_note": "Answers the Yes/No form of the residence question ('Do you live in the US, or plan to by your start date?', 'Are you based in a US-equivalent timezone?'). Separate from address.country because those controls take Yes/No, not a country name.",
+    "based_in_us": true
   },
 
   "links": {
@@ -112,7 +114,9 @@
     "criminal_history": false,
     "in_office_acknowledgment": true,
     "previously_applied_or_interviewed": false,
-    "data_privacy_consent": true
+    "data_privacy_consent": true,
+    "_sms_consent_note": "Whether to opt in when a board asks to text you about the application. Distinct from data_privacy_consent, which is the terms/privacy agreement.",
+    "sms_consent": false
   },
 
   "eeo": {
@@ -181,5 +185,18 @@
       "keywords": ["machine learning", "ml engineer", "ai", "deep learning", "nlp", "llm", "mlops", "applied scientist", "research engineer"]
     }
   ],
-  "default_resume_tag": "ds"
+  "default_resume_tag": "ds",
+
+  "answer_alternates": {
+    "_note": "OPTIONAL fallback answers, keyed by the taxonomy value_key they stand in for. The fill engine offers your own value above first; only if the control's options match none of it does it walk this list, in order, keeping the first the control accepts. Two uses: (a) other wordings of the SAME answer, for ATS vocabularies that phrase it differently, and (b) a ranked list of answers you find equally true, most-preferred first. Delete the examples and write your own — an answer you would not actually give does not belong here.",
+    "eeo.veteran_status": [
+      "I am not a protected veteran",
+      "I am not a veteran"
+    ],
+    "preferences.locations": [
+      "San Francisco",
+      "New York",
+      "Remote"
+    ]
+  }
 }
