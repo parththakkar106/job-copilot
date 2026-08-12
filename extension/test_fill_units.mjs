@@ -55,12 +55,14 @@ function extractConst(name) {
 // the part that broke (a detached control clicks at 0,0 and fails as "no options").
 const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,
         isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer,
-        makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative,
+        makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative, splitMonthYear, eduDateField,
         answerCandidates, matchFirstCandidate, matchOption } =
   new Function(
   `${extract("matchOption")}\n${extract("answerCandidates")}\n${extract("matchFirstCandidate")}\n` +
   `${extract("onlyDigits")}\n${extract("phoneish")}\n${extract("phoneEq")}\n${extract("sameAnswer")}\n` +
   `${extractConst("FOLLOW_UP")}\n${extractConst("isNegative")}\n` +
+  `${extractConst("EDU_DATE_ID")}\n${extractConst("MONTH_NAMES")}\n` +
+  `${extract("splitMonthYear")}\n${extract("eduDateField")}\n` +
   `${extractConsts()}\n${extract("askId")}\n${extract("diffApproved")}\n` +
   `${extractConst("searchable")}\n${extractConst("GENERIC_SEARCH_WORD")}\n${extract("searchCandidates")}\n` +
   `${extractConst("OTHER_OK_FIELD")}\n${extractConst("otherOption")}\n` +
@@ -73,7 +75,7 @@ const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, make
   `const makePageCompany = (location, document) => { ${extract("pageCompany")} return pageCompany; };\n` +
   `return { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,` +
   ` isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer,` +
-  ` makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative,` +
+  ` makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative, splitMonthYear, eduDateField,` +
   ` answerCandidates, matchFirstCandidate, matchOption };`)();
 
 let n = 0;
@@ -391,6 +393,46 @@ ok(sameAnswer("+1 555-012-3456", "555-012-3456"), "a reformatted phone is the sa
 ok(sameAnswer("Bachelor", "Bachelor's Degree"), "the option text the matcher committed still matches");
 ok(!sameAnswer("Yes", "No"), "genuinely different answers stay different");
 ok(!sameAnswer("Parth", ""), "an empty read-back never equals a real answer");
+
+// --- Greenhouse education date rows ---------------------------------------------------
+// Measured on a live Greenhouse board: ids are school/degree/discipline/start-month/
+// start-year/end-month/end-year, each suffixed --N; month fields are react-selects whose
+// options are FULL month names; year fields are <input type="number">. These four date
+// fields were asked on 29 of 184 logged Greenhouse fills because always_ask carries
+// "start date" (for "when could you start?") and is matched before everything else.
+ok(splitMonthYear("September 2020").month === "September", "a full month name is read");
+ok(splitMonthYear("September 2020").year === "2020", "the year is read alongside it");
+ok(splitMonthYear("Sep 2020").month === "September", "an abbreviated month expands to the form's wording");
+ok(splitMonthYear("July 2024").month === "July" && splitMonthYear("July 2024").year === "2024",
+   "the graduation date splits the same way");
+ok(splitMonthYear("2024-07").month === "July", "an ISO-ish date yields the month");
+ok(splitMonthYear("07/2024").month === "July", "a slashed date yields the month");
+// A year-only profile must fill the YEAR and ask for the month, never invent one.
+ok(splitMonthYear("2020").year === "2020" && splitMonthYear("2020").month === "",
+   "a bare year gives no month rather than guessing one");
+ok(splitMonthYear("") === null && splitMonthYear(null) === null, "an empty date yields nothing");
+
+{
+  const doc = (ids) => ({ getElementById: (id) => (ids.includes(id) ? { id } : null) });
+  const eduRow = doc(["school--0", "degree--0", "start-month--0", "start-year--0"]);
+  ok(eduDateField({ id: "start-month--0" }, eduRow).profileKey === "education.start_date",
+     "start-* rows take the education start date");
+  ok(eduDateField({ id: "end-year--0" }, eduRow).profileKey === "education.graduation_date",
+     "end-* rows take the graduation date");
+  ok(eduDateField({ id: "start-month--0" }, eduRow).part === "month"
+     && eduDateField({ id: "start-year--0" }, eduRow).part === "year",
+     "the month and year halves are distinguished");
+  // THE GUARD: another widget using --N ids must not be answered with a graduation date.
+  // A wrong answer is worse than a failed one.
+  ok(eduDateField({ id: "start-month--0" }, doc(["something-else--0"])) === null,
+     "without a school/degree in the same row it is NOT the education block");
+  // profile.json describes ONE education; a second row is a degree he does not have.
+  ok(eduDateField({ id: "start-month--1" }, doc(["school--1", "start-month--1"])) === null,
+     "a second education row is left to be asked, not filled from the first");
+  ok(eduDateField({ id: "phone" }, eduRow) === null, "an ordinary field is untouched");
+  ok(eduDateField({ id: "school--0" }, eduRow) === null,
+     "school/degree/discipline still go through the taxonomy, not here");
+}
 
 // --- conditional follow-ups: the question that only exists if the last one said yes -----
 // Live on Robinhood: the deterministic pass answered the sponsorship question

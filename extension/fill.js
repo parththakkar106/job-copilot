@@ -390,6 +390,62 @@ function liveControl(control, field, dd) {
   return null;
 }
 
+// ── Greenhouse education rows ─────────────────────────────────────────────────
+// Greenhouse renders education as a repeating row: school--N, degree--N, discipline--N,
+// start-month--N, start-year--N, end-month--N, end-year--N. The first three fill from the
+// taxonomy; the four DATE fields were asked on every board with this block, 29 of 184
+// logged Greenhouse fills, for a month.
+//
+// WHY THE TAXONOMY CANNOT FIX IT — the same reason degreeLevel() exists. always_ask carries
+// `start date` (for "when could you start?", which genuinely is Parth's call) and always_ask
+// is matched FIRST by design, so it captured "Start date month" and parked it forever. The
+// words are identical in an availability question and an education row; only the page knows
+// which. "End date" meanwhile matched no rule at all, since the graduation rule keys on the
+// word "graduate".
+//
+// So key on the ID, not the label. Measured live on a Greenhouse board: the id scheme is
+// exactly as above, the MONTH fields are react-selects whose options are full month names
+// ("January".."December"), and the YEAR fields are plain <input type="number">. The id is
+// also the more reliable handle — a collect run scanning early sees no label at all and
+// falls back to the id (that is where the "start-month--0" report labels came from), while
+// a later panel fill on the same page reads "Start date month*". Ids do not move.
+const EDU_DATE_ID = /^(start|end)-(month|year)--(\d+)$/i;
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+                     "July", "August", "September", "October", "November", "December"];
+
+// "September 2020" / "Sep 2020" / "2024-07" / "07/2024" / "2020" -> {month, year}.
+// Either half may be "" — a profile that records only a year still fills the year box.
+function splitMonthYear(s) {
+  const t = String(s == null ? "" : s).trim();
+  if (!t) return null;
+  const year = (t.match(/\b(?:19|20)\d{2}\b/) || [""])[0];
+  let month = MONTH_NAMES.find(M => new RegExp(`\\b${M.slice(0, 3)}`, "i").test(t)) || "";
+  if (!month) {
+    // Numeric forms. Anchored to a separator so a bare "2020" cannot read as a month.
+    const m = t.match(/\b(0?[1-9]|1[0-2])\s*[\/\-]/) || t.match(/[\/\-]\s*(0?[1-9]|1[0-2])\b/);
+    if (m) month = MONTH_NAMES[Number(m[1]) - 1] || "";
+  }
+  return (year || month) ? { month, year } : null;
+}
+
+// Which education date does this control want, if any? `doc` is injected so this stays
+// testable. Returns {profileKey, part} or null.
+function eduDateField(el, doc) {
+  const m = EDU_DATE_ID.exec((el && el.id) || "");
+  if (!m) return null;
+  const [, which, part, row] = m;
+  // PROVE it is the education block. Other widgets use --N row ids too, and answering a
+  // stranger's date field with a graduation date would be a wrong answer, not a failed one.
+  if (!doc.getElementById(`school--${row}`) && !doc.getElementById(`degree--${row}`)) return null;
+  // profile.json describes ONE education. A second row is a degree Parth does not have, so
+  // leave it to be asked rather than repeating the first one into it.
+  if (row !== "0") return null;
+  return {
+    profileKey: which.toLowerCase() === "start" ? "education.start_date" : "education.graduation_date",
+    part: part.toLowerCase(),
+  };
+}
+
 // Re-find a plain control (text/textarea/select/checkbox/radio) the page may have replaced
 // since the scan captured it. The general-purpose sibling of liveControl(), which does the
 // same job for react-select wrappers.
@@ -1599,6 +1655,28 @@ async function runFill(autoSubmit = false, opts = {}) {
       const optsFor = async () => nativeOpts || await harvestOptions(el, adapter);
       const ctlKind = el.tagName.toLowerCase() === "select" ? "select"
         : (el.getAttribute && el.getAttribute("role")) === "combobox" ? "combobox" : "text";
+      // Greenhouse education date rows, decided by field id BEFORE the taxonomy sees the
+      // label — see eduDateField(). Must come first: always_ask carries `start date` and is
+      // matched ahead of everything, which is exactly what parked these fields.
+      const eduDate = eduDateField(el, document);
+      if (eduDate) {
+        const parts = splitMonthYear(render(dig(profile, eduDate.profileKey)));
+        const want = parts && parts[eduDate.part];
+        if (!want) {
+          // Half a date in the profile: ask for the missing half rather than guessing a
+          // month nobody wrote down.
+          escalate("needsInput", { label, why: `profile ${eduDate.profileKey} has no ${eduDate.part}`, required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
+          continue;
+        }
+        // The report label falls back to the id when the page has not wired the label yet,
+        // which is unreadable in a fill report — name the field by what it is instead.
+        const nice = /--\d+$/.test(label) ? `${eduDate.profileKey.split(".")[1]} (${eduDate.part})` : label;
+        const r = await applyValue(el, want, adapter);
+        if (r.ok) report.filled.push({ label: nice, value: r.value || want });
+        else escalate("flagged", { label, value: want, why: r.why || "setter failed", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
+        continue;
+      }
+
       // A CONDITIONAL FOLLOW-UP WHOSE TRIGGER DID NOT FIRE. Live on Robinhood:
       // the deterministic pass filled "Will you now (or in the future) require visa
       // sponsorship? -> No", and this field ("If you answered "Yes" to the above question,
