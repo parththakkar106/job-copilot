@@ -15,6 +15,7 @@ prompt; `sanitize()` is the belt-and-suspenders that strips any dash the model l
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -123,15 +124,100 @@ def _load_identity() -> tuple[str, str]:
     return (name or "the applicant", bio)
 
 
+def _load_facts() -> list[str]:
+    """Answers the DETERMINISTIC pass already puts on the same form, restated for the model.
+
+    THE FAILURE THIS FIXES, live on a real Robinhood application: the deterministic
+    pass correctly filled "Will you now (or in the future) require visa sponsorship? -> No",
+    and the drafter, handed only the label "If you answered Yes to the above question, please
+    provide additional information here:", wrote "Yes I will need visa sponsorship down the
+    line, right now I'm on my OPT ... will eventually need H1B support." Fluent, confident,
+    and the opposite of what the same form said two fields earlier. A second draft invented a
+    non-compete with the current employer.
+
+    The bio alone could not prevent that: it says where someone works and studied, and says
+    nothing about work authorization, so the model filled the gap. These are the facts most
+    often asked about in free text right after being asked as a checkbox, so they are the
+    ones worth spending prompt space on. Built from profile.json at runtime and held nowhere.
+    """
+    try:
+        root = pathlib.Path(__file__).resolve().parent.parent
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from core import paths
+        p = json.loads(paths.PROFILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    def yn(block: str, key: str) -> str | None:
+        v = (p.get(block) or {}).get(key)
+        return None if v is None or v == "FILL_ME" else ("Yes" if v is True else "No" if v is False else None)
+
+    def txt(block: str, key: str) -> str:
+        v = (p.get(block) or {}).get(key)
+        v = v.strip() if isinstance(v, str) else ""
+        return "" if v == "FILL_ME" else v
+
+    out = []
+    pairs = [
+        ("work_authorization", "authorized_us", "Legally authorized to work in the US"),
+        ("work_authorization", "require_sponsorship", "Requires visa sponsorship now or in the future"),
+        ("work_authorization", "relocation", "Willing to relocate"),
+        ("attestations", "non_compete", "Bound by a non-compete or restrictive covenant"),
+        ("attestations", "criminal_history", "Has a criminal record"),
+        ("attestations", "security_clearance", "Holds an active security clearance"),
+    ]
+    for block, key, phrasing in pairs:
+        a = yn(block, key)
+        if a:
+            out.append(f"{phrasing}: {a}")
+    status = txt("work_authorization", "status")
+    if status:
+        out.append(f"Work-authorization status: {status}")
+    return out
+
+
 NAME, BIO = _load_identity()
 # Omitted entirely rather than left as a dangling "About: " when the profile is unreadable.
 ABOUT = f"About {NAME}: {BIO}\n\n" if BIO else ""
+FACTS = _load_facts()
+FACTS_BLOCK = (
+    "Facts already stated elsewhere on this same application. An answer that contradicts\n"
+    "any of them is a false statement to a real employer, so never write against one:\n"
+    + "\n".join(f"- {f}" for f in FACTS) + "\n\n"
+) if FACTS else ""
+
+
+# A label whose whole meaning is "expand on the PREVIOUS question" — the model is handed a
+# pointer and no target. Live example, Robinhood: "If you answered "Yes" to the
+# above question, please provide additional information here:". There is nothing in that
+# string to ground on, so the model chose what the previous answer must have been and wrote
+# a confident paragraph on it, contradicting the deterministic pass on the same form.
+_REFERS_ELSEWHERE = re.compile(
+    r"""^\s*\(?\s*if\s+(you\s+)?(answered|selected|checked|chose|responded|said)?\s*["'“”]?\s*yes\b"""
+    r"""|^\s*\(?\s*if\s+(yes|so|applicable|any|selected)\b"""
+    r"""|\bto\s+the\s+(above|previous|preceding)\s+question\b"""
+    r"""|^\s*if\s+you\s+(answered|checked|selected)\b""",
+    re.IGNORECASE,
+)
+
+
+def refers_to_another_question(item: dict) -> bool:
+    """Is this label meaningless on its own — a follow-up to a question we are not showing?"""
+    return bool(_REFERS_ELSEWHERE.search(str(item.get("label") or "")))
 
 
 def is_draftable(item: dict) -> bool:
     """Only free-text essay questions the taxonomy routed to a draftable answer_key. A
-    multiple-choice item (options present) is a pick, not an essay, so never draft it."""
-    return bool(item.get("answer_key")) and not item.get("options")
+    multiple-choice item (options present) is a pick, not an essay, so never draft it.
+
+    A conditional follow-up is refused here too: AUTOMATIC drafting is the dangerous path,
+    because nobody reads the result before it is stored on the record. The explicit
+    "Draft it" tap (drafts_on_request) still allows it — Parth asked, he can see the
+    question above it on screen, and the draft lands in an editable box in front of him.
+    """
+    return (bool(item.get("answer_key")) and not item.get("options")
+            and not refers_to_another_question(item))
 
 
 def drafts_on_request(item: dict) -> bool:
@@ -166,6 +252,7 @@ def build_prompt(item: dict, context: dict | None) -> str:
         f"You are drafting a job-application answer that {NAME} will submit as their own. "
         f"Write it in the first person, as {NAME}.\n\n"
         f"{ABOUT}"
+        f"{FACTS_BLOCK}"
         f"{where_block}"
         f"Question to answer: {label}\n"
         f"(internal category: {key or 'general'})\n\n"
@@ -176,6 +263,8 @@ def build_prompt(item: dict, context: dict | None) -> str:
         "- NEVER use a dash of any kind. No em dash, no en dash, no hyphen used as punctuation. "
         "Rewrite any phrase that would need one (say 'end to end', not 'end-to-end').\n"
         f"- Be specific and grounded in the facts about {NAME} above. Do not invent employers, dates, or numbers.\n"
+        "- If the question turns on a fact you were not given, do NOT decide what it is. Say you are "
+        "happy to go into detail, and leave the specifics out.\n"
         "- Do not use any tools. Write only from what is given here.\n\n"
         "Output ONLY the answer text itself. No preamble, no quotes, no explanation, no sign-off."
     )
@@ -204,6 +293,7 @@ def build_batch_prompt(items: list[dict], context: dict | None) -> str:
         f"You are drafting several job-application answers that {NAME} will submit as their own. "
         f"Write each in the first person, as {NAME}.\n\n"
         f"{ABOUT}"
+        f"{FACTS_BLOCK}"
         f"{where_block}"
         "Answer EVERY question in the numbered list below.\n\n"
         f"Questions:\n{numbered}\n\n"
@@ -214,6 +304,8 @@ def build_batch_prompt(items: list[dict], context: dict | None) -> str:
         "- NEVER use a dash of any kind. No em dash, no en dash, no hyphen used as punctuation. "
         "Rewrite any phrase that would need one (say 'end to end', not 'end-to-end').\n"
         f"- Be specific and grounded in the facts about {NAME} above. Do not invent employers, dates, or numbers.\n"
+        "- If the question turns on a fact you were not given, do NOT decide what it is. Say you are "
+        "happy to go into detail, and leave the specifics out.\n"
         "- Do not use any tools. Write only from what is given here.\n\n"
         "Output ONLY a JSON object mapping each question number (as a string) to that "
         'answer\'s text, e.g. {"1": "...", "2": "..."}. No preamble, no code fences, no '

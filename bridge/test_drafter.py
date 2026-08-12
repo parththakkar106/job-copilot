@@ -185,6 +185,53 @@ def main():
     finally:
         drafter._run_claude, drafter._ENABLED, drafter.CLAUDE_BIN = orig_run2, orig_enabled2, orig_bin3
 
+    # --- conditional follow-ups (added) ------------------------------------
+    # THE FAILURE: on a live Robinhood form the deterministic pass answered "require visa
+    # sponsorship? -> No", and the follow-up under it reached the drafter carrying nothing
+    # but "If you answered "Yes" to the above question, please provide additional
+    # information here:". With no target to ground on, the model picked what the answer
+    # above must have been and wrote a fluent paragraph about being on OPT and needing H1B
+    # support. A second invented a non-compete. Both contradicted the same application.
+    followups = [
+        'If you answered "Yes" to the above question, please provide additional information here:',
+        "If yes, please explain",
+        "If so, tell us more",
+        "If you selected yes, describe the arrangement",
+        "Please provide additional information to the above question",
+    ]
+    for label in followups:
+        ok &= check(f"refuses to auto-draft a pointer-only label: {label[:44]}",
+                    not drafter.is_draftable({"label": label, "answer_key": "anything_else"}))
+    # An explicit "Draft it" tap is still allowed: Parth asked for it, the question above is
+    # on screen in front of him, and the draft lands in an editable box he reads before use.
+    # AUTOMATIC drafting is the dangerous path, because nothing is read before it is stored.
+    ok &= check("an explicit Draft-it tap on a follow-up is still permitted",
+                drafter.drafts_on_request({"label": followups[0]}))
+    # Precision: a real essay that merely opens with "If" must be unaffected.
+    for label in ["If you could have any superpower, what would it be?",
+                  "What if anything would you change about our product?",
+                  "If you were starting this company today, what would you do differently?",
+                  "Why do you want to work here?"]:
+        ok &= check(f"still drafts a real essay beginning with If: {label[:40]}",
+                    drafter.is_draftable({"label": label, "answer_key": "why_company"}))
+
+    # The other half of the cure: the model is TOLD the answers the deterministic pass put
+    # on the same form, so it cannot contradict them even when it does draft.
+    facts = "\n".join(drafter.FACTS).lower()
+    ok &= check("the facts block names work authorization", "authorized to work" in facts)
+    ok &= check("the facts block names sponsorship", "sponsorship" in facts)
+    ok &= check("the facts block reaches the single prompt",
+                drafter.FACTS_BLOCK[:30] in drafter.build_prompt({"label": "Why us?", "answer_key": "why_company"}, None))
+    ok &= check("the facts block reaches the batch prompt",
+                drafter.FACTS_BLOCK[:30] in drafter.build_batch_prompt(
+                    [{"label": "Why us?", "answer_key": "why_company"},
+                     {"label": "Why this role?", "answer_key": "why_role"}], None))
+    ok &= check("the prompt forbids inventing a fact it was not given",
+                "do NOT decide what it is" in drafter.build_prompt({"label": "X", "answer_key": "y"}, None))
+    # It must hold no personal data of its own — same rule as the bio.
+    ok &= check("the facts block is built from the profile, not hardcoded",
+                "FACTS = _load_facts()" in Path(drafter.__file__).read_text(encoding="utf-8"))
+
     print(f"\ndrafter units: {'all passed' if ok else 'FAILURES ABOVE'}")
     return 0 if ok else 1
 

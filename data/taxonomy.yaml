@@ -72,26 +72,26 @@ buckets:
     # which is specific enough to tell the two shapes apart.
     #
     # Each entry ends with the board it was observed on and the date.
-    - {pattern: '(what|which) (is|was) your most recent (company|employer)', value_key: employment.current_employer}   # SentiLink, 2026-08-12
-    - {pattern: '(what|which) (is|was) your most recent (job )?(title|role|position)', value_key: employment.current_title}  # SentiLink, 2026-08-12
-    - {pattern: 'country do you currently (reside|live)|(what|which) country are you (based|located|living) in', value_key: identity.address.country}  # DV Trading / Nova Talent, 2026-08-12
+    - {pattern: '(what|which) (is|was) your most recent (company|employer)', value_key: employment.current_employer}   # SentiLink
+    - {pattern: '(what|which) (is|was) your most recent (job )?(title|role|position)', value_key: employment.current_title}  # SentiLink
+    - {pattern: 'country do you currently (reside|live)|(what|which) country are you (based|located|living) in', value_key: identity.address.country}  # DV Trading / Nova Talent
     # "Do you live in the US…?" and "Are you based in a US equivalent timezone?" are
     # Yes/No, so the country rules above would answer "United States" and match nothing.
-    - {pattern: '(live|living|reside|residing|based) in the (us\b|u\.s\.|usa|united states)|u\.?s\.? equivalent time ?zone', value_key: identity.based_in_us}  # SentiLink / Nova Talent, 2026-08-12
+    - {pattern: '(live|living|reside|residing|based) in the (us\b|u\.s\.|usa|united states)|u\.?s\.? equivalent time ?zone', value_key: identity.based_in_us}  # SentiLink / Nova Talent
     # "Military status" never contains the word "veteran", so the veteran rule missed it.
-    - {pattern: 'military status|military service', value_key: eeo.veteran_status}   # Robinhood, 2026-08-12
+    - {pattern: 'military status|military service', value_key: eeo.veteran_status}   # Robinhood
     # The general previously_employed rule needs "us"/"this company"/"before" within 25
     # chars of the verb; a board that names itself ("worked for Robinhood as an…") blows
     # that budget, and we cannot know the company name at pattern-write time.
-    - {pattern: '(have|had) you ever (worked|been employed|interned) (for|at|with|by)\b', value_key: affiliations.previously_employed}  # Robinhood, 2026-08-12
-    - {pattern: 'how did you discover (us|our)|where did you (find|discover) (us|this)', value_key: preferences.referral_source}  # Luma AI, 2026-08-12
+    - {pattern: '(have|had) you ever (worked|been employed|interned) (for|at|with|by)\b', value_key: affiliations.previously_employed}  # Robinhood
+    - {pattern: 'how did you discover (us|our)|where did you (find|discover) (us|this)', value_key: preferences.referral_source}  # Luma AI
     # "locations ARE YOU open to" has a word between "locations" and "you", which the
     # general locations rule's `locations? you.{0,15}open` alternative cannot span.
-    - {pattern: 'locations? are you open to|open to working (from|in)|preferred office location|office location preference', value_key: preferences.locations}  # SentiLink / Robinhood, 2026-08-12
+    - {pattern: 'locations? are you open to|open to working (from|in)|preferred office location|office location preference', value_key: preferences.locations}  # SentiLink / Robinhood
     # An honest SMS-consent label. When the group is instead mislabelled with the phone
     # field's own text (Ashby does this — see the phone rule's `alternates`), the phone
     # rule catches it and falls back to this same value.
-    - {pattern: 'consent to receiv\w*.{0,20}text|text message|\bsms\b', value_key: attestations.sms_consent}  # SentiLink, 2026-08-12
+    - {pattern: 'consent to receiv\w*.{0,20}text|text message|\bsms\b', value_key: attestations.sms_consent}  # SentiLink
     # ── end observed phrasings ───────────────────────────────────────────────────
 
     - {pattern: '\bfirst name\b',                                   value_key: identity.first_name}

@@ -55,11 +55,12 @@ function extractConst(name) {
 // the part that broke (a detached control clicks at 0,0 and fails as "no options").
 const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,
         isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer,
-        makeLiveField, makeCurrentValue,
+        makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative,
         answerCandidates, matchFirstCandidate, matchOption } =
   new Function(
   `${extract("matchOption")}\n${extract("answerCandidates")}\n${extract("matchFirstCandidate")}\n` +
   `${extract("onlyDigits")}\n${extract("phoneish")}\n${extract("phoneEq")}\n${extract("sameAnswer")}\n` +
+  `${extractConst("FOLLOW_UP")}\n${extractConst("isNegative")}\n` +
   `${extractConsts()}\n${extract("askId")}\n${extract("diffApproved")}\n` +
   `${extractConst("searchable")}\n${extractConst("GENERIC_SEARCH_WORD")}\n${extract("searchCandidates")}\n` +
   `${extractConst("OTHER_OK_FIELD")}\n${extractConst("otherOption")}\n` +
@@ -72,7 +73,7 @@ const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, make
   `const makePageCompany = (location, document) => { ${extract("pageCompany")} return pageCompany; };\n` +
   `return { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,` +
   ` isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer,` +
-  ` makeLiveField, makeCurrentValue,` +
+  ` makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative,` +
   ` answerCandidates, matchFirstCandidate, matchOption };`)();
 
 let n = 0;
@@ -391,6 +392,38 @@ ok(sameAnswer("Bachelor", "Bachelor's Degree"), "the option text the matcher com
 ok(!sameAnswer("Yes", "No"), "genuinely different answers stay different");
 ok(!sameAnswer("Parth", ""), "an empty read-back never equals a real answer");
 
+// --- conditional follow-ups: the question that only exists if the last one said yes -----
+// Live on Robinhood: the deterministic pass answered the sponsorship question
+// "No", and the follow-up beneath it went to the drafter with nothing but its own label to
+// go on — so the model chose what the answer above must have been and wrote a confident
+// paragraph contradicting it. These pin the detector; FOLLOW_UP must be tight enough that a
+// real essay opening with "If" is untouched.
+for (const l of [
+  'If you answered "Yes" to the above question, please provide additional information here:',
+  "If yes, please explain",
+  "If so, tell us more",
+  "If you selected yes, describe the arrangement",
+  "Please provide additional information to the above question",
+  "(If yes, give details)",
+]) ok(FOLLOW_UP.test(l), `must read as a follow-up: ${l.slice(0, 46)}`);
+
+for (const l of [
+  "If you could have any superpower, what would it be?",
+  "What if anything would you change about our product?",
+  "If you were starting this company today, what would you do differently?",
+  "Why do you want to work here?",
+  "Tell us about a time you disagreed with a colleague",
+]) ok(!FOLLOW_UP.test(l), `must NOT read as a follow-up: ${l.slice(0, 46)}`);
+
+// isNegative decides whether the trigger fired. canon() maps a boolean No onto "none".
+ok(isNegative("No") && isNegative("None") && isNegative("N/A") && isNegative("Not applicable"),
+   "the ways a form spells a refusal all read as negative");
+ok(!isNegative("Yes") && !isNegative("I consent"),
+   "an affirmative answer keeps the follow-up live");
+// Word-bounded: a date beginning with the letters "no" is not a refusal.
+ok(!isNegative("November 2026"), "a value merely starting with 'no' is not a No");
+ok(!isNegative(""), "no answer found means the trigger state is unknown, not negative");
+
 // --- the answer chain: profile value first, then alternates ---------------------------
 // Every case here is a control that flagged on a live board because the FIRST answer
 // matched none of its options. See taxonomy.yaml's `alternates` note.
@@ -406,7 +439,7 @@ ok(answerCandidates({ rendered: "Yes", alternates: ["Yes", "Yeah"] }).length ===
 ok(answerCandidates({ rendered: "A", alternates: [null, "  ", "B"] }).join() === "A,B",
    "blank alternates are dropped rather than typed as empty answers");
 
-// Robinhood, 2026-08-12: "What gender pronouns do you prefer?" classifies as gender.
+// Robinhood: "What gender pronouns do you prefer?" classifies as gender.
 const pron = matchFirstCandidate(asOpts("He / Him", "She / Her", "Them / They", "I don't wish to answer"),
                                  { rendered: "Male", alternates: ["He/Him"] });
 ok(pron && pron.hit.textContent === "He / Him" && pron.viaAlternate,
@@ -417,20 +450,20 @@ const gen = matchFirstCandidate(asOpts("Male", "Female", "Decline to self-identi
 ok(gen && gen.hit.textContent === "Male" && !gen.viaAlternate,
    "THE REGRESSION GUARD: a real gender list still takes the gender, never the pronoun");
 
-// SentiLink, 2026-08-12: Ashby labels its SMS-consent group with the phone field's text.
+// SentiLink: Ashby labels its SMS-consent group with the phone field's text.
 const sms = matchFirstCandidate(asOpts("Yes - I consent to receiving text messages",
                                        "No - I do not consent to receiving text messages"),
                                 { rendered: "+1 555-000-0000", alternates: ["Yes"] });
 ok(sms && /^Yes/.test(sms.hit.textContent) && sms.viaAlternate,
    "a phone number offered to a consent Yes/No falls through to the consent answer");
 
-// Robinhood, 2026-08-12: a preference SENTENCE offered to a Yes/No.
+// Robinhood: a preference SENTENCE offered to a Yes/No.
 const office = matchFirstCandidate(asOpts("Yes", "No"),
   { rendered: "Open to remote, hybrid, or onsite", alternates: ["Yes"] });
 ok(office && office.hit.textContent === "Yes" && office.viaAlternate,
    "the work-arrangement sentence falls through to the in-office Yes/No");
 
-// DV Trading, 2026-08-12: a past graduation date against forward-looking windows.
+// DV Trading: a past graduation date against forward-looking windows.
 const grad = matchFirstCandidate(asOpts("I've already graduated", "August 2026 - December 2026", "January 2027"),
   { rendered: "July 2024", alternates: ["I've already graduated"] });
 ok(grad && grad.hit.textContent === "I've already graduated",

@@ -461,6 +461,37 @@ function currentValue(el, adapter) {
   return String(el.value == null ? "" : el.value).trim();
 }
 
+// A label whose whole meaning is "expand on the question above" — a pointer with no target.
+// Mirrors _REFERS_ELSEWHERE in bridge/drafter.py; keep the two in step (both have units).
+// Anchored at the start, or on an explicit back-reference, so a real essay that merely opens
+// with "If" ("If you could have any superpower…") is untouched.
+const FOLLOW_UP = /^\s*\(?\s*if\s+(you\s+)?(answered|selected|checked|chose|responded|said)?\s*["'“”]?\s*yes\b|^\s*\(?\s*if\s+(yes|so|applicable|any|selected)\b|\bto\s+the\s+(above|previous|preceding)\s+question\b/i;
+
+// Does this answer mean "no"? canon() maps a boolean No onto "none", and ATS forms spell it
+// several ways. Word-bounded so a value like "November 2026" is not read as a refusal.
+const isNegative = (v) => /^(no|none|not|n a)\b/.test(canon(v || ""));
+
+// The nearest question BEFORE this control that currently holds an answer.
+//
+// Used only to decide whether a conditional follow-up is live. Walks controls in document
+// order rather than through adapter.questionContainerSelectors, because Greenhouse — the ATS
+// this was found on — declares none. An unchecked radio reads back empty (see currentValue),
+// so a radio group naturally resolves to its CHECKED option and nothing else.
+function precedingAnswer(el, adapter) {
+  const all = [...document.querySelectorAll("input, select, textarea")]
+    .filter(x => !x.disabled && x.offsetParent !== null);
+  const i = all.indexOf(el);
+  if (i <= 0) return null;
+  // Bounded look-back: past a certain distance the "previous question" is a different
+  // section of the form and any answer found there says nothing about this field.
+  for (let j = i - 1; j >= 0 && j >= i - 40; j--) {
+    const v = currentValue(all[j], adapter);
+    if (!v) continue;
+    return { label: fieldLabel(all[j], adapter) || labelFor(all[j]) || "the question above", value: v };
+  }
+  return null;
+}
+
 // ── react-select (Greenhouse, CDP trusted clicks) ─────────────────────────────
 const rsCommitted = (control, dd) =>
   !!control.querySelector(dd.committed || ".select__single-value, .select__multi-value");
@@ -1568,6 +1599,34 @@ async function runFill(autoSubmit = false, opts = {}) {
       const optsFor = async () => nativeOpts || await harvestOptions(el, adapter);
       const ctlKind = el.tagName.toLowerCase() === "select" ? "select"
         : (el.getAttribute && el.getAttribute("role")) === "combobox" ? "combobox" : "text";
+      // A CONDITIONAL FOLLOW-UP WHOSE TRIGGER DID NOT FIRE. Live on Robinhood:
+      // the deterministic pass filled "Will you now (or in the future) require visa
+      // sponsorship? -> No", and this field ("If you answered "Yes" to the above question,
+      // please provide additional information here:") went to the drafter, which had only
+      // that label to work from and wrote a confident paragraph about being on OPT and
+      // needing H1B support — the opposite of what the same form said two fields earlier.
+      // A second one invented a non-compete with the current employer.
+      //
+      // The cure is not a better prompt. The question genuinely does not apply, so nothing
+      // should be written about it at all. Checked BEFORE the bucket dispatch so it covers
+      // the draftable, always_ask and unrecognized paths alike; deterministic is excluded
+      // deliberately, since a profile answer is correct whatever the question above said.
+      // Required ones take "N/A" (the honest human answer, and it unblocks submit); optional
+      // ones are left alone. If the parent said YES, or we cannot find it, nothing changes.
+      if (c.bucket !== "deterministic" && FOLLOW_UP.test(label)) {
+        const parent = precedingAnswer(el, adapter);
+        if (parent && isNegative(parent.value)) {
+          const why = `follow-up to "${String(parent.label).slice(0, 40)}", answered ${parent.value}`;
+          if (req) {
+            const r = await applyValue(el, "N/A", adapter);
+            (r.ok ? report.filled : report.flagged).push({ label, value: "N/A",
+              ...(r.ok ? { via: why } : { why: r.why || "setter failed" }) });
+          } else {
+            report.skipped.push({ label, why });
+          }
+          continue;
+        }
+      }
       if (c.bucket === "deterministic") {
         if (!c.filled) { escalate("needsInput", { label, why: `profile ${c.value_key} unset`, required: req, options: await optsFor(), kind: ctlKind }, applyCtl); continue; }
         // A value_key that is deliberately "" (links.portfolio, links.twitter — Parth has
