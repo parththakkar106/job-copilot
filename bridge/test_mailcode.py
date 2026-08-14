@@ -185,6 +185,7 @@ class FakeIMAP:
         self.raw = raw_messages
         self.readonly = None
         self.searched = None
+        self.searches = []
         self.closed = False
         self.logged_out = False
 
@@ -197,6 +198,7 @@ class FakeIMAP:
 
     def search(self, _charset, *criteria):
         self.searched = criteria
+        self.searches.append(criteria)
         return ("OK", [b" ".join(str(i + 1).encode() for i in range(len(self.raw)))])
 
     def fetch(self, mid, _spec):
@@ -231,7 +233,9 @@ reader = mc.ImapReader("someone@example.invalid", "pw", connect=lambda: fake)
 msgs = reader.search(T0)
 check(fake.readonly is True,
       "THE PROPERTY: the mailbox is opened readonly (EXAMINE), so nothing is written or marked read")
-check(fake.searched[0] == "SINCE", "the server-side prefilter is a SINCE search")
+check(fake.searches[0][0] == "SINCE", "the date prefilter is still a SINCE search")
+check(any(c[0] == "X-GM-RAW" for c in fake.searches),
+      "and Gmail-side narrowing is attempted (17 messages -> 3 on the real mailbox)")
 check(len(msgs) == 1 and msgs[0].subject == "Your verification code", "headers are parsed")
 check(mc.extract_code(msgs[0].text()) == "IMP77665", "a code inside HTML is found over IMAP too")
 check(msgs[0].received.tzinfo is not None, "the Date header becomes an aware datetime")
@@ -382,6 +386,39 @@ check(not mc.looks_like_verification(rejection),
       "MEASURED: a rejection carrying a code-shaped reference does NOT pass the gate")
 check(mc.find_code(mc.FakeReader([rejection]), since=T0, company="Freeform") is None,
       "and so its reference number is never offered as a code")
+
+
+# Narrowing is a SPEED filter and must never cost a code. If Gmail's X-GM-RAW matches
+# nothing (wrong query, not Gmail, extension unavailable) the full list has to survive.
+class PickyIMAP(FakeIMAP):
+    """X-GM-RAW finds nothing; SINCE finds everything."""
+
+    def search(self, _charset, *criteria):
+        self.searches.append(criteria)
+        if criteria and criteria[0] == "X-GM-RAW":
+            return ("OK", [b""])
+        return ("OK", [b" ".join(str(i + 1).encode() for i in range(len(self.raw)))])
+
+
+picky = PickyIMAP([RAW_HTML])
+msgs = mc.ImapReader("a", "b", connect=lambda: picky).search(T0)
+check(len(msgs) == 1 and mc.extract_code(msgs[0].text()) == "IMP77665",
+      "a narrowing that matches NOTHING falls back to the full list rather than losing the code")
+
+
+class RudeIMAP(FakeIMAP):
+    """A non-Gmail server that rejects X-GM-RAW outright."""
+
+    def search(self, _charset, *criteria):
+        self.searches.append(criteria)
+        if criteria and criteria[0] == "X-GM-RAW":
+            raise Exception("BAD unknown search key")
+        return ("OK", [b" ".join(str(i + 1).encode() for i in range(len(self.raw)))])
+
+
+rude = RudeIMAP([RAW_HTML])
+msgs = mc.ImapReader("a", "b", connect=lambda: rude).search(T0)
+check(len(msgs) == 1, "a server that REJECTS X-GM-RAW still returns its messages")
 
 print()
 print(f"mailcode: {CHECKS - len(FAILED)}/{CHECKS} checks passed")

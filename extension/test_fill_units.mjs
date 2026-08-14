@@ -902,4 +902,68 @@ const labelOf = (el) => (el && el._label) || "";
   ok(fill(b3, "AB12") === "AB12", "a shorter code clears the boxes it does not fill");
 }
 
+// --- waitForVerifyCode: poll for a code that has not been delivered yet --------------
+// THE BUG: the old code waited a flat 3s, asked once, and gave up. Greenhouse sends the
+// mail on submit, so it is simply not there that early. These pin that a transient miss
+// is retried and a permanent one is not — retrying "no code box on this page" forever
+// would be just as wrong as giving up after three seconds.
+{
+  const build = (statuses, budget) => {
+    const calls = [];
+    const sleeps = [];
+    let now = 0;
+    // extract() matches `function NAME(`, which lands AFTER the `async` keyword — so put
+    // it back, or the extracted body is a sync function full of awaits.
+    const fn = new Function("autoFillVerifyCode", "sleep", "Date", "log",
+      "async " + extract("waitForVerifyCode") + "; return waitForVerifyCode;")(
+        async (_log, _since, _tried, opts) => { calls.push(opts && opts.quiet); return statuses.shift() ?? "nocode"; },
+        async (ms) => { sleeps.push(ms); now += ms; },
+        { now: () => now },
+        () => {});
+    return { fn, calls, sleeps };
+  };
+
+  // A code that shows up on the third look is still a success.
+  {
+    const { fn, calls, sleeps } = build(["nocode", "nocode", "filled"], 90000);
+    const got = await fn(() => {}, 0, new Set(), 90000);
+    ok(got === true, "a code that arrives on a later poll is still filled");
+    ok(calls.length === 3, "it kept asking until the mail landed");
+    ok(sleeps.length === 2 && sleeps.every(ms => ms > 0), "it waited between attempts");
+    ok(calls[0] === false && calls[1] === true,
+       "the first attempt speaks, the rest are quiet so the panel is not spammed");
+  }
+
+  // "stale" means only the PREVIOUS submit's code is in the inbox — keep waiting.
+  {
+    const { fn, calls } = build(["stale", "stale", "filled"], 90000);
+    ok(await fn(() => {}, 0, new Set(), 90000) === true,
+       "a stale (already-tried) code is treated as not-here-yet, not as failure");
+    ok(calls.length === 3, "and polling continues through it");
+  }
+
+  // Permanent conditions must stop immediately, not burn the whole budget.
+  for (const [status, label] of [["nofield", "no code box on the page"],
+                                 ["notconfigured", "no mail credentials"],
+                                 ["mismatch", "the code does not fit the boxes"]]) {
+    const { fn, calls } = build([status, "filled"], 90000);
+    ok(await fn(() => {}, 0, new Set(), 90000) === false, `${label} -> gives up`);
+    ok(calls.length === 1, `${label} -> asks exactly once, never polls`);
+  }
+
+  // The budget has to actually end the loop.
+  {
+    const { fn, calls } = build([], 10000);   // always "nocode"
+    ok(await fn(() => {}, 0, new Set(), 10000) === false, "an unfilled budget ends in failure");
+    ok(calls.length > 1 && calls.length < 20, `polls a sane number of times, got ${calls.length}`);
+  }
+
+  // Success on the very first look must not sleep at all.
+  {
+    const { fn, sleeps } = build(["filled"], 90000);
+    ok(await fn(() => {}, 0, new Set(), 90000) === true, "an already-delivered code fills at once");
+    ok(sleeps.length === 0, "and costs no waiting");
+  }
+}
+
 console.log(`fill units: ${n}/${n} checks passed`);

@@ -2188,32 +2188,43 @@ async function requestVerifyCode(since) {
 
 // Fetch + fill, once. Returns true only if a code actually landed in a field, which is
 // the caller's signal that another submit pass is worth doing.
-async function autoFillVerifyCode(log, since, tried) {
+// Returns a STATUS, not a boolean, because the caller has to tell "the code has not
+// arrived yet" (worth waiting for) apart from "there is nowhere to put it" (never will be):
+//   "filled" | "nofield" | "nocode" | "notconfigured" | "stale" | "mismatch"
+async function autoFillVerifyCode(log, since, tried, opts = {}) {
+  const quiet = !!opts.quiet;                 // suppress the repeat lines while polling
   const input = findVerifyInput();
-  if (!input) { log("couldn't find the code box on this page — enter it yourself", "warn"); return false; }
+  if (!input) { log("couldn't find the code box on this page — enter it yourself", "warn"); return "nofield"; }
   const res = await requestVerifyCode(since);
   if (!res || !res.ok || !res.code) {
     const why = (res && res.why) || "no code found";
     // "not configured" is a setup problem and "no code yet" is a timing one. Saying which
-    // is the difference between him fixing it and him waiting for nothing.
-    log(`🔐 no code from your inbox (${why})`, "warn");
-    return false;
+    // is the difference between him fixing it and him waiting for nothing — and only the
+    // timing one is worth polling on.
+    const setup = /not configured|unreachable/i.test(why);
+    if (!quiet || setup) log(`🔐 no code from your inbox (${why})`, "warn");
+    return setup ? "notconfigured" : "nocode";
   }
-  if (tried.has(res.code)) { log("🔐 same code came back — it isn't being accepted", "warn"); return false; }
+  if (tried.has(res.code)) {
+    // Not a failure yet: the newest message may still be the PREVIOUS code, with this
+    // submit's mail seconds behind it. Treat it as "not here yet" so the poll continues.
+    if (!quiet) log("🔐 only the previous code is in the inbox so far — waiting", "warn");
+    return "stale";
+  }
   tried.add(res.code);
 
   const boxes = codeBoxGroup(input);
   if (boxes) {
     if (boxes.length < res.code.length) {
       log(`🔐 ${boxes.length} code boxes but a ${res.code.length}-character code — enter it yourself`, "warn");
-      return false;
+      return "mismatch";
     }
     const landed = fillCodeBoxes(boxes, res.code);
     // Read back rather than trust the write: one char per box is a stronger claim than
     // "we typed something", and a React group that rejects a character fails silently.
     if (landed !== res.code) {
       log("🔐 the code didn't land cleanly across the boxes — check it before submitting", "warn");
-      return false;
+      return "mismatch";
     }
   } else {
     setText(input, res.code);
@@ -2221,7 +2232,35 @@ async function autoFillVerifyCode(log, since, tried) {
   // Never log the code itself: it is a live credential for this submit, and fill reports
   // are written to disk and read back for debugging.
   log(`🔐 filled the code from your inbox (${res.why})`, "ok");
-  return true;
+  return "filled";
+}
+
+
+// Poll until the code arrives, or the budget runs out.
+//
+// THE BUG THIS REPLACES: the old code waited a flat 3s, asked once, and on a miss fell
+// straight through to "needs_verification" — so its two-attempt cap was dead code and it
+// gave up about three seconds after the gate appeared. The mail simply is not there yet
+// that early: Greenhouse sends it on submit and it has to be delivered AND indexed.
+//
+// Polling is only affordable because the lookup got cheap. Measured on the real mailbox:
+// a day of messages fetched in full cost 11.8s per attempt, and Gmail-side narrowing
+// (X-GM-RAW, see mailcode.ImapReader._narrow) took that to ~1.6s.
+async function waitForVerifyCode(log, since, tried, budgetMs = 90000) {
+  const deadline = Date.now() + budgetMs;
+  let announced = false;
+  for (;;) {
+    const status = await autoFillVerifyCode(log, since, tried, { quiet: announced });
+    // Only "not here yet" is worth waiting on. No field, no credentials, or a code that
+    // would not fit are all permanent for this page — say so once and stop.
+    if (status !== "nocode" && status !== "stale") return status === "filled";
+    if (Date.now() >= deadline) {
+      log("🔐 the code hasn't arrived — enter it from your inbox, then submit again", "warn");
+      return false;
+    }
+    if (!announced) { log("🔐 waiting for the code to arrive in your inbox…"); announced = true; }
+    await sleep(4000);
+  }
 }
 
 // Click the submit button (trusted CDP click when the adapter needs it, else synthesized).
@@ -2354,7 +2393,8 @@ async function submitWithRetry(log) {
   const submitStartedAt = Date.now();
   const codesTried = new Set();
   let codeAttempts = 0;
-  const MAX_CODE_ATTEMPTS = 2; // a code that fails twice is not going to start working
+  // Each attempt is a full ~90s polling window (waitForVerifyCode), not a single shot.
+  const MAX_CODE_ATTEMPTS = 2; // a code the form rejects twice is not going to start working
   for (let pass = 1; pass <= MAX; pass++) {
     if (PANEL_STOP) { log("stopped", "warn"); return "stopped"; }
     // A late confirmation from the previous pass's click may have landed while we waited.
@@ -2389,8 +2429,7 @@ async function submitWithRetry(log) {
         // takes a few seconds to arrive; one short wait beats reporting "no code yet".
         if (codeAttempts < MAX_CODE_ATTEMPTS) {
           codeAttempts++;
-          await sleep(3000);
-          if (await autoFillVerifyCode(log, submitStartedAt, codesTried)) break; // re-submit with it
+          if (await waitForVerifyCode(log, submitStartedAt, codesTried)) break; // re-submit with it
         }
         log("🔐 Email verification needed — enter the code from your inbox in the browser, then submit.", "warn");
         return "needs_verification";
@@ -2407,8 +2446,7 @@ async function submitWithRetry(log) {
       if (ver) {
         if (codeAttempts < MAX_CODE_ATTEMPTS) {
           codeAttempts++;
-          await sleep(3000);
-          if (await autoFillVerifyCode(log, submitStartedAt, codesTried)) continue; // re-submit with it
+          if (await waitForVerifyCode(log, submitStartedAt, codesTried)) continue; // re-submit with it
         }
         log("🔐 Email verification needed — enter the code from your inbox in the browser, then submit.", "warn");
         return "needs_verification";
@@ -2847,7 +2885,7 @@ function mountPanel() {
     setBusy(true);
     try {
       const since = Date.now() - 10 * 60 * 1000;
-      const ok = await autoFillVerifyCode(log, since, new Set());
+      const ok = await waitForVerifyCode(log, since, new Set(), 45000);
       if (ok) log("Check it looks right, then tap Submit.", "ok");
     } finally { setBusy(false); }
   };
