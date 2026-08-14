@@ -2129,6 +2129,11 @@ function findVerifyInput() {
   // the email field two rows up that is also a visible text input".
   const named = inputs.find(el => CODE_ATTR.test(attrs(el)));
   if (named) return named;
+  // A run of single-character boxes IS a code field, whatever it is called — no ordinary
+  // application question is four or more inputs of maxlength 1 in a row. Checked before
+  // the width heuristic because it is the shape actually seen on a live gate.
+  const singles = inputs.filter(el => el.getAttribute("maxlength") === "1");
+  if (singles.length >= 4) return singles[0];
   // Otherwise fall back to shape — the gate says "8-character code", and a maxlength that
   // short is not something an ordinary application field carries.
   const short = inputs.filter(el => {
@@ -2138,6 +2143,38 @@ function findVerifyInput() {
   // Only when it is UNAMBIGUOUS. Two candidates and we would be guessing which one the
   // code goes in, and a code typed into the wrong box is worse than asking him.
   return short.length === 1 ? short[0] : null;
+}
+
+// A code gate is often EIGHT BOXES, not one field.
+//
+// MEASURED on a live Greenhouse gate (Truveta, 2026-08): ids `security-input-0` through
+// `security-input-7`, every one `maxlength="1"`, React-controlled, laid out as eight 50px
+// squares. The group's label ("Security code") is associated with the FIRST box only,
+// which is how findVerifyInput locates it — the ids themselves match nothing.
+//
+// The bug this fixes: assigning .value programmatically IGNORES maxlength, so the whole
+// 8-character code went into box 0 and the other seven stayed empty. The finder was right;
+// the writing was wrong.
+function codeBoxGroup(input) {
+  if (!input || input.getAttribute("maxlength") !== "1") return null;
+  const m = (input.id || "").match(/^(.*?)(\d+)$/);
+  if (!m) return null;
+  const stem = m[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const idx = el => parseInt((el.id.match(/(\d+)$/) || [0, "0"])[1], 10);
+  const group = [...document.querySelectorAll('input[maxlength="1"]')]
+    .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly
+                  && new RegExp("^" + stem + "\\d+$").test(el.id))
+    .sort((a, b) => idx(a) - idx(b));
+  return group.length > 1 ? group : null;
+}
+
+// One character per box. Clearing first matters: a previous attempt may have stuffed the
+// whole code into box 0, and React will not drop that on its own.
+function fillCodeBoxes(boxes, code) {
+  for (const b of boxes) if (b.value) setText(b, "");
+  const chars = String(code).split("");
+  for (let i = 0; i < chars.length && i < boxes.length; i++) setText(boxes[i], chars[i]);
+  return boxes.map(b => b.value || "").join("");
 }
 
 // Ask the bridge for the code belonging to THIS submit. `since` is the click.
@@ -2164,7 +2201,23 @@ async function autoFillVerifyCode(log, since, tried) {
   }
   if (tried.has(res.code)) { log("🔐 same code came back — it isn't being accepted", "warn"); return false; }
   tried.add(res.code);
-  setText(input, res.code);
+
+  const boxes = codeBoxGroup(input);
+  if (boxes) {
+    if (boxes.length < res.code.length) {
+      log(`🔐 ${boxes.length} code boxes but a ${res.code.length}-character code — enter it yourself`, "warn");
+      return false;
+    }
+    const landed = fillCodeBoxes(boxes, res.code);
+    // Read back rather than trust the write: one char per box is a stronger claim than
+    // "we typed something", and a React group that rejects a character fails silently.
+    if (landed !== res.code) {
+      log("🔐 the code didn't land cleanly across the boxes — check it before submitting", "warn");
+      return false;
+    }
+  } else {
+    setText(input, res.code);
+  }
   // Never log the code itself: it is a live credential for this submit, and fill reports
   // are written to disk and read back for debugging.
   log(`🔐 filled the code from your inbox (${res.why})`, "ok");

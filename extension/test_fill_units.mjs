@@ -825,4 +825,81 @@ const labelOf = (el) => (el && el._label) || "";
   ok(find([{ ...mk({ id: "code" }), readOnly: true }]) === null, "a readonly field is ignored");
 }
 
+// --- codeBoxGroup: the code gate is EIGHT boxes, not one field -----------------------
+// Shape measured on a live Greenhouse gate: security-input-0..7, each maxlength="1".
+// Setting .value programmatically ignores maxlength, so the whole code went into box 0
+// and the other seven stayed empty. These pin the group detection that fixes it.
+{
+  const mkBox = (id, maxlength = "1", extra = {}) => ({
+    id, value: "", disabled: false, readOnly: false, offsetParent: {},
+    getAttribute(k) { return k === "maxlength" ? maxlength : (extra[k] ?? null); },
+  });
+  const withDom = (els, fn) => {
+    globalThis.document = {
+      querySelectorAll: (sel) => sel.includes('maxlength="1"')
+        ? els.filter(e => e.getAttribute("maxlength") === "1") : els,
+    };
+    try { return fn(); } finally { delete globalThis.document; }
+  };
+  const group = (input, els) => withDom(els, () => new Function("document",
+    extract("codeBoxGroup") + "; return codeBoxGroup;")(globalThis.document)(input));
+
+  const boxes = Array.from({ length: 8 }, (_, i) => mkBox(`security-input-${i}`));
+  const found = group(boxes[0], boxes);
+  ok(found && found.length === 8, "the eight-box group is detected from its first box");
+  ok(found[0].id === "security-input-0" && found[7].id === "security-input-7",
+     "and comes back in index order");
+
+  // Numeric order, not string order — a 10+ box group must not sort 10 before 2.
+  const wide = Array.from({ length: 12 }, (_, i) => mkBox(`otp-${i}`));
+  const w = group(wide[0], wide.slice().reverse());
+  ok(w.map(b => b.id).join(",") === wide.map(b => b.id).join(","),
+     "boxes sort NUMERICALLY (otp-2 before otp-10), whatever order the DOM yields them");
+
+  ok(group(mkBox("email", "255"), [mkBox("email", "255")]) === null,
+     "an ordinary long field is not a box group");
+  ok(group(mkBox("code", "1"), [mkBox("code", "1")]) === null,
+     "an id with no trailing index is not a group");
+  ok(group(boxes[0], [boxes[0]]) === null, "a single box alone is not a group");
+
+  // Boxes from a DIFFERENT widget must not be swept in.
+  const mixed = [...boxes, mkBox("other-input-0"), mkBox("other-input-1")];
+  ok(group(boxes[0], mixed).length === 8, "only boxes sharing the id stem join the group");
+
+  // A hidden or disabled box would silently swallow a character.
+  const withHidden = boxes.map((b, i) => i === 3 ? { ...b, offsetParent: null } : b);
+  ok(group(withHidden[0], withHidden).length === 7, "a hidden box is excluded");
+}
+
+// --- fillCodeBoxes: one character per box --------------------------------------------
+{
+  const setTextCalls = [];
+  const mkBox = (id) => ({
+    id, value: "", disabled: false, readOnly: false, offsetParent: {},
+    getAttribute: (k) => (k === "maxlength" ? "1" : null),
+  });
+  const fill = (boxes, code) => new Function("setText",
+    extract("fillCodeBoxes") + "; return fillCodeBoxes;")(
+      (el, v) => { setTextCalls.push([el.id, v]); el.value = v; })(boxes, code);
+
+  const boxes = Array.from({ length: 8 }, (_, i) => mkBox(`security-input-${i}`));
+  boxes[0].value = "Mp3bF6OD"; // the bug: the whole code stuffed into box 0
+  const landed = fill(boxes, "Mp3bF6OD");
+
+  ok(landed === "Mp3bF6OD", "reading the boxes back reconstructs the code");
+  ok(boxes.every(b => b.value.length === 1), "THE FIX: every box holds exactly one character");
+  ok(setTextCalls[0][0] === "security-input-0" && setTextCalls[0][1] === "",
+     "box 0 is CLEARED first — React will not drop a stale value on its own");
+  ok(boxes[0].value === "M" && boxes[7].value === "D", "characters land in order");
+
+  // Case must survive the split: the real codes are mixed case.
+  const b2 = Array.from({ length: 8 }, (_, i) => mkBox(`x-${i}`));
+  ok(fill(b2, "LsdkUopE") === "LsdkUopE", "mixed case is preserved character by character");
+
+  // A short code must not leave a stale tail behind.
+  const b3 = Array.from({ length: 8 }, (_, i) => mkBox(`y-${i}`));
+  b3.forEach(b => { b.value = "Z"; });
+  ok(fill(b3, "AB12") === "AB12", "a shorter code clears the boxes it does not fill");
+}
+
 console.log(`fill units: ${n}/${n} checks passed`);
