@@ -109,19 +109,104 @@ from core import profile as profile_mod  # resume track tags + display names for
 from core import scraper as scraper_mod  # dedup_key — the panel path must mint the same key
 
 
-# --- network setup: force IPv4 + reuse one connection -------------------------------
-# The logs showed a near-constant ~21s per Telegram call — the signature of an IPv6
+# --- network setup: pin the family that actually works + reuse one connection --------
+# The logs once showed a near-constant ~21s per Telegram call — the signature of an IPv6
 # route to api.telegram.org that times out before falling back to IPv4, paid fresh on
-# every request. Pin all outbound connections to IPv4 so that dead route is never tried,
-# and route every Telegram call through ONE persistent Session so the TCP+TLS handshake
-# happens once (keep-alive) instead of per message.
+# every request. The cure was to pin outbound connections to one family so the dead route
+# is never tried; route every Telegram call through ONE persistent Session too, so the
+# TCP+TLS handshake happens once (keep-alive) instead of per message.
+#
+# But WHICH family is dead is a property of the NETWORK, not of Telegram, and it changes:
+# the hardcoded IPv4 pin worked for a month, then died on a network whose IPv4 path was
+# down entirely (and whose router answered every A query with a wildcard parking IP) while
+# IPv6 reached Telegram in under a second. A VPN being on or off flips it back.
+#
+# So measure instead of guessing, and re-measure when the measurement stops holding (see
+# _RefamilyingAdapter below). Override with TELEGRAM_IP_FAMILY=4|6|auto when needed.
+TG_HOST = "api.telegram.org"
+
+
+def _probe_family(host: str = TG_HOST, port: int = 443, timeout: float = 3.0):
+    """Return the address family that can actually open a socket to host, else None.
+
+    Tries IPv4 first (the historical good path), then IPv6. A blocked route shows up
+    here as the same timeout it would cost on every single API call.
+    """
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            infos = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+        except socket.gaierror:
+            continue
+        for *_, addr in infos:
+            try:
+                with socket.socket(family, socket.SOCK_STREAM) as s:
+                    s.settimeout(timeout)
+                    s.connect(addr)
+                return family
+            except OSError:
+                break  # one address is enough of a sample; the whole family is routed alike
+    return None
+
+
+def _resolve_family():
+    want = os.environ.get("TELEGRAM_IP_FAMILY", "").strip().lower()
+    if want in ("4", "ipv4", "inet"):
+        return socket.AF_INET
+    if want in ("6", "ipv6", "inet6"):
+        return socket.AF_INET6
+    if want in ("auto", "any", "unspec"):
+        return socket.AF_UNSPEC
+    # Unset: measure. If neither family connects the box is offline — fall back to
+    # AF_UNSPEC so the failure surfaces as a normal request error, not a bad pin.
+    return _probe_family() or socket.AF_UNSPEC
+
+
+# Resolved LAZILY, on the first outbound connection. Probing at import time would make
+# every test file that imports this module pay the dead family's timeout, and the tests
+# never open a socket.
+_IP_FAMILY = None
+
+
 def _allowed_gai_family():
-    return socket.AF_INET
+    global _IP_FAMILY
+    if _IP_FAMILY is None:
+        _IP_FAMILY = _resolve_family()
+    return _IP_FAMILY
+
+
+def _family_name() -> str:
+    return {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(_IP_FAMILY, "auto")
 
 
 _urllib3_conn.allowed_gai_family = _allowed_gai_family
 
 SESSION = requests.Session()
+
+
+# A pin measured once at boot is still a pin: the bridge runs for days, and the family
+# that worked at startup can stop working mid-run (a VPN dropping is the everyday case —
+# turning one ON is what made IPv4 usable here in the first place). Cached forever, that
+# leaves every later call hanging on a dead route until someone restarts the bridge —
+# the exact stall the pin exists to avoid.
+#
+# So treat a connection failure as evidence the measurement expired: drop the cached
+# family and the keep-alive pool with it (pooled sockets belong to the dead family), and
+# the next call re-probes. Only for connect/timeout errors — an HTTP status is Telegram
+# answering, which proves the route is fine.
+class _RefamilyingAdapter(requests.adapters.HTTPAdapter):
+    def send(self, *args, **kwargs):
+        global _IP_FAMILY
+        try:
+            return super().send(*args, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            if _IP_FAMILY is not None:
+                dlog(f"[telegram] {_family_name()} stopped working — re-probing next call")
+                _IP_FAMILY = None
+                self.poolmanager.clear()
+            raise
+
+
+SESSION.mount("https://", _RefamilyingAdapter())
 
 # A non-WebSocket TCP connection to the WS port (a port probe, a browser hitting the URL)
 # makes the websockets server log a full handshake traceback. It's harmless — the real
@@ -1944,9 +2029,19 @@ async def main():
         sys.exit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the environment "
                  "(see bridge/README.md).")
 
+    # _family_name() is only meaningful AFTER a connection has been attempted — the probe
+    # is lazy, so read it inside the handlers, not before the call.
     try:
         me = await asyncio.to_thread(tg_get_me)
-        print(f"[telegram] bot @{me.get('username')} ready; chat_id={CHAT_ID}")
+        print(f"[telegram] bot @{me.get('username')} ready over {_family_name()}; "
+              f"chat_id={CHAT_ID}")
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        # Never reached Telegram at all — a bad token answers 401 (an HTTPError, which
+        # falls through to the token message below), it does not hang.
+        # Blaming the token here sent a past debug session down the wrong path.
+        sys.exit(f"Telegram is unreachable over {_family_name()} — a network/route problem, "
+                 f"not the token. Try TELEGRAM_IP_FAMILY=6 (or 4), or a VPN if this "
+                 f"network blocks Telegram: {redact(e)}")
     except Exception as e:
         sys.exit(f"Telegram getMe failed — check TELEGRAM_BOT_TOKEN: {redact(e)}")
 
