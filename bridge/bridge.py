@@ -42,6 +42,11 @@ Protocol over the WebSocket (JSON per message):
     {type:"drafts", reqId, context?:{company?}, items:[{id, answer_key?, draft?}]}
         # the on-page panel asking what the answer bank has for these questions, with no
         # Telegram involved (Parth is at the keyboard). Reply answers = {id: {draft, bank_id}}.
+    {type:"verify_code", reqId, since, company?, role?, key?}
+        # a board is asking for an emailed verification code and Parth has ALREADY acted
+        # (clicked Submit, or tapped the panel's code button). `since` = that click, epoch
+        # seconds, which binds the code to this submit. Reply answers = {ok, code, why}.
+        # Never sent on the queue's own initiative — see handle_verify_code.
     {type:"bank_touch", reqId, bank_id}
         # the panel reporting that Parth ACCEPTED a bank draft, so the row counts as used.
         # Only ever sent on accept — see handle_bank_touch. Reply answers = {ok}.
@@ -81,7 +86,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import html
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 import logging
 import os
@@ -98,6 +103,7 @@ import websockets
 import pending as pending_mod
 import triage as triage_mod
 import drafter as drafter_mod  # Tier-2 essay drafting via the Claude Code CLI
+import mailcode as mailcode_mod  # emailed verification codes, human-triggered only
 
 # The shared pipeline modules live in core/ (data-layer tools, not bridge ones), so put the
 # repo root on the path before importing them. triage.py is a sibling and needs no help.
@@ -1750,6 +1756,49 @@ async def handle_workday_route(msg, ws):
     await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
 
 
+async def handle_verify_code(msg, ws):
+    """Fetch the emailed verification code for a submit Parth already started.
+
+    ONLY EVER IN RESPONSE TO A HUMAN ACTION. The extension sends this after Parth clicks
+    Submit and the board answers with its code gate, or when he taps the panel's code
+    button — never on the queue's own initiative. Parth set that rule explicitly: "never
+    an otp fetch without human explicitly asking for it or has submit."
+
+    `since` is the submit click, in epoch seconds, and it is the whole reason this is safe
+    to automate: it binds the code to THIS submit, so a second role submitted ten minutes
+    later cannot be handed the first one's code. See mailcode.py for the matching rules.
+
+    Never fatal. No reader configured, nothing in the inbox yet, or a mail server that
+    will not answer all reply the same way — no code — and the extension falls back to
+    exactly what it did before this existed: tell Parth, leave the tab open, park the job.
+    """
+    req_id = msg.get("reqId")
+    out = {"ok": False, "code": None, "why": "no code found"}
+    try:
+        since = msg.get("since")
+        since_dt = (datetime.fromtimestamp(float(since), timezone.utc)
+                    if since else datetime.now(timezone.utc))
+        reader = await asyncio.to_thread(mailcode_mod.make_reader)
+        hit = await asyncio.to_thread(
+            mailcode_mod.find_code, reader, since_dt,
+            str(msg.get("company") or ""), str(msg.get("role") or ""),
+            str(msg.get("key") or ""))
+        if hit:
+            out = {"ok": True, "code": hit.code, "why": hit.why}
+            # The code itself is a live credential for one submit — log that one was found
+            # and how fresh it was, never the value.
+            print(f"[verify] {msg.get('company') or '?'}: {hit.why}")
+        else:
+            print(f"[verify] {msg.get('company') or '?'}: no matching message since submit")
+    except NotImplementedError as e:
+        out["why"] = "no mail reader configured"
+        print(f"[verify] {redact(e)}", file=sys.stderr)
+    except Exception as e:
+        out["why"] = "mail lookup failed"
+        print(f"[verify] lookup failed: {redact(e)}", file=sys.stderr)
+    await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
+
+
 async def handle_notify(msg, ws):
     """Post a one-off status line to Telegram (orchestrator progress). Reply over the
     answers channel so background.js's requestBridge resolves."""
@@ -1984,7 +2033,8 @@ async def ws_handler(ws):
                 "drafts": handle_drafts, "bank_touch": handle_bank_touch,
                 "hold_job": handle_hold_job, "pending_answers": handle_pending_answers,
                 "list_all": handle_list_all, "set_state": handle_set_state,
-                "workday_route": handle_workday_route}
+                "workday_route": handle_workday_route,
+                "verify_code": handle_verify_code}
     hb = asyncio.create_task(heartbeat(ws))
     try:
         async for raw in ws:

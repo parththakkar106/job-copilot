@@ -781,4 +781,48 @@ const labelOf = (el) => (el && el._label) || "";
   delete globalThis.location; delete globalThis.document;
 }
 
+// --- findVerifyInput: which box does the emailed code go in? -------------------------
+// The code gate is unmeasured (no live one was open when this was written), so the finder
+// is a heuristic and these tests pin the two properties that keep a wrong guess cheap:
+// a code-ish NAME wins outright, and an ambiguous page yields nothing rather than a guess.
+{
+  const mk = (attrs = {}) => ({
+    offsetParent: {}, disabled: false, readOnly: false,
+    id: attrs.id || "", name: attrs.name || "", placeholder: attrs.placeholder || "",
+    __label: attrs.label || "",
+    getAttribute(k) { return attrs[k] === undefined ? null : String(attrs[k]); },
+  });
+  const withDom = (els, fn) => {
+    globalThis.document = { querySelectorAll: () => els };
+    try { return fn(); } finally { delete globalThis.document; }
+  };
+  const codeAttrAt = src.indexOf("const CODE_ATTR = ");
+  const codeAttrSrc = src.slice(codeAttrAt, src.indexOf("\n", codeAttrAt));
+  const find = els => withDom(els, () => new Function("labelFor", "document",
+    codeAttrSrc + ";" + extract("findVerifyInput") + "; return findVerifyInput();")(
+      el => el.__label || "", globalThis.document));
+
+  const email = mk({ id: "email", maxlength: 255 });
+  const code = mk({ id: "verification_code", maxlength: 8 });
+  ok(find([email, code]) === code, "a code-named field is picked out of a form of inputs");
+  ok(find([code, email]) === code, "and order does not matter");
+
+  ok(find([mk({ name: "otp" })]) !== null, "otp counts as a code-ish name");
+  ok(find([mk({ "aria-label": "Enter the code" })]) !== null, "aria-label counts");
+  ok(find([mk({ label: "Verification code" })]) !== null, "the visible label counts");
+
+  // Shape fallback, and its limit.
+  const short = mk({ id: "x", maxlength: 8 });
+  ok(find([email, short]) === short, "a lone short-maxlength field is taken on shape alone");
+  ok(find([email, mk({ id: "a", maxlength: 8 }), mk({ id: "b", maxlength: 6 })]) === null,
+     "TWO short fields is ambiguous -> null, because a code in the wrong box is worse than asking");
+  ok(find([email]) === null, "an ordinary long field is never mistaken for the code box");
+  ok(find([]) === null, "no inputs -> null");
+
+  // A code must never be typed into something the user cannot see or edit.
+  ok(find([{ ...mk({ id: "code" }), offsetParent: null }]) === null, "a hidden field is ignored");
+  ok(find([{ ...mk({ id: "code" }), disabled: true }]) === null, "a disabled field is ignored");
+  ok(find([{ ...mk({ id: "code" }), readOnly: true }]) === null, "a readonly field is ignored");
+}
+
 console.log(`fill units: ${n}/${n} checks passed`);

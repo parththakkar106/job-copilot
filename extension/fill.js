@@ -2080,10 +2080,14 @@ function submitRejectedText(baseline) {
 
 // Greenhouse (and some other ATSs) gate submit behind an EMAIL human-verification code: after
 // the submit click the page shows "A verification code was sent to <email>… enter the
-// 8-character code to confirm you're a human." This is an anti-bot control — we do NOT solve
-// it (no reading the code from email, no auto-entry). We DETECT it, surface it, and leave the
-// tab open for Parth to enter the code himself. Baseline-aware like confirmations/rejections
-// (only text that appeared AFTER we started submitting counts, so a JD mention can't fire it).
+// 8-character code to confirm you're a human."
+//
+// We DETECT it here. Since 2026-08-14 we can also fill it — but only off the back of a human
+// action (his Submit click, or the panel's 🔐 button), never on the queue's own initiative;
+// see autoFillVerifyCode below. Detection stays the first step either way, and if no code can
+// be found the behaviour is exactly what it always was: surface it, leave the tab open, park.
+// Baseline-aware like confirmations/rejections (only text that appeared AFTER we started
+// submitting counts, so a JD mention can't fire it).
 const VERIFY_PHRASES = ["verification code was sent", "confirm you're a human", "confirm you are a human",
   "enter the 8-character code", "8-character code to confirm", "enter the code to confirm", "security code"];
 function matchedVerifyPhrases() {
@@ -2095,6 +2099,76 @@ function submitVerificationText(baseline) {
   const el = [...document.querySelectorAll("div,section,p,form")].find(e =>
     e.offsetParent !== null && /verification code|confirm you.?re a human|8-character code/i.test(e.textContent) && e.textContent.length < 600);
   return el ? el.textContent.trim().replace(/\s+/g, " ").slice(0, 300) : "email verification code required to submit";
+}
+
+// --- the verification code, when Parth has already acted ----------------------------
+//
+// Added 2026-08-14. The gate above is still an anti-bot control and we still never solve
+// it on our own initiative — but when PARTH clicks Submit, finishing that submit is a
+// decision he already made, and making him go dig an 8-character code out of Gmail is
+// friction, not security. His rule, verbatim: "never an otp fetch without human
+// explicitly asking for it or has submit."
+//
+// So every path into here starts at a human: the Submit click below, or the panel's
+// 🔐 button. Nothing polls, and the queue never triggers this by itself.
+//
+// UNMEASURED, like the mail patterns in bridge/mailcode.py: no real code gate was open
+// while this was written, so the field finder is a heuristic over attributes and shape
+// rather than a selector read off a live form. It fails closed — no field found means the
+// old behaviour, which is to tell Parth and leave the tab open.
+const CODE_ATTR = /\b(code|otp|verification|verify|confirm)\b/i;
+
+function findVerifyInput() {
+  const inputs = [...document.querySelectorAll(
+    'input[type="text"], input[type="tel"], input[type="number"], input:not([type])')]
+    .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
+  if (!inputs.length) return null;
+  const attrs = el => [el.id, el.name, el.placeholder, el.getAttribute("aria-label"),
+                       el.getAttribute("autocomplete"), labelFor(el)].filter(Boolean).join(" ");
+  // A code-ish name beats everything: this is the one signal that says "this field, not
+  // the email field two rows up that is also a visible text input".
+  const named = inputs.find(el => CODE_ATTR.test(attrs(el)));
+  if (named) return named;
+  // Otherwise fall back to shape — the gate says "8-character code", and a maxlength that
+  // short is not something an ordinary application field carries.
+  const short = inputs.filter(el => {
+    const n = parseInt(el.getAttribute("maxlength") || "0", 10);
+    return n >= 4 && n <= 10;
+  });
+  // Only when it is UNAMBIGUOUS. Two candidates and we would be guessing which one the
+  // code goes in, and a code typed into the wrong box is worse than asking him.
+  return short.length === 1 ? short[0] : null;
+}
+
+// Ask the bridge for the code belonging to THIS submit. `since` is the click.
+async function requestVerifyCode(since) {
+  const r = PANEL_REPORT || {};
+  try {
+    return await rpc({ type: "VERIFY_CODE", since: Math.floor(since / 1000),
+                       company: r.company || "", role: r.role || "", key: r.dedup_key || r.url || "" });
+  } catch (_) { return { ok: false, code: null, why: "bridge unreachable" }; }
+}
+
+// Fetch + fill, once. Returns true only if a code actually landed in a field, which is
+// the caller's signal that another submit pass is worth doing.
+async function autoFillVerifyCode(log, since, tried) {
+  const input = findVerifyInput();
+  if (!input) { log("couldn't find the code box on this page — enter it yourself", "warn"); return false; }
+  const res = await requestVerifyCode(since);
+  if (!res || !res.ok || !res.code) {
+    const why = (res && res.why) || "no code found";
+    // "not configured" is a setup problem and "no code yet" is a timing one. Saying which
+    // is the difference between him fixing it and him waiting for nothing.
+    log(`🔐 no code from your inbox (${why})`, "warn");
+    return false;
+  }
+  if (tried.has(res.code)) { log("🔐 same code came back — it isn't being accepted", "warn"); return false; }
+  tried.add(res.code);
+  setText(input, res.code);
+  // Never log the code itself: it is a live credential for this submit, and fill reports
+  // are written to disk and read back for debugging.
+  log(`🔐 filled the code from your inbox (${res.why})`, "ok");
+  return true;
 }
 
 // Click the submit button (trusted CDP click when the adapter needs it, else synthesized).
@@ -2221,6 +2295,13 @@ async function submitWithRetry(log) {
   const verifyBase = new Set(matchedVerifyPhrases());
   const MAX = 6;
   let ambiguous = 0; // consecutive passes where the click produced neither errors nor a confirmation
+  // The human action this whole submit hangs off. Captured HERE, before the first click,
+  // because it is what the bridge uses to decide which emailed code belongs to this
+  // submit — see autoFillVerifyCode and bridge/mailcode.py.
+  const submitStartedAt = Date.now();
+  const codesTried = new Set();
+  let codeAttempts = 0;
+  const MAX_CODE_ATTEMPTS = 2; // a code that fails twice is not going to start working
   for (let pass = 1; pass <= MAX; pass++) {
     if (PANEL_STOP) { log("stopped", "warn"); return "stopped"; }
     // A late confirmation from the previous pass's click may have landed while we waited.
@@ -2250,7 +2331,17 @@ async function submitWithRetry(log) {
       // Email human-verification gate (anti-bot): submit was accepted but the ATS now wants a
       // code from Parth's inbox. We don't solve it — surface it and leave the tab open.
       const ver = submitVerificationText(verifyBase);
-      if (ver) { log("🔐 Email verification needed — enter the code from your inbox in the browser, then submit.", "warn"); return "needs_verification"; }
+      if (ver) {
+        // He clicked Submit, so fetching the code finishes what he started. The mail
+        // takes a few seconds to arrive; one short wait beats reporting "no code yet".
+        if (codeAttempts < MAX_CODE_ATTEMPTS) {
+          codeAttempts++;
+          await sleep(3000);
+          if (await autoFillVerifyCode(log, submitStartedAt, codesTried)) break; // re-submit with it
+        }
+        log("🔐 Email verification needed — enter the code from your inbox in the browser, then submit.", "warn");
+        return "needs_verification";
+      }
       if (location.href !== urlBefore || confirmationVisible(adapter, confirmBase)) { log("✅ Submitted & confirmed", "ok"); return "confirmed"; }
       const now = readValidationErrors();
       if (now.length && now.sort().join("|") !== errsBefore) { errs = now; break; } // fresh error set
@@ -2260,7 +2351,15 @@ async function submitWithRetry(log) {
       const rej = submitRejectedText(rejectBase);
       if (rej) { log("❌ Rejected by the ATS (not a field problem): " + rej, "err"); return "rejected"; }
       const ver = submitVerificationText(verifyBase);
-      if (ver) { log("🔐 Email verification needed — enter the code from your inbox in the browser, then submit.", "warn"); return "needs_verification"; }
+      if (ver) {
+        if (codeAttempts < MAX_CODE_ATTEMPTS) {
+          codeAttempts++;
+          await sleep(3000);
+          if (await autoFillVerifyCode(log, submitStartedAt, codesTried)) continue; // re-submit with it
+        }
+        log("🔐 Email verification needed — enter the code from your inbox in the browser, then submit.", "warn");
+        return "needs_verification";
+      }
       if (location.href !== urlBefore || confirmationVisible(adapter, confirmBase)) { log("✅ Submitted", "ok"); return "confirmed"; }
       // If the whole form is gone, the submit almost certainly went through and we just
       // don't recognize the success screen's wording — don't click anything again.
@@ -2408,7 +2507,7 @@ function mountPanel() {
     </style>
     <div class="panel hidden">
       <div class="hd"><span>💼 Job Autofill</span><span class="x">✕</span></div>
-      <div class="btns"><button id="fill">▶ Fill</button><button id="submit">✓ Submit</button><button id="stop">⏹ Stop</button></div>
+      <div class="btns"><button id="fill">▶ Fill</button><button id="submit">✓ Submit</button><button id="code" title="Fetch the emailed verification code for this form">🔐 Code</button><button id="stop">⏹ Stop</button></div>
       <div class="alt"><button id="manual">✋ I submitted this by hand</button></div>
       <div class="qs"></div>
       <div class="opts"></div>
@@ -2683,6 +2782,22 @@ function mountPanel() {
     else if (res && res.queued) log("📌 Bridge is off — the record is parked and will log itself when it's back.", "ok");
     else log("Couldn't log it (bridge off?) — run apply_log.py so it isn't applied to twice.", "warn");
   }
+
+  // The explicit half of Parth's rule: a tap IS the human action, so this fetches even
+  // when no submit has been clicked in this tab — he may have submitted by hand, or
+  // reloaded onto a form that is already sitting at the code gate.
+  //
+  // The window opens at the tap and looks BACKWARDS a few minutes, because by the time he
+  // reaches for this button the mail has usually already arrived. That is the one place a
+  // window is not bounded by a click, which is why it is minutes and not hours.
+  $("#code").onclick = async () => {
+    setBusy(true);
+    try {
+      const since = Date.now() - 10 * 60 * 1000;
+      const ok = await autoFillVerifyCode(log, since, new Set());
+      if (ok) log("Check it looks right, then tap Submit.", "ok");
+    } finally { setBusy(false); }
+  };
 
   $("#submit").onclick = async () => {
     setBusy(true); PANEL_STOP = false;

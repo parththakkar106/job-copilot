@@ -106,9 +106,13 @@ as a validation probe: it renders inline errors and does not navigate.
 
 ## Things this deliberately does not do
 
-- **It does not solve email verification codes.** Some boards gate submission behind a
-  code sent to your inbox. That is an anti-bot control, and the extension detects it, parks
-  the application with a reason, and tells you — it does not read your mail.
+- **It does not fetch an email verification code on its own initiative.** Some boards gate
+  submission behind a code sent to your inbox. The extension will read that code out of
+  your mail and fill it — but only after *you* act: you clicked Submit, or you tapped the
+  panel's 🔐 button. Nothing polls your inbox, and the unattended queue never triggers a
+  fetch by itself. If no code can be found, the old behaviour stands: it parks the
+  application with a reason and tells you. See `bridge/mailcode.py` for the matching rules
+  (only mail that arrived after that click; never a code from an unrelated message).
 - **It does not submit unattended in panel mode**, and in queue mode it only submits what
   you explicitly approved, after re-checking the form still matches that approval.
 

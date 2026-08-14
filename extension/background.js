@@ -272,6 +272,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
   }
+  if (msg.type === "VERIFY_CODE") {
+    (async () => {
+      // A board is holding a submit behind a code mailed to Parth, and he has ALREADY
+      // acted — clicked Submit, or tapped the panel's code button. Relaying is all this
+      // does; the bridge owns the mailbox and the matching rules (bridge/mailcode.py).
+      //
+      // `since` is the moment of that click. It travels with the request because it is
+      // what makes the fetch safe: it binds the code to THIS submit, so a role submitted
+      // ten minutes later cannot be handed an earlier one's code. Never synthesize it
+      // here — a "now" invented at relay time would quietly widen the window.
+      try { sendResponse(await requestBridge({ type: "verify_code", since: msg.since,
+                                               company: msg.company || "", role: msg.role || "",
+                                               key: msg.key || "" })); }
+      catch (_) { sendResponse({ ok: false, code: null, why: "bridge unreachable" }); }
+    })();
+    return true; // async sendResponse
+  }
   if (msg.type === "BANK_TOUCH") {
     (async () => {
       try { await requestBridge({ type: "bank_touch", bank_id: msg.bankId }); } catch (_) {}
