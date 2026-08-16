@@ -77,7 +77,12 @@
     "major": "FILL_ME",
     "_major_alternates_note": "OPTIONAL fallbacks, tried in order when `major` is not offered. ATS field-of-study pickers are fixed vocabularies, not free text, and a perfectly ordinary major may simply be absent — Adobe's Workday list has 320 entries and no 'Computer Science'. Which substitute is TRUE is a claim about your degree, so it is read from here and never guessed. Leave empty and the field is surfaced for you, with the closest options the walker saw named in the report.",
     "major_alternates": [],
+    "_gpa_note": "If you studied on a non-4.0 scale, note that US forms ask for a 4.0 one — often as a fixed pick-list ('4.0 out of 4.0' … '3.4 out of 4.0') where a '10-point mark' matches nothing at all. Which 4.0-scale number is TRUE of your transcript is a claim about your degree, so it is read from here and never converted for you: put your own equivalent in `gpa` and add the other wordings under answer_alternates['education.gpa'].",
     "gpa": "FILL_ME",
+    "_gpa_graduate_note": "OPTIONAL. Answers the 'GPA (Graduate)' / 'GPA (Doctorate)' rows some forms ask unconditionally alongside the undergraduate one — SpaceX asks all three and marks each required. `gpa` above is the UNDERGRADUATE figure and must not be filled into these: that would claim a degree you do not hold. Set it to the not-applicable wording, or leave it out and those rows are surfaced for you.",
+    "gpa_graduate": "Not applicable",
+    "_standardized_tests_note": "OPTIONAL. SAT / ACT / GRE score pick-lists, which some US employers make required fields for new grads. Every such list carries a not-applicable row, but whether you sat the test is a fact about you, so it is read from here and never guessed. Leave it out and the fields are surfaced for you.",
+    "standardized_tests": "Not applicable",
     "graduation_date": "FILL_ME",
     "_start_date_note": "OPTIONAL. Workday's education block has a 'From' year alongside the graduation year, and nothing else in this profile can supply it — a course length is not a fact about you, so it is never inferred. Leave it out and that box stays empty for you to fill; set it (YYYY or YYYY-MM) and it is filled like any other field.",
     "start_date": ""
@@ -192,6 +197,15 @@
     "eeo.veteran_status": [
       "I am not a protected veteran",
       "I am not a veteran"
+    ],
+    "work_authorization.authorized_us": [
+      "I am authorized to work in the United States for any employer"
+    ],
+    "attestations.security_clearance": [
+      "Never held a clearance"
+    ],
+    "affiliations.previously_employed": [
+      "I have never worked"
     ],
     "preferences.locations": [
       "San Francisco",

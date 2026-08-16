@@ -92,6 +92,20 @@ buckets:
     # field's own text (Ashby does this — see the phone rule's `alternates`), the phone
     # rule catches it and falls back to this same value.
     - {pattern: 'consent to receiv\w*.{0,20}text|text message|\bsms\b', value_key: attestations.sms_consent}  # SentiLink
+    # Standardized admissions tests, asked as required pick-lists of score bands plus a
+    # "Not applicable/Do not recall" row. Anyone schooled outside the US track, or who
+    # simply never sat one, wants that row — and whether you sat a test is a fact about
+    # YOU, so it reads from its own profile key and is never assumed here rather
+    # than being left to fall through. "score" must follow within a few characters: bare
+    # \bact\b is an ordinary English verb and would otherwise capture half the form.
+    - {pattern: '\b(sat|act|gre|gmat|lsat|mcat|toefl|ielts)\b[^?]{0,12}scores?\b|standardized test', value_key: education.standardized_tests}  # SpaceX
+    # "SpaceX & SpaceXAI Employment History" is the have-you-worked-here disclosure wearing
+    # a noun-phrase label: no verb at all, so the "have you ever worked for…" rule above
+    # cannot see it. Guarded to a LIST of company names ("X & Y Employment History") so a
+    # plain "Employment History" textarea — which wants a résumé, not "No" — never matches;
+    # a per-company override would have been tighter, but overrides key on an exact company
+    # string and the reports spell this one both "SpaceX" and "Spacex".
+    - {pattern: '\S+\s*(&|and|/|,)\s*\S+\s+employment history', value_key: affiliations.previously_employed}  # SpaceX
     # ── end observed phrasings ───────────────────────────────────────────────────
 
     - {pattern: '\bfirst name\b',                                   value_key: identity.first_name}
@@ -118,6 +132,39 @@ buckets:
     # portfolio, rather than escalating to Telegram on every form that asks for it.
     - {pattern: '\btwitter\b|\bx handle\b|x \(formerly twitter\)',   value_key: links.twitter}
     - {pattern: 'street address|address line|mailing address',     value_key: identity.address.line1}
+    # RELOCATION AND ONSITE QUESTIONS MUST BEAT THE ADDRESS RULES BELOW.
+    #
+    # A relocation question names the office it is asking you to move to, and offices sit in
+    # cities: "If not currently in the Bay Area, are you willing to relocate near our Foster
+    # City, CA Office?" contains the word "City", so the \bcity\b rule below claimed it and
+    # answered a Yes/No group with the applicant's OWN home city. Flagged on every Replit
+    # run (logs/fill_reports.jsonl 2026-07-23, 2026-08-05), and it is not a Replit quirk:
+    # Foster City, Redwood City, Culver City, Kansas City, Salt Lake City, Jersey City and
+    # New York City all put a city name inside the question. The fix is precedence, not one
+    # more pattern — these rules used to live further down, below the whole address block.
+    #
+    # Relocation ASSISTANCE (money/support) is a different question from willingness to
+    # relocate — Parth's decision (2026-07-12): answer No. Must stay directly above the
+    # broad relocation rule, which would otherwise answer Yes.
+    - {pattern: 'relocation (assistance|package|support|bonus|benefit)|assist\w*.{0,20}relocat', value_key: preferences.relocation_assistance_needed}
+    - {pattern: 'willing to relocate|open to relocation|able to relocate|relocat',           value_key: work_authorization.relocation}
+    # The onsite half of the same trap, from the same two Replit runs: "Are you able to work
+    # from our Foster City, CA HQ 3 days per week?" got the home city too. Fixing precedence
+    # alone would not have saved it — the in-office acknowledgment rule further down keys on
+    # "onsite"/"acknowledge"/"come into the office", and this phrasing says none of them, so
+    # the question would merely have fallen through to Claude instead. Anchored on working
+    # FROM a named office/HQ, which is a commitment question and always Yes/No.
+    #
+    # THE LEADING GUARD IS LOAD-BEARING. Some boards fold "do you already live here?" into
+    # the same sentence — Harvey asks "…expected to work from the office 3 days per week …
+    # Are you CURRENTLY BASED in the listed location and able to work in person 3 days per
+    # week?" over the options "Yes, I'm based in this location…" / "No, I'm not based in
+    # this location but willing to relocate" / "No, I'm only able to work remotely". A bare
+    # Yes there is a false statement about where the applicant lives, and it would
+    # win, because "Yes" whole-word-matches the first option before matchOption's
+    # relocation branch ever runs. Willingness is not residency: when a question asks about
+    # both, this rule steps aside and the field is surfaced instead of answered.
+    - {pattern: '^(?!.*\b(currently|presently)\s+(based|located|living|residing)\b).*((able|willing|open|available|comfortable) to work (from|out of|at)\b[^?]{0,60}(office|hq|headquarters)|work (from|out of|at) (our|the)\b[^?]{0,45}(office|hq|headquarters))', value_key: attestations.in_office_acknowledgment}
     # Combined "City, State" / "City and State" fields need the full display string, and
     # "Preferred City" is a work-location preference, not the home address — both MUST sit
     # above the bare \bcity\b rule or it captures them and fills just the city name.
@@ -179,11 +226,9 @@ buckets:
     - {pattern: 'what is your citizenship|citizenship status|^citizenship\s*[?:*]?\s*$', value_key: work_authorization.status}
     - {pattern: '\bcitizen(ship)?\b', value_key: work_authorization.us_citizen}
     - {pattern: 'authorized to work|legally authorized|work authorization|eligible to work', value_key: work_authorization.authorized_us}
-    # Relocation ASSISTANCE (money/support) is a different question from willingness to
-    # relocate — Parth's decision (2026-07-12): answer No. Must sit above the broad
-    # relocation rule below, which would otherwise answer Yes.
-    - {pattern: 'relocation (assistance|package|support|bonus|benefit)|assist\w*.{0,20}relocat', value_key: preferences.relocation_assistance_needed}
-    - {pattern: 'willing to relocate|open to relocation|able to relocate|relocat',           value_key: work_authorization.relocation}
+    # (Both relocation rules moved up above the address block — see the note there. They
+    # have to outrank \bcity\b, which was answering "are you willing to relocate near our
+    # Foster City office?" with Parth's home city.)
     # EEO / voluntary self-identification — autofilled from profile.eeo (Parth's chosen answers)
     # `alternates`: "What gender pronouns do you prefer?" contains "gender", so this rule
     # beats the pronoun rule below and offered "Male" against He/Him | She/Her | Them/They
@@ -248,6 +293,12 @@ buckets:
     # achievement" and "disciplined by a regulatory authority" (a standard disclosure at
     # fintech/quant firms) and typed "Computer Science" into them.
     - {pattern: '(academic )?major\s*[?:*]?\s*$|what (is|was) your.{0,15}major|major (of|in) |field of study|course of study|area of study|\bconcentration\b|academic discipline|\bdiscipline\s*[?:*]?\s*$', value_key: education.major}
+    # Some forms ask for every GPA unconditionally — SpaceX asks Undergraduate, Graduate and
+    # Doctorate as three required pick-lists. education.gpa holds the UNDERGRADUATE figure,
+    # so letting the bare rule below answer the other two would assert degrees Parth does
+    # not hold. Route them to the not-applicable row instead. \b before "graduate" is what
+    # keeps this off "Undergraduate GPA", which the general rule must still get.
+    - {pattern: '\bgpa\b[^?]{0,12}\((graduate|grad|masters?|doctorate|doctoral|phd)\)|\b(graduate|masters?|doctorate|doctoral|phd)\b[^?]{0,12}\bgpa\b', value_key: education.gpa_graduate}
     - {pattern: '\bgpa\b|cgpa|grade point', value_key: education.gpa}
     - {pattern: 'graduat\w* (date|year|in)|year of graduation|(expected|anticipated) graduation|completion date|when did you graduate', value_key: education.graduation_date}
     # Preferences (referral source lives at the top of this bucket — see note there)
