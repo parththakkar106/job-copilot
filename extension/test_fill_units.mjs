@@ -321,6 +321,35 @@ ok(new Set(searchCandidates("MIT")).size === searchCandidates("MIT").length,
     const live = makeLiveField(mkDoc([stale, fresh]), labelOfNode);
     ok(live(stale, {}) === fresh, "a detached field is re-found by id");
   }
+  // THE RE-KEY: Greenhouse does not re-fill a repeating row, it renumbers it — after the
+  // resume parses there is no school--0 at all and the same visible box is school--1. The id
+  // lookup above therefore finds nothing, and school--0/degree--0 were reported "no longer on
+  // the page" while sitting filled-in and visible. liveControl already knew this trick; this
+  // gate runs first, so it has to know it too.
+  {
+    const stale = el({ id: "school--0", isConnected: false });
+    const rekeyed = el({ id: "school--1" });
+    const live = makeLiveField(mkDoc([stale, rekeyed]), labelOfNode);
+    ok(live(stale, {}) === rekeyed, "a re-keyed repeating row is re-found by its id stem");
+  }
+  // The stem must not cross control kinds either — same reasoning as the label tier below.
+  {
+    const stale = el({ id: "degree--0", isConnected: false });
+    const wrongKind = el({ tagName: "SELECT", type: "select-one", id: "degree--1" });
+    const right = el({ id: "degree--2" });
+    const live = makeLiveField(mkDoc([stale, wrongKind, right]), labelOfNode);
+    ok(live(stale, {}) === right, "the id stem requires a matching tag AND type");
+  }
+  // AND IT MUST NEVER TOUCH AN OPTION GROUP. Radio ids carry the same `--N` suffix for the
+  // OPTION index, so a stem match would turn "I lost this field" into a confidently ticked
+  // wrong answer — the one outcome worse than a miss.
+  {
+    const stale = el({ type: "radio", id: "q7--2", name: "q7", value: "C", isConnected: false });
+    const a = el({ type: "radio", id: "q7--0", name: "q7", value: "A" });
+    const b = el({ type: "radio", id: "q7--1", name: "q7", value: "B" });
+    const live = makeLiveField(mkDoc([a, b]), labelOfNode);
+    ok(live(stale, {}) === null, "the id stem is never applied to a radio group's option ids");
+  }
   // A radio must resolve to ITSELF, not whichever sibling shares its name.
   {
     const stale = el({ type: "radio", name: "consent", value: "No", isConnected: false });

@@ -468,6 +468,26 @@ function liveField(el, adapter) {
     const byId = document.getElementById(el.id);
     if (byId) return byId;
   }
+  // THE ID STEM — Greenhouse re-keys a repeating row rather than re-filling it, so once the
+  // resume parses `school--0` does not exist any more and the same visible box is now
+  // `school--1`. liveControl has recovered from this for a while (see its note), but that is
+  // not enough on its own: applyValue calls liveField as its FIRST gate and returns
+  // "no longer on the page" before pickReactSelect — and therefore liveControl — is ever
+  // reached. school--0 and degree--0 were abandoned on every SpaceX run while sitting in
+  // plain view on the page, filled in by the resume parser and never checked.
+  //
+  // DELIBERATELY NOT FOR RADIOS AND CHECKBOXES: an option group uses the very same `--N`
+  // suffix for the OPTION index, so a stem match there resolves "no longer on the page" into
+  // a confidently ticked WRONG ANSWER. Those keep the name+value path below, which is built
+  // to tell siblings apart, and losing a field stays better than mis-answering one.
+  const type = (el.type || "").toLowerCase();
+  const stem = el.id && el.id.includes("--") ? el.id.slice(0, el.id.indexOf("--")) : "";
+  if (stem && type !== "radio" && type !== "checkbox") {
+    for (const c of document.querySelectorAll("input, select, textarea")) {
+      if (c.tagName !== el.tagName || (c.type || "").toLowerCase() !== type) continue;
+      if (c.id && c.id.startsWith(stem + "--")) return c;
+    }
+  }
   if (el.name) {
     const named = [...document.getElementsByName(el.name)];
     const byValue = named.find(c => c.value === el.value);
@@ -483,7 +503,7 @@ function liveField(el, adapter) {
   // require the same tag and type too, or a phone number could land on a consent radio.
   const want = norm(labelFor(el) || "");
   if (want) {
-    const tag = el.tagName, type = (el.type || "").toLowerCase();
+    const tag = el.tagName;                        // `type` is computed for the stem pass above
     for (const c of document.querySelectorAll("input, select, textarea")) {
       if (c.tagName !== tag || (c.type || "").toLowerCase() !== type) continue;
       if (norm(labelFor(c) || "") === want) return c;
