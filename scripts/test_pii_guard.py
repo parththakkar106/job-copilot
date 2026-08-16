@@ -36,7 +36,11 @@ FAKE = {
 
 
 def hits(patterns, line: str) -> list[str]:
-    return [lbl for _, lbl in G.scan([("f.py", 1, line)], patterns)] or []
+    """Findings for one line against a GIVEN pattern set — `flags` only knows the default
+    one, and some rules are about how a pattern set is DERIVED from a differing profile.
+    (This unpacked scan() as 2-tuples, which it has never returned; nothing called it, so
+    the mistake sat here until something did.)"""
+    return G.scan([("f.py", 1, line)], patterns)
 
 
 def main() -> int:
@@ -185,6 +189,25 @@ def main() -> int:
     ):
         assert not flags(line), why
         checks += 1
+
+    # --- a GPA is hunted only when its WRITTEN FORM is distinctive ----------------------
+    # On a 4.0 scale a GPA is a bare number: shared by millions, and a substring of things
+    # every repo already contains. Hunting it reported an npm version range and a CSS
+    # line-height and found no leak, which is how a guard teaches people to ignore it.
+    bare = dict(FAKE, education=dict(FAKE["education"], gpa="3.9"))
+    Pb = G.derive_patterns(bare)
+    for line, why in (
+        ('"resolve": "^3.9.0"', "an npm version range is not a GPA"),
+        ("  line-height: 3.9;", "a CSS length is not a GPA"),
+        ("gpa: 3.9", "even a real bare GPA is too generic to be worth the false positives"),
+    ):
+        assert not hits(Pb, line), why
+        checks += 1
+    # A scaled mark carries its own denominator, is nobody's version number, and stays hunted.
+    scaled = dict(FAKE, education=dict(FAKE["education"], gpa="9.1/10"))
+    assert hits(G.derive_patterns(scaled), "// worked example: a 9.1/10 transcript"), \
+        "a scaled GPA is distinctive enough to hunt"
+    checks += 1
 
     # --- the same rule for the home state: a lookup table is not a disclosure -----------
     # This is why core/scraper.py can carry all 50 states without blocking every future

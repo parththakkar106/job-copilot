@@ -316,7 +316,15 @@ def derive_patterns(profile: dict) -> list[tuple[str, str]]:
     # are shared by millions and identify nobody, so hunting them is pure noise. The exact
     # credential string is the distinctive part.
     _add_ci(pats, val("education", "degree"), "your degree")
-    _add_ci(pats, val("education", "gpa"), "your GPA")
+    # A GPA is only worth hunting when its WRITTEN FORM is distinctive. On a 4.0 scale it is
+    # a bare number shared by millions, and belongs with the degree level and the major
+    # above: it identifies nobody. Worse, as a substring it is everywhere a repo already is —
+    # npm version ranges in a lockfile, a line-height in a stylesheet — so hunting it reports
+    # those and no actual leaks. A scaled form (a value carrying its own denominator) is
+    # nobody's version number and stays hunted.
+    gpa = val("education", "gpa")
+    if gpa and not re.fullmatch(r"\d+(?:\.\d+)?", gpa):
+        _add_ci(pats, gpa, "your GPA")
 
     # --- employer and school, whole and in distinctive pieces
     for keys, label in ((("employment", "current_employer"), "your employer"),
