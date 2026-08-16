@@ -54,7 +54,7 @@ function extractConst(name) {
 // than a real one — enough to pin the matching ORDER and the detached-node rule, which is
 // the part that broke (a detached control clicks at 0,0 and fails as "no options").
 const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,
-        isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer,
+        isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer, sharesDistinctiveWord, cleanText, shouldSearchList, LIST_LOOKS_TRUNCATED,
         makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative, splitMonthYear, eduDateField,
         answerCandidates, matchFirstCandidate, matchOption } =
   new Function(
@@ -65,6 +65,8 @@ const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, make
   `${extract("splitMonthYear")}\n${extract("eduDateField")}\n` +
   `${extractConsts()}\n${extract("askId")}\n${extract("diffApproved")}\n` +
   `${extractConst("searchable")}\n${extractConst("GENERIC_SEARCH_WORD")}\n${extract("searchCandidates")}\n` +
+  `${extractConst("cleanText")}\n${extract("sharesDistinctiveWord")}\n` +
+  `${extractConst("LIST_LOOKS_TRUNCATED")}\n${extract("shouldSearchList")}\n` +
   `${extractConst("OTHER_OK_FIELD")}\n${extractConst("otherOption")}\n` +
   `${extract("isPickList")}\n` +
   `${extractConst("DEGREE_FIELD")}\n${extractConst("DEGREE_LEVELS")}\n` +
@@ -74,7 +76,7 @@ const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, make
   `const makeCurrentValue = (cleanText, optionText) => { ${extract("currentValue")} return currentValue; };\n` +
   `const makePageCompany = (location, document) => { ${extract("pageCompany")} return pageCompany; };\n` +
   `return { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,` +
-  ` isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer,` +
+  ` isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer, sharesDistinctiveWord, cleanText, shouldSearchList, LIST_LOOKS_TRUNCATED,` +
   ` makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative, splitMonthYear, eduDateField,` +
   ` answerCandidates, matchFirstCandidate, matchOption };`)();
 
@@ -291,6 +293,78 @@ ok(!searchCandidates("Ashford Institute of Technology and Science (AITS), Norhav
 ok(searchCandidates("").length === 0, "an empty value yields no queries rather than typing junk");
 ok(new Set(searchCandidates("MIT")).size === searchCandidates("MIT").length,
    "a one-word value must not produce duplicate queries");
+
+// --- cleanText takes an ELEMENT ------------------------------------------------------
+// The bug that made every other bug invisible: pickReactSelect called
+// `cleanText(hit.textContent)`, passing a STRING whose own .textContent is undefined, so the
+// chosen row's text was "" on every pick ever made. The report then fell back to printing
+// what we ASKED for, which is why a wrong pick could never show up in a fill report — and a
+// later guard that reasoned about the chosen row's text was silently inert from birth.
+{
+  ok(cleanText({ textContent: " Air Force  Institute\nof Technology " }) === "Air Force Institute of Technology",
+     "cleanText reads an element's textContent and squeezes whitespace");
+  ok(cleanText("Air Force Institute of Technology") === "",
+     "cleanText given a STRING yields '' — the shape of the original bug");
+  ok(cleanText(null) === "" && cleanText(undefined) === "", "cleanText tolerates nothing");
+  // The unit checks above describe the hazard but cannot guard the CALL SITES: the typo
+  // lived in pickReactSelect, which drives CDP and a live menu and so has no unit test to
+  // fail. A source assertion does the job the type system would in another language — and
+  // it is what actually catches the regression, verified by reintroducing the typo.
+  const misuse = src.match(/cleanText\([A-Za-z_$][\w$]*\.textContent\)/g);
+  ok(misuse === null,
+     `cleanText() takes an element, never a string: ${JSON.stringify(misuse)}`);
+}
+
+// --- shouldSearchList: don't pay for a search you have no reason to run ---------------
+// Making a miss on the rendered list trigger the query ladder fixed the school field, but
+// charged every OTHER dropdown four server round-trips for nothing: a three-option Gender
+// list was fully on screen, so no amount of typing can produce a fourth option.
+{
+  ok(shouldSearchList(0, false) === true,
+     "an empty menu can only be populated by typing — the original condition");
+  ok(shouldSearchList(3, true) === true,
+     "an education list is the server-side kind however few rows it opens with");
+  ok(shouldSearchList(3, false) === false,
+     "a three-option enum was read in full: a miss there is a real miss, not a search problem");
+  ok(shouldSearchList(LIST_LOOKS_TRUNCATED, false) === true,
+     "a full page of rows is almost certainly one page of something longer");
+  ok(shouldSearchList(LIST_LOOKS_TRUNCATED - 1, false) === false,
+     "just under the line still reads as a complete list");
+  // The school case that started this, stated as the rule it now follows: the default page
+  // was a handful of rows out of thousands, so row COUNT alone would have said "complete".
+  ok(shouldSearchList(3, true) === true && shouldSearchList(3, false) === false,
+     "education is what rescues a short-but-truncated list, not the count");
+}
+
+// --- sharesDistinctiveWord: a search list's rows are strangers, not synonyms ----------
+// Institution names are mostly shared vocabulary, and matchOption's last tier scores shared
+// tokens — so a broadened query returned a list where "Air Force Institute of Technology"
+// out-scored everything against an unrelated school on "institute of technology" alone.
+{
+  const REAL = "Ashford Institute of Technology and Science, Norhaven";
+  ok(sharesDistinctiveWord(REAL, "Air Force Institute of Technology") === false,
+     "two schools sharing only 'institute of technology' are not the same school");
+  ok(sharesDistinctiveWord(REAL, "Rochester Institute of Technology") === false,
+     "nor when the other is a real, famous institute of technology");
+  ok(sharesDistinctiveWord(REAL, REAL) === true,
+     "the exact same name shares a distinctive word");
+  ok(sharesDistinctiveWord(REAL, "Ashford Institute of Technology & Science") === true,
+     "a shortened form of the SAME school still shares 'ashford'");
+  ok(sharesDistinctiveWord("Harvard University", "Yale University") === false,
+     "sharing only 'university' is not sharing a school");
+  // THE WIRING THAT FAILED LAST TIME: the guard is called with cleanText(hit). Passing the
+  // string form yields "", and "" has no distinctive words, so the guard returns "don't
+  // veto" and is inert. Pin both halves so the typo cannot come back unnoticed.
+  ok(sharesDistinctiveWord(REAL, cleanText({ textContent: "Air Force Institute of Technology" })) === false,
+     "called the CORRECT way (element) the guard vetoes the stranger");
+  ok(sharesDistinctiveWord(REAL, cleanText("Air Force Institute of Technology")) === true,
+     "called the OLD broken way (string) it is inert — this is what the bug looked like");
+  // Nothing distinctive on either side means nothing to disagree about, so no veto.
+  ok(sharesDistinctiveWord("Institute of Technology", "University of Science") === true,
+     "two all-generic names cannot be told apart, so they are never vetoed");
+  ok(sharesDistinctiveWord("Computer Science", "Computer Science and Engineering") === true,
+     "a discipline still matches a longer discipline containing it");
+}
 
 // --- liveField / currentValue: the cure for the green tick over an empty field --------
 // THE BUG: runFill captures a node per unresolved question, then waits — for a panel tap

@@ -223,6 +223,42 @@ function searchCandidates(value) {
 // school field fails on every board forever. "Other"/"not listed" is the list's own escape
 // hatch for exactly that. Gate it hard: on a location or an EEO dropdown "Other" is a WRONG
 // answer, not a fallback, so only education fields get it.
+// Do two institution names mean the SAME PLACE, or do they merely speak the same language?
+// Strip the words every school shares — the very list the query ladder above already treats
+// as uninformative — and see whether anything distinctive survives on both sides. "Ashford
+// Institute of Technology and Science, Norhaven" keeps {ashford, norhaven}; "Air Force
+// Institute of Technology" keeps {air, force}; they overlap in nothing, and are not the same
+// school however much of their name they have in common.
+//
+// Returns TRUE when either side has no distinctive word left (a bare "Other", a one-word
+// discipline): there is nothing to disagree about, so this must not veto those.
+function sharesDistinctiveWord(a, b) {
+  const words = (s) => new Set(String(s == null ? "" : s).toLowerCase()
+    .split(/[^a-z0-9&]+/).filter(w => w.length > 2 && !GENERIC_SEARCH_WORD.test(w)));
+  const wa = words(a), wbb = words(b);
+  if (!wa.size || !wbb.size) return true;
+  for (const w of wa) if (wbb.has(w)) return true;
+  return false;
+}
+
+// A menu this long is almost certainly one page of something longer; anything shorter is
+// plausibly the entire list. Not a precise fact about any ATS — a deliberately generous
+// line, because the cost of guessing "truncated" wrongly is a few seconds of typing, while
+// guessing "complete" wrongly is answering from a list that never contained the answer.
+const LIST_LOOKS_TRUNCATED = 25;
+
+// Having failed to find the answer among the rows on screen, is it worth typing to look for
+// more — or have we already seen the whole list, making this miss a real one?
+//
+// Typing costs a query round-trip apiece and there are several in the ladder, so this must
+// stay false for the ordinary short enum (Gender, a Yes/No, a handful of degree levels)
+// whose every option was already rendered and already considered.
+function shouldSearchList(renderedCount, isEducationField) {
+  if (!renderedCount) return true;          // nothing shown: only a query can populate it
+  if (isEducationField) return true;        // school/college lists ARE the server-side kind
+  return renderedCount >= LIST_LOOKS_TRUNCATED;
+}
+
 const OTHER_OK_FIELD = /\b(school|university|college|institution|discipline|major|field[_ ]of[_ ]study|degree)\b/i;
 const isOtherable = (el) => !!el && OTHER_OK_FIELD.test([el.id, el.name, labelFor(el)].filter(Boolean).join(" "));
 // "Other", "Other (please specify)", "My school is not listed". Anchored so it can't grab
@@ -613,7 +649,15 @@ async function pickReactSelect(control, value, dd, field) {
     const typed = await rpc({ type: "CDP_TYPE", text: q });
     if (!typed || !typed.ok) return [];
     let o = [];
-    for (let i = 0; i < 30 && !o.length; i++) { await sleep(70); o = readOpts(); }
+    for (let i = 0; i < 30 && !o.length; i++) {
+      await sleep(70);
+      o = readOpts();
+      // react-select answers an empty search with a NOTICE where the rows would be, so once
+      // that notice says "no options" the remaining ticks can only re-read the same nothing —
+      // two seconds per query, four queries per field, on every miss. Wait out the loading
+      // notice (same element, different modifier) but stop on a definite no.
+      if (!o.length && document.querySelector(dd.noResults || ".select__menu-notice--no-options")) break;
+    }
     return o;
   };
   // Clear the search box so the NEXT query isn't appended to the failed one (insertText
@@ -658,22 +702,59 @@ async function pickReactSelect(control, value, dd, field) {
   // distinctive word finds the entry.
   const canType = !!control.querySelector("input");
   const tried = [];
-  if (!opts.length && canType) {
+  // Choosing a row from whatever list is currently rendered, with the school guard applied.
+  const pick = () => {
+    let h = opts.length ? matchOption(opts, value) : null;
+    // A SEARCH LIST'S ROWS ARE STRANGERS, NOT SYNONYMS. matchOption's last tier scores SHARED
+    // TOKENS, and institution names are mostly shared vocabulary, so a list that does not
+    // contain your school will still happily offer one that agrees on "institute of
+    // technology" — which is how "Air Force Institute of Technology" got committed as a real
+    // answer on a real application. On fields carrying long institutional names, the pick
+    // must agree on something that actually identifies the place.
+    if (h && isOtherable(field) && !sharesDistinctiveWord(value, cleanText(h))) h = null;
+    return h;
+  };
+  let hit = pick();
+  // THE LIST A SEARCH BOX SHOWS BEFORE YOU TYPE IS A SUGGESTION, NOT A SEARCH RESULT.
+  // The ladder used to run only when the menu opened EMPTY (`!opts.length`), so a picker
+  // that greets you with a default page of rows was answered from that page and never
+  // searched at all. That is the whole story of the school field: the real entry is only
+  // reachable by typing, we never typed, and the closest generic-sounding row on the default
+  // page won instead. So a miss on the rendered list can no longer end the attempt.
+  //
+  // BUT TYPING IS NOT FREE — four queries against a slow server-side search cost seconds,
+  // and spending them on "Gender" is pure waste: its three options were all on screen, so no
+  // amount of typing will produce a fourth. Only search a list we have reason to believe we
+  // are seeing just part of:
+  //
+  //   • it rendered nothing at all      — the original condition; places autocompletes
+  //                                       (Location (City)) open empty and only ever
+  //                                       populate from a query
+  //   • it is an education field        — school/college/degree/discipline lists are the
+  //                                       canonical server-side ones, and the case we
+  //                                       actually proved: the default page is a handful of
+  //                                       rows out of thousands
+  //   • it rendered a full page of rows — a short list is the whole list, but a list this
+  //                                       long is almost certainly truncated, so what we
+  //                                       want may simply be further down than it will draw
+  //
+  // Anything else is a small, complete list that we have already read in full: if the answer
+  // were there, matchOption would have found it, and a miss is a real miss worth reporting
+  // immediately rather than after four fruitless searches.
+  if (!hit && canType && shouldSearchList(opts.length, isOtherable(field))) {
     for (const q of searchCandidates(value)) {
       tried.push(q);
       opts = await searchFor(q);
-      if (opts.length) break;
+      if (opts.length) { const h = pick(); if (h) { hit = h; break; } }
       if (!await clearTyped()) break;
     }
   }
-
-  let hit = opts.length ? matchOption(opts, value) : null;
   let chose = "";
   // Nothing matched anywhere — either the search never returned rows or the rows don't
   // include this value. For a school/degree field that means the list genuinely doesn't
   // carry it, which is what its "Other" row is for. Filling Other beats failing a required
   // field on every board; anywhere else we still fail loudly rather than answer wrongly.
-  let otherTried = false;
+  let otherTried = false, usedOther = false;
   if (!hit && canType && isOtherable(field)) {
     // Clear by backspaces; if that somehow leaves text behind, close+reopen the menu, which
     // resets react-select's search box. Don't let a failed clear silently skip the fallback —
@@ -689,7 +770,7 @@ async function pickReactSelect(control, value, dd, field) {
     if (clean) {
       otherTried = true;
       const other = otherOption(await searchFor("Other"));
-      if (other) { hit = other; chose = cleanText(other.textContent) || "Other"; }
+      if (other) { hit = other; chose = cleanText(other) || "Other"; usedOther = true; }
     }
   }
   if (!hit) {
@@ -703,13 +784,20 @@ async function pickReactSelect(control, value, dd, field) {
       ? `no option matched "${value}" (options: ${opts.slice(0, 8).map(o => o.textContent.trim()).join(" | ")})`
       : `this list has nothing for "${value}"${searched}${otherNote} ${state}` };
   }
+  // cleanText takes an ELEMENT. Every call here passed `hit.textContent` — a string, whose
+  // own .textContent is undefined — so this yielded "" on every pick this file has ever
+  // made, and the value below silently fell back to what we ASKED for. That is why the
+  // reports could never show a wrong pick: they were structurally incapable of it, printing
+  // the intended answer whatever landed on the page. It also silently disarmed anything
+  // downstream that reasoned about the chosen row's text.
+  //
   // The option's own text, whatever path selected it. matchOption deliberately accepts
   // near-misses (whole-word and token-overlap tiers), so the row that commits is routinely
   // worded differently from what we asked for — "Bachelor" selects "Bachelor's Degree",
   // "No" selects "I am not a protected veteran". Recording the ASKED value there was a
   // latent flush bug: phase 1 stored our wording, phase 3 re-read the form's wording, and
   // diffApproved saw drift on a field nobody had touched.
-  chose = chose || cleanText(hit.textContent) || "";
+  chose = chose || cleanText(hit) || "";
   bringIntoView(hit);
   await sleep(50);
   res = await rpc({ type: "CDP_CLICK", ...centerOf(hit) });
@@ -720,7 +808,14 @@ async function pickReactSelect(control, value, dd, field) {
   // Multi-select keeps its menu open after a pick; close it so it doesn't cover the next
   // field (single-select closes itself). A second click on the control toggles it shut.
   if (ok && document.querySelector(dd.menu || ".select__menu")) { await rpc({ type: "CDP_CLICK", ...centerOf(control) }); await sleep(40); }
-  return { ok, value: chose || undefined, why: ok ? "" : "clicked option but value did not commit" };
+  // Falling back to "Other" is a real answer, but it is also a claim that this list does not
+  // carry the value — and that claim is only checkable if the report says which queries were
+  // asked. Without it, an "Other" that came from a search bug and an "Other" that came from a
+  // genuinely missing entry read identically.
+  const why = ok
+    ? (usedOther ? `used "Other" — searched ${tried.map(q => `"${q}"`).join(", ") || "(nothing typed)"}` : "")
+    : "clicked option but value did not commit";
+  return { ok, value: chose || undefined, why };
 }
 
 // ── combobox typeahead (Ashby, synthesized events) ────────────────────────────
@@ -760,12 +855,15 @@ async function pickComboboxTypeahead(el, value, dd) {
   }
 
   let hit = opts.length ? matchOption(opts, value) : null;
+  // Same guard as the react-select picker — this typeahead searches the same kind of long
+  // institution list and is open to the same shared-vocabulary mismatch.
+  if (hit && isOtherable(el) && !sharesDistinctiveWord(value, cleanText(hit))) hit = null;
   let chose = "";
   // Same escape hatch as the react-select path: a school this list doesn't carry is what its
   // "Other" row exists for. Education fields only — see isOtherable.
   if (!hit && isOtherable(el)) {
     const other = otherOption(await searchFor("Other"));
-    if (other) { hit = other; chose = cleanText(other.textContent) || "Other"; }
+    if (other) { hit = other; chose = cleanText(other) || "Other"; }
   }
   if (!hit) {
     el.blur();
@@ -774,7 +872,7 @@ async function pickComboboxTypeahead(el, value, dd) {
       : "combobox opened but no options rendered" };
   }
   // Report the option's own wording, not ours — same reason as the react-select path.
-  chose = chose || cleanText(hit.textContent) || "";
+  chose = chose || cleanText(hit) || "";
   bringIntoView(hit);
   hit.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   hit.dispatchEvent(new MouseEvent("click", { bubbles: true }));

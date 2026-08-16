@@ -44,6 +44,9 @@ export const GREENHOUSE = {
     option: ".select__option",
     menu: ".select__menu",
     committed: ".select__single-value, .select__multi-value",
+    // Rendered INSTEAD of rows when a search comes back empty. Its loading sibling
+    // (--loading) deliberately isn't matched: that one means "wait", this one means "stop".
+    noResults: ".select__menu-notice--no-options",
   },
 
   // Only run the adapter on pages we recognize as a Greenhouse application form.
