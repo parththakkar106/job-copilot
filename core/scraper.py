@@ -747,6 +747,16 @@ def run(args):
     if applied_path.exists():
         applied = {e if isinstance(e, str) else e.get("dedup_key")
                    for e in json.loads(applied_path.read_text(encoding="utf-8"))}
+    else:
+        # An absent ledger is NOT a harmless default — it silently disables the dedup below,
+        # so every role already applied to comes straight back into the queue. This hid for
+        # weeks: the daily Action runs on a fresh checkout of JOBCOPILOT_HOME, applied.json
+        # was gitignored there, and so `applied` was empty every morning while the run went
+        # green. Measured when it was found: 8 of 20 queued roles were already applied to.
+        # Same spirit as the workflow's companies.yaml guard — a missing input says so.
+        print(f"  ! {applied_path} not found — NOTHING will be filtered as already-applied. "
+              f"If this is CI, the file is not committed to JOBCOPILOT_HOME.",
+              file=sys.stderr)
 
     all_jobs: list[Job] = []
     for c in companies:
