@@ -35,21 +35,53 @@ function Log($msg) { Write-Host "[$(Get-Date -Format HH:mm:ss)] $msg" }
 $dataHome = $env:JOBCOPILOT_HOME
 if (-not $dataHome) { $dataHome = $repo }
 
-# --- 1. Refresh today's queue (best-effort; the bridge warns if it's stale anyway) ------
-# Narrow + non-destructive: fetch origin and check out ONLY the scraper outputs, so local
-# commits and working changes are never touched. A local clone diverges from origin every
-# run (Actions force-commits out/* back), which is exactly why a full `git pull` is unsafe
-# here - see the project notes. Run against the DATA repo, which is what the Action commits
-# the queue back to.
+# --- 1. Sync with origin, publish applied.json, refresh today's queue -------------------
+# Three things against the DATA repo, which is what the Action commits the queue back to.
+# All best-effort: a missed sync costs one day of freshness, a thrown error costs the whole
+# collection run, so every step here logs and swallows.
+#
+# THIS MACHINE IS THE ONLY PLACE applied.json EXISTS. The Action runs on a fresh checkout,
+# so the ledger reaches tomorrow's scrape only if it is pushed today. It was gitignored
+# until 2026-08-18, which made scraper.py's already-applied filter a no-op in CI: `applied`
+# was an empty set every morning and 8 of the 20 queued roles (measured) were ones already
+# applied to. Publishing it here is the half of that fix which cannot live in the repo.
 try {
     Push-Location $dataHome
     git fetch --quiet origin main 2>&1 | Out-Null
+
+    # Fast-forward rather than cherry-picking one file. The Action force-commits out/* every
+    # morning, so this clone is permanently behind origin - which meant the checkout below
+    # left out/queue.json staged indefinitely, and a staged file blocks the rebase the push
+    # needs. --ff-only is the safe form: with local commits it refuses outright and changes
+    # nothing, which is why the narrow checkout is kept below as the fallback.
+    git merge --ff-only --quiet origin/main 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Log "Fast-forwarded $dataHome to origin/main."
+    } else {
+        Log "No fast-forward (local commits present) - falling back to a file-only refresh."
+    }
+
+    # Only ever commit this one path: --only ignores whatever else may be staged, so a
+    # generated artifact can never ride along into the ledger's history.
+    if (git status --porcelain -- applied.json) {
+        git commit --only applied.json -q -m "applied $(Get-Date -UFormat %Y-%m-%d)" 2>&1 | Out-Null
+        git push --quiet origin main 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Log "Pushed applied.json - tomorrow's scrape will dedup against it."
+        } else {
+            Log "applied.json is committed locally but the push failed; it retries tomorrow."
+        }
+    } else {
+        Log "applied.json unchanged since the last run."
+    }
+
     # queue.json is the only file the bridge reads; check out just that one so a missing
-    # sibling (digest.html isn't tracked on origin) can't fail the whole refresh.
+    # sibling (digest.html isn't tracked on origin) can't fail the whole refresh. Redundant
+    # after a clean fast-forward, and load-bearing on a day the fast-forward was refused.
     git checkout origin/main -- out/queue.json 2>&1 | Out-Null
     Log "Refreshed out/queue.json from origin/main in $dataHome."
 } catch {
-    Log "Queue refresh skipped ($($_.Exception.Message)); the bridge will flag a stale queue."
+    Log "Origin sync skipped ($($_.Exception.Message)); the bridge will flag a stale queue."
 } finally {
     Pop-Location
 }
