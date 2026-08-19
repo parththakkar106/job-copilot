@@ -1019,7 +1019,11 @@ const labelOf = (el) => (el && el._label) || "";
     // it back, or the extracted body is a sync function full of awaits.
     const fn = new Function("autoFillVerifyCode", "sleep", "Date", "log",
       "async " + extract("waitForVerifyCode") + "; return waitForVerifyCode;")(
-        async (_log, _since, _tried, opts) => { calls.push(opts && opts.quiet); return statuses.shift() ?? "nocode"; },
+        async (_log, _since, _tried, opts) => {
+          calls.push(opts && opts.quiet);
+          const status = statuses.shift() ?? "nocode";
+          return status === "filled" ? { status, code: "Mp3bF6OD" } : { status };
+        },
         async (ms) => { sleeps.push(ms); now += ms; },
         { now: () => now },
         () => {});
@@ -1030,17 +1034,26 @@ const labelOf = (el) => (el && el._label) || "";
   {
     const { fn, calls, sleeps } = build(["nocode", "nocode", "filled"], 90000);
     const got = await fn(() => {}, 0, new Set(), 90000);
-    ok(got === true, "a code that arrives on a later poll is still filled");
+    ok(got === "Mp3bF6OD", "a code that arrives on a later poll is still filled");
     ok(calls.length === 3, "it kept asking until the mail landed");
     ok(sleeps.length === 2 && sleeps.every(ms => ms > 0), "it waited between attempts");
     ok(calls[0] === false && calls[1] === true,
        "the first attempt speaks, the rest are quiet so the panel is not spammed");
   }
 
+  // THE CODE COMES BACK, not a boolean. submitWithRetry has to recognize its own code on
+  // the next pass to tell "the page has not answered yet" from "that code was rejected";
+  // a bare true left it unable to, and it re-polled the inbox for a code already typed.
+  {
+    const { fn } = build(["filled"], 90000);
+    ok(typeof (await fn(() => {}, 0, new Set(), 90000)) === "string",
+       "the filled code itself is returned, not just the fact that one was filled");
+  }
+
   // "stale" means only the PREVIOUS submit's code is in the inbox — keep waiting.
   {
     const { fn, calls } = build(["stale", "stale", "filled"], 90000);
-    ok(await fn(() => {}, 0, new Set(), 90000) === true,
+    ok(await fn(() => {}, 0, new Set(), 90000) === "Mp3bF6OD",
        "a stale (already-tried) code is treated as not-here-yet, not as failure");
     ok(calls.length === 3, "and polling continues through it");
   }
@@ -1050,22 +1063,176 @@ const labelOf = (el) => (el && el._label) || "";
                                  ["notconfigured", "no mail credentials"],
                                  ["mismatch", "the code does not fit the boxes"]]) {
     const { fn, calls } = build([status, "filled"], 90000);
-    ok(await fn(() => {}, 0, new Set(), 90000) === false, `${label} -> gives up`);
+    ok(await fn(() => {}, 0, new Set(), 90000) === "", `${label} -> gives up`);
     ok(calls.length === 1, `${label} -> asks exactly once, never polls`);
   }
 
   // The budget has to actually end the loop.
   {
     const { fn, calls } = build([], 10000);   // always "nocode"
-    ok(await fn(() => {}, 0, new Set(), 10000) === false, "an unfilled budget ends in failure");
+    ok(await fn(() => {}, 0, new Set(), 10000) === "", "an unfilled budget ends in failure");
     ok(calls.length > 1 && calls.length < 20, `polls a sane number of times, got ${calls.length}`);
   }
 
   // Success on the very first look must not sleep at all.
   {
     const { fn, sleeps } = build(["filled"], 90000);
-    ok(await fn(() => {}, 0, new Set(), 90000) === true, "an already-delivered code fills at once");
+    ok(await fn(() => {}, 0, new Set(), 90000) === "Mp3bF6OD", "an already-delivered code fills at once");
     ok(sleeps.length === 0, "and costs no waiting");
+  }
+}
+
+// --- verifyCodeStillShown: whose code is in the box? ---------------------------------
+//
+// The gate's wording does not clear the moment the code is typed — it clears when the
+// server answers. So on the pass after a fill, "is the gate still up?" answers nothing.
+// This does: our code still in the box means the page has not answered; an empty box means
+// the page threw it out, which is the only state where fetching another code makes sense.
+{
+  const mkBox = (id, value = "") => ({
+    id, value, disabled: false, readOnly: false, offsetParent: {},
+    getAttribute: (k) => (k === "maxlength" ? "1" : null),
+  });
+  const mkField = (value) => ({
+    id: "verification_code", value, disabled: false, readOnly: false, offsetParent: {},
+    getAttribute: (k) => (k === "maxlength" ? "8" : null),
+  });
+  const shown = (code, els) => {
+    globalThis.document = {
+      querySelectorAll: (sel) => sel.includes('maxlength="1"')
+        ? els.filter(e => e.getAttribute("maxlength") === "1") : els,
+    };
+    const codeAttrAt = src.indexOf("const CODE_ATTR = ");
+    try {
+      return new Function("document", "labelFor",
+        src.slice(codeAttrAt, src.indexOf("\n", codeAttrAt)) + ";"
+        + extract("findVerifyInput") + ";" + extract("codeBoxGroup") + ";"
+        + extract("verifyCodeStillShown") + "; return verifyCodeStillShown;")(
+          globalThis.document, () => "")(code);
+    } finally { delete globalThis.document; }
+  };
+
+  const boxes = (chars) => "Mp3bF6OD".split("").map((_, i) => mkBox(`code-${i}`, chars[i] ?? ""));
+
+  ok(shown("Mp3bF6OD", boxes("Mp3bF6OD")) === true,
+     "our code still across the eight boxes -> the page has not answered yet");
+  ok(shown("Mp3bF6OD", boxes("")) === false,
+     "boxes cleared by the form -> the code was rejected, a fresh one is worth fetching");
+  ok(shown("Mp3bF6OD", boxes("XY99ZZ11")) === false, "somebody else's code is not ours");
+  ok(shown("Mp3bF6OD", [mkField("Mp3bF6OD")]) === true, "a single code field counts the same way");
+  ok(shown("Mp3bF6OD", [mkField("")]) === false, "and an emptied single field means rejected");
+
+  // Before anything has been filled there is nothing of ours to recognize.
+  ok(shown("", boxes("Mp3bF6OD")) === false, "no code filled yet -> nothing of ours is shown");
+
+  // Fails towards WAITING: a field that cannot be found is not evidence of rejection, and
+  // re-fetching on no evidence is exactly what burned the retry budget in the first place.
+  ok(shown("Mp3bF6OD", []) === true, "an unfindable field means wait, never 'go fetch another'");
+}
+
+// --- submitWithRetry at the code gate: reading the mail has to END IN A CLICK ---------
+//
+// THE BUG THIS PINS, reported from a real run: "the email reading works but then it does
+// not submit and thinks I didn't get a mail." Filling the code `break`-ed out of the inner
+// polling loop, which fell through to the ambiguous-click branch, found the same gate text
+// still on the page, and spent the last code attempt polling the inbox for a NEWER code.
+// The only code there was the one already typed, so it came back "stale" for the full 90s
+// and the run ended on "the code hasn't arrived" — mail read, code filled, Submit never
+// clicked again. The whole loop is driven here against a fake page, because the defect was
+// in the control flow between these pieces and not in any one of them.
+{
+  // A page that behaves like the real gate in the one way that matters: the gate's wording
+  // does NOT disappear when the code is typed, only when the server answers.
+  const drive = async (page) => {
+    let now = 0;
+    const fetches = [];
+    const logs = [];
+    const tick = () => {
+      if (page.answerIn > 0 && --page.answerIn === 0) page.answer();
+    };
+    const fn = new Function(
+      "loadDeps", "currentAdapter", "matchedConfirmPhrases", "matchedRejectPhrases",
+      "matchedVerifyPhrases", "confirmationVisible", "reassertChoices", "reassertText",
+      "readValidationErrors", "clickSubmit", "submitRejectedText", "submitVerificationText",
+      "verifyCodeStillShown", "waitForVerifyCode", "sleep", "Date", "location",
+      "PANEL_STOP", "PANEL_REPORT",
+      "async " + extract("submitWithRetry") + "; return submitWithRetry;")(
+        async () => ({ adapters: [{}] }), () => ({ submit: {} }),
+        () => [], () => [], () => [],
+        () => page.confirmed,
+        () => 0, async () => 0,
+        () => [],
+        async () => { page.click(); return true; },
+        () => null,
+        () => (page.gate ? "enter the 8-character code" : null),
+        (code) => !!code && page.codeInBox === code,
+        async () => { fetches.push(1); const c = page.mail.shift() || ""; if (c) page.codeInBox = c; return c; },
+        async (ms) => { now += ms; tick(); },
+        { now: () => now },
+        { href: "https://boards.greenhouse.io/acme/jobs/1" },
+        false, {});
+    const outcome = await fn((m) => logs.push(String(m)));
+    return { outcome, fetches: fetches.length, logs };
+  };
+
+  // The reported run, end to end: gate -> read the mail -> fill -> CLICK SUBMIT -> done.
+  {
+    const page = {
+      clicks: 0, gate: true, confirmed: false, codeInBox: "", answerIn: 0,
+      mail: ["Mp3bF6OD"],
+      click() {
+        this.clicks++;
+        // The server only answers a submit that carried a code, and takes a few ticks.
+        if (this.codeInBox) this.answerIn = 3;
+      },
+      answer() { this.gate = false; this.confirmed = true; },
+    };
+    const { outcome, fetches } = await drive(page);
+    ok(page.clicks === 2, `THE FIX: the filled code is submitted (${page.clicks} clicks, was 1)`);
+    ok(outcome === "confirmed", `and the application goes through, got "${outcome}"`);
+    ok(fetches === 1, `the inbox is asked once, not re-polled for a code already typed (${fetches})`);
+  }
+
+  // The gate lingering while OUR code sits in the box must not be read as a missing mail.
+  // This is the exact state the old flow mistook for "no code arrived".
+  {
+    const page = {
+      clicks: 0, gate: true, confirmed: false, codeInBox: "", answerIn: 0,
+      mail: ["Mp3bF6OD", "SECOND77"],
+      click() { this.clicks++; if (this.codeInBox) this.answerIn = 8; },  // a slow server
+      answer() { this.gate = false; this.confirmed = true; },
+    };
+    const { outcome, fetches, logs } = await drive(page);
+    ok(fetches === 1, "a slow answer never triggers a second inbox lookup");
+    ok(!logs.some(m => /hasn't arrived|no code/i.test(m)),
+       "and nothing claims the mail is missing while the code is sitting in the box");
+    ok(outcome === "confirmed", `the slow confirmation is still caught, got "${outcome}"`);
+  }
+
+  // A code the form REJECTS is the one case that earns a second lookup: the box is cleared,
+  // which is how these forms say no. Then the cap has to hold.
+  {
+    const page = {
+      clicks: 0, gate: true, confirmed: false, codeInBox: "", answerIn: 0,
+      mail: ["Mp3bF6OD", "SECOND77", "THIRD999"],
+      click() { this.clicks++; if (this.codeInBox) this.answerIn = 2; },
+      answer() { this.codeInBox = ""; },        // rejected: the form empties the boxes
+    };
+    const { outcome, fetches } = await drive(page);
+    ok(fetches === 2, `a cleared box earns one more lookup, then stops (${fetches})`);
+    ok(outcome === "needs_verification", `a code the form keeps refusing parks the job, got "${outcome}"`);
+  }
+
+  // No mail at all: park immediately and leave the tab open. Never click Submit blind.
+  {
+    const page = {
+      clicks: 0, gate: true, confirmed: false, codeInBox: "", answerIn: 0, mail: [],
+      click() { this.clicks++; },
+      answer() {},
+    };
+    const { outcome } = await drive(page);
+    ok(outcome === "needs_verification", "no code in the inbox -> Parth is told, tab left open");
+    ok(page.clicks === 1, "and Submit is never clicked again without a code");
   }
 }
 
