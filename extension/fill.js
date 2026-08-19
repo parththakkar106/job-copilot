@@ -2304,15 +2304,21 @@ async function requestVerifyCode(since) {
   } catch (_) { return { ok: false, code: null, why: "bridge unreachable" }; }
 }
 
-// Fetch + fill, once. Returns true only if a code actually landed in a field, which is
-// the caller's signal that another submit pass is worth doing.
-// Returns a STATUS, not a boolean, because the caller has to tell "the code has not
-// arrived yet" (worth waiting for) apart from "there is nowhere to put it" (never will be):
+// Fetch + fill, once. Returns {status, code}.
+//
+// The STATUS tells "the code has not arrived yet" (worth waiting for) apart from "there is
+// nowhere to put it" (never will be):
 //   "filled" | "nofield" | "nocode" | "notconfigured" | "stale" | "mismatch"
+//
+// The CODE comes back on "filled" because the submit loop has to recognize its own code
+// afterwards. The gate's wording stays on the page once the code is typed — it only clears
+// when the server answers — so "is the gate still showing?" cannot distinguish "not
+// answered yet" from "that code was rejected". Whether OUR code is still sitting in the box
+// can. See verifyCodeStillShown.
 async function autoFillVerifyCode(log, since, tried, opts = {}) {
   const quiet = !!opts.quiet;                 // suppress the repeat lines while polling
   const input = findVerifyInput();
-  if (!input) { log("couldn't find the code box on this page — enter it yourself", "warn"); return "nofield"; }
+  if (!input) { log("couldn't find the code box on this page — enter it yourself", "warn"); return { status: "nofield" }; }
   const res = await requestVerifyCode(since);
   if (!res || !res.ok || !res.code) {
     const why = (res && res.why) || "no code found";
@@ -2321,13 +2327,13 @@ async function autoFillVerifyCode(log, since, tried, opts = {}) {
     // timing one is worth polling on.
     const setup = /not configured|unreachable/i.test(why);
     if (!quiet || setup) log(`🔐 no code from your inbox (${why})`, "warn");
-    return setup ? "notconfigured" : "nocode";
+    return { status: setup ? "notconfigured" : "nocode" };
   }
   if (tried.has(res.code)) {
     // Not a failure yet: the newest message may still be the PREVIOUS code, with this
     // submit's mail seconds behind it. Treat it as "not here yet" so the poll continues.
     if (!quiet) log("🔐 only the previous code is in the inbox so far — waiting", "warn");
-    return "stale";
+    return { status: "stale" };
   }
   tried.add(res.code);
 
@@ -2335,14 +2341,14 @@ async function autoFillVerifyCode(log, since, tried, opts = {}) {
   if (boxes) {
     if (boxes.length < res.code.length) {
       log(`🔐 ${boxes.length} code boxes but a ${res.code.length}-character code — enter it yourself`, "warn");
-      return "mismatch";
+      return { status: "mismatch" };
     }
     const landed = fillCodeBoxes(boxes, res.code);
     // Read back rather than trust the write: one char per box is a stronger claim than
     // "we typed something", and a React group that rejects a character fails silently.
     if (landed !== res.code) {
       log("🔐 the code didn't land cleanly across the boxes — check it before submitting", "warn");
-      return "mismatch";
+      return { status: "mismatch" };
     }
   } else {
     setText(input, res.code);
@@ -2350,7 +2356,29 @@ async function autoFillVerifyCode(log, since, tried, opts = {}) {
   // Never log the code itself: it is a live credential for this submit, and fill reports
   // are written to disk and read back for debugging.
   log(`🔐 filled the code from your inbox (${res.why})`, "ok");
-  return "filled";
+  return { status: "filled", code: res.code };
+}
+
+
+// Is the code we typed still sitting in the gate's box?
+//
+// The question the submit loop cannot answer from the page text alone. After the code is
+// filled and Submit is clicked again, the gate's wording stays put until the server
+// answers, so a visible gate on the next pass means one of two opposite things:
+//
+//   code still in the box  → the page has not answered yet. Wait for the outcome.
+//   box empty or changed   → the page cleared it, which is how these forms reject a code.
+//                            Now a fresh fetch is worth doing.
+//
+// Fails towards WAITING: if the field cannot be found at all, that is not evidence the code
+// was rejected, and re-fetching on no evidence is what burned the retry budget before.
+function verifyCodeStillShown(code) {
+  if (!code) return false;
+  const input = findVerifyInput();
+  if (!input) return true;
+  const boxes = codeBoxGroup(input);
+  const shown = boxes ? boxes.map(b => b.value || "").join("") : (input.value || "");
+  return shown === code;
 }
 
 
@@ -2364,17 +2392,20 @@ async function autoFillVerifyCode(log, since, tried, opts = {}) {
 // Polling is only affordable because the lookup got cheap. Measured on the real mailbox:
 // a day of messages fetched in full cost 11.8s per attempt, and Gmail-side narrowing
 // (X-GM-RAW, see mailcode.ImapReader._narrow) took that to ~1.6s.
+// Returns THE CODE it filled, or "" — truthy either way for a caller that only wants to
+// know whether to press on, and the value itself for the submit loop, which has to
+// recognize its own code on the next pass (verifyCodeStillShown).
 async function waitForVerifyCode(log, since, tried, budgetMs = 90000) {
   const deadline = Date.now() + budgetMs;
   let announced = false;
   for (;;) {
-    const status = await autoFillVerifyCode(log, since, tried, { quiet: announced });
+    const r = await autoFillVerifyCode(log, since, tried, { quiet: announced });
     // Only "not here yet" is worth waiting on. No field, no credentials, or a code that
     // would not fit are all permanent for this page — say so once and stop.
-    if (status !== "nocode" && status !== "stale") return status === "filled";
+    if (r.status !== "nocode" && r.status !== "stale") return r.status === "filled" ? r.code : "";
     if (Date.now() >= deadline) {
       log("🔐 the code hasn't arrived — enter it from your inbox, then submit again", "warn");
-      return false;
+      return "";
     }
     if (!announced) { log("🔐 waiting for the code to arrive in your inbox…"); announced = true; }
     await sleep(4000);
@@ -2511,8 +2542,39 @@ async function submitWithRetry(log) {
   const submitStartedAt = Date.now();
   const codesTried = new Set();
   let codeAttempts = 0;
+  // The code this loop last typed into the gate, so a still-visible gate on a later pass
+  // can be read correctly — see verifyCodeStillShown and handleVerifyGate.
+  let codeFilled = "";
   // Each attempt is a full ~90s polling window (waitForVerifyCode), not a single shot.
   const MAX_CODE_ATTEMPTS = 2; // a code the form rejects twice is not going to start working
+
+  // What to do about a gate that is currently on the page. Returns:
+  //   "submit" — a code was just fetched and filled: CLICK SUBMIT AGAIN.
+  //   "wait"   — our code is already in the box and the page has not answered yet. Nothing
+  //              to fetch and nothing to click; keep polling for the outcome.
+  //   "park"   — no code to be had; tell Parth and leave the tab open.
+  //
+  // THE BUG THIS REPLACES: filling a code used to `break` out of the polling loop, which
+  // fell through to the ambiguous-click branch below, saw the same gate text still on the
+  // page, and spent the second and last code attempt polling the inbox for a NEWER code.
+  // The only code there was the one already typed, so it came back "stale" for the full 90s
+  // and the run ended on "the code hasn't arrived" — having read the mail correctly, filled
+  // the code correctly, and never once clicked Submit with it. Two rules come out of that:
+  // a filled code must always lead to another click, and a gate still showing while our own
+  // code sits in its box is not evidence that any mail is missing.
+  const handleVerifyGate = async () => {
+    if (verifyCodeStillShown(codeFilled)) return "wait";
+    if (codeAttempts < MAX_CODE_ATTEMPTS) {
+      codeAttempts++;
+      // He clicked Submit, so fetching the code finishes what he started.
+      const code = await waitForVerifyCode(log, submitStartedAt, codesTried);
+      if (code) { codeFilled = code; return "submit"; }
+    }
+    log("🔐 Email verification needed — enter the code from your inbox in the browser, then submit.", "warn");
+    return "park";
+  };
+
+  passes:
   for (let pass = 1; pass <= MAX; pass++) {
     if (PANEL_STOP) { log("stopped", "warn"); return "stopped"; }
     // A late confirmation from the previous pass's click may have landed while we waited.
@@ -2543,14 +2605,11 @@ async function submitWithRetry(log) {
       // code from Parth's inbox. We don't solve it — surface it and leave the tab open.
       const ver = submitVerificationText(verifyBase);
       if (ver) {
-        // He clicked Submit, so fetching the code finishes what he started. The mail
-        // takes a few seconds to arrive; one short wait beats reporting "no code yet".
-        if (codeAttempts < MAX_CODE_ATTEMPTS) {
-          codeAttempts++;
-          if (await waitForVerifyCode(log, submitStartedAt, codesTried)) break; // re-submit with it
-        }
-        log("🔐 Email verification needed — enter the code from your inbox in the browser, then submit.", "warn");
-        return "needs_verification";
+        const next = await handleVerifyGate();
+        if (next === "park") return "needs_verification";
+        if (next === "submit") continue passes;   // next pass clicks Submit with the code in
+        // "wait" falls through to the confirmation and error checks below: the code is in
+        // the box, so the answer we are waiting for is this page's, not the inbox's.
       }
       if (location.href !== urlBefore || confirmationVisible(adapter, confirmBase)) { log("✅ Submitted & confirmed", "ok"); return "confirmed"; }
       const now = readValidationErrors();
@@ -2562,12 +2621,19 @@ async function submitWithRetry(log) {
       if (rej) { log("❌ Rejected by the ATS (not a field problem): " + rej, "err"); return "rejected"; }
       const ver = submitVerificationText(verifyBase);
       if (ver) {
-        if (codeAttempts < MAX_CODE_ATTEMPTS) {
-          codeAttempts++;
-          if (await waitForVerifyCode(log, submitStartedAt, codesTried)) continue; // re-submit with it
+        const next = await handleVerifyGate();
+        if (next === "park") return "needs_verification";
+        if (next === "submit") continue passes;   // re-submit with it
+        // "wait": the code is in the box but a full poll window produced no answer at all.
+        // Most likely the same swallowed click handled below, so click again — bounded by
+        // the same `ambiguous` counter, and reported as the code gate it actually is
+        // rather than as a generic unknown.
+        if (++ambiguous >= 2) {
+          log("🔐 the code is filled but the form hasn't accepted it — check the page and submit yourself", "warn");
+          return "needs_verification";
         }
-        log("🔐 Email verification needed — enter the code from your inbox in the browser, then submit.", "warn");
-        return "needs_verification";
+        log("🔐 code is in place but the click produced nothing — clicking Submit again…", "warn");
+        continue passes;
       }
       if (location.href !== urlBefore || confirmationVisible(adapter, confirmBase)) { log("✅ Submitted", "ok"); return "confirmed"; }
       // If the whole form is gone, the submit almost certainly went through and we just
