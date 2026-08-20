@@ -11,9 +11,16 @@ import { useToast } from '../toast.jsx'
 // unpacked extension; BotFather is a conversation). They are shown rather than hidden, with
 // a re-check button, because a checklist that quietly skips the hard parts is what made the
 // README feel like a wall of text.
+//
+// The list is in two groups, and the split is the point. The core steps lead to a filled
+// application, with the extension second because the extension is the product. The optional
+// extras (Telegram, emailed verification codes) are control-plane conveniences the fill
+// engine never needs, so they sit below their own heading and are left OUT of the progress
+// bar - a permanent "4 of 6" would read as unfinished to someone who simply does not want
+// a Telegram bot.
 
 function Step({ step, index, onGo, onRecheck, busy }) {
-  const { id, title, detail, done, manual, unfilled, link } = step
+  const { id, title, detail, done, manual, optional, unfilled, link } = step
   return (
     <li className={`setup-step ${done ? 'is-done' : ''}`}>
       <div className="setup-mark" aria-hidden="true">{done ? '✓' : index + 1}</div>
@@ -21,6 +28,7 @@ function Step({ step, index, onGo, onRecheck, busy }) {
         <div className="setup-head">
           <h3>{title}</h3>
           {manual && <span className="setup-tag">needs you</span>}
+          {optional && <span className="setup-tag">optional</span>}
           {step.blocking && !step.minimum_met && <span className="setup-tag req">required</span>}
         </div>
         <p className="setup-detail">{detail}</p>
@@ -76,18 +84,23 @@ export default function Setup({ onGo }) {
   if (err) return <div className="card"><p className="muted">Setup status unavailable: {err}</p></div>
   if (!data) return <div className="card"><p className="muted">Checking your setup…</p></div>
 
-  const pct = Math.round((data.done_count / data.total) * 100)
+  const core = data.steps.filter((s) => !s.optional)
+  const extras = data.steps.filter((s) => s.optional)
+  const coreTotal = data.core_total ?? core.length
+  const coreDone = data.core_done ?? core.filter((s) => s.done).length
+  const pct = Math.round((coreDone / Math.max(coreTotal, 1)) * 100)
 
   return (
     <div className="setup">
       <div className="setup-intro card">
         <h2>Let's get you set up</h2>
         <p className="muted">
-          Five steps, and only the first is required. Everything here is editable later —
-          nothing is locked in by finishing quickly.
+          {coreTotal} steps to a filled application, and only the first is required. The
+          Chrome extension is the part that does the work — the rest of this list is about
+          feeding it. Everything here is editable later.
         </p>
         <div className="setup-bar"><div className="setup-bar-fill" style={{ width: `${pct}%` }} /></div>
-        <p className="setup-count">{data.done_count} of {data.total} done</p>
+        <p className="setup-count">{coreDone} of {coreTotal} done</p>
         {data.ready && (
           <p className="setup-ready">
             The essentials are in place — you can start using the console whenever you like.
@@ -96,11 +109,28 @@ export default function Setup({ onGo }) {
       </div>
 
       <ol className="setup-list">
-        {data.steps.map((s, i) => (
+        {core.map((s, i) => (
           <Step key={s.id} step={s} index={i} onGo={onGo}
                 onRecheck={() => load(true)} busy={busy} />
         ))}
       </ol>
+
+      {extras.length > 0 && (
+        <div className="setup-extras">
+          <h3 className="setup-extras-head">Optional extras</h3>
+          <p className="muted setup-extras-note">
+            The extension fills and submits without either of these, and it did for months
+            before they existed. Add one if you want it; skipping them costs you a little
+            typing and nothing else.
+          </p>
+          <ol className="setup-list">
+            {extras.map((s, i) => (
+              <Step key={s.id} step={s} index={coreTotal + i} onGo={onGo}
+                    onRecheck={() => load(true)} busy={busy} />
+            ))}
+          </ol>
+        </div>
+      )}
 
       <div className="card setup-foot">
         <button className="btn" disabled={busy} onClick={() => load(true)}>

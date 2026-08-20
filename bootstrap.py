@@ -16,6 +16,8 @@ What this deliberately does NOT do:
     needed to build the console UI, and we say so rather than failing cryptically)
   - load the Chrome extension. Chrome requires a human for unpacked extensions, by design
   - talk to Telegram. BotFather is a conversation, and the bot is optional anyway
+  - ask Google for a mail credential, which is the same kind of conversation. Optional
+    too: without one you paste an emailed verification code yourself
   - overwrite any config you already have. Existing files are left strictly alone
 """
 from __future__ import annotations

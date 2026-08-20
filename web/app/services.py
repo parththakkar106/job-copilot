@@ -492,14 +492,56 @@ def load_manual() -> list[dict]:
 
 # ── First-run setup ──────────────────────────────────────────────────────────────────
 
+def _configured(names: tuple[str, ...]) -> list[str]:
+    """Which of `names` are set, counting bridge/.env as well as the environment.
+
+    The bridge loads bridge/.env itself on import, so a value living only in that file is
+    genuinely configured even though this process never sees it in os.environ. Checking
+    os.environ alone - which this replaced - reported "not configured" for exactly the
+    setup the READMEs tell you to do, which is the worst way for a checklist to be wrong.
+
+    Names only. The values are secrets; they are read here and never returned or logged.
+    """
+    import os
+    from core import paths as core_paths
+
+    found = {n for n in names if str(os.environ.get(n) or "").strip()}
+    env_file = core_paths.REPO_ROOT / "bridge" / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                key, sep, val = line.strip().partition("=")
+                if not sep or key.startswith("#"):
+                    continue
+                if key.strip() in names and val.strip().strip('"').strip("'"):
+                    found.add(key.strip())
+        except OSError:
+            pass
+    return [n for n in names if n in found]
+
+
+# The two credential shapes bridge/mailcode.py accepts for reading an emailed verification
+# code (its OAUTH_VARS / IMAP_VARS). Duplicated rather than imported, for the reason at the
+# top of this file: bridge/ is not a package and importing it boots a server.
+_OAUTH_VARS = ("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN")
+_IMAP_VARS = ("GMAIL_ADDRESS", "GMAIL_APP_PASSWORD")
+
+
 def setup_status() -> dict:
     """What a new install still needs, as a checklist the Setup page renders.
 
     Every step reports `done` plus enough detail to act on it. Steps the machine cannot do
-    for the user (loading an unpacked extension, talking to BotFather) are still listed -
-    with `manual: True` - because hiding them is what made the README feel like a wall of
-    instructions in the first place. `blocking` marks the ones without which nothing works;
-    the rest are genuinely optional and say so.
+    for the user (loading an unpacked extension, talking to BotFather, asking Google for a
+    mail credential) are still listed - with `manual: True` - because hiding them is what
+    made the README feel like a wall of instructions in the first place. `blocking` marks
+    the ones without which nothing works.
+
+    ORDER IS THE MESSAGE. The extension is the product: it is what fills a form, and the
+    steps run details -> extension -> resumes -> companies because that is the shortest
+    path to a filled application. `optional: True` marks the two control-plane add-ons
+    (Telegram, emailed verification codes) that the extension never needs - they are
+    grouped last and counted separately, so a checklist that reads "4 of 6" cannot make a
+    complete install look unfinished for declining an extra.
     """
     from core import paths as core_paths
     from core import profile as profile_mod
@@ -525,7 +567,7 @@ def setup_status() -> dict:
         # question instead of autofilling it, which is a deliberate design choice. So the
         # step shows incomplete while the install still counts as usable.
         "minimum_met": configured,
-        "blocking": True, "manual": False,
+        "blocking": True, "manual": False, "optional": False,
         "detail": ("Not created yet - saving the Profile page once creates it."
                    if not configured else
                    (f"{len(holes)} field(s) still unset." if holes else "Complete.")),
@@ -533,7 +575,22 @@ def setup_status() -> dict:
         "link": "/profile",
     })
 
-    # 2. Companies: usable immediately thanks to the shipped example, so "done" means the
+    # 2. The extension, straight after the details that feed it. Chrome deliberately
+    # requires a human for an unpacked extension, so this is `manual` - but it is the main
+    # event, not an extra, and it is listed here rather than after the optional add-ons.
+    staged = (core_paths.REPO_ROOT / "extension" / "profile.json").exists()
+    steps.append({
+        "id": "extension", "title": "Chrome extension",
+        "done": staged, "blocking": False, "manual": True, "optional": False,
+        "detail": ("Config staged. Load it once at chrome://extensions > Developer mode > "
+                   "Load unpacked > select the extension/ folder."
+                   if staged else
+                   "Not staged yet - use Rebuild extension on the Profile page, then load "
+                   "it at chrome://extensions."),
+        "link": "/profile",
+    })
+
+    # 3. Companies: usable immediately thanks to the shipped example, so "done" means the
     # user has their OWN list rather than merely having something to scrape.
     own_companies = COMPANIES_WRITE.exists()
     try:
@@ -542,53 +599,83 @@ def setup_status() -> dict:
         n_companies = 0
     steps.append({
         "id": "companies", "title": "Companies to watch",
-        "done": own_companies, "blocking": False, "manual": False,
+        "done": own_companies, "blocking": False, "manual": False, "optional": False,
         "detail": (f"Using your own list ({n_companies} companies)." if own_companies
                    else f"Using the {n_companies} shipped examples - edit any tier to make it yours."),
         "link": "/companies",
     })
 
-    # 3. Resumes: only the apply half needs them, and the count is what the extension
+    # 4. Resumes: only the apply half needs them, and the count is what the extension
     # will actually be able to attach.
     n_resumes = len(list(core_paths.RESUMES.glob("*.pdf"))) if core_paths.RESUMES.exists() else 0
     steps.append({
         "id": "resumes", "title": "Resume PDFs",
-        "done": n_resumes > 0, "blocking": False, "manual": False,
+        "done": n_resumes > 0, "blocking": False, "manual": False, "optional": False,
         "detail": (f"{n_resumes} cached." if n_resumes else
                    "None cached. Set _local_resume_source.base_dir in your profile, then "
                    "run: python -m core.resumes sync-local"),
         "link": "/profile",
     })
 
-    # 4/5. The two steps no script can perform. Chrome deliberately requires a human for
-    # unpacked extensions, and BotFather is a conversation.
-    staged = (core_paths.REPO_ROOT / "extension" / "profile.json").exists()
+    # ── Optional from here down. Both are control-plane conveniences: the extension fills
+    # and submits forms without either one, and declining them costs nothing but a little
+    # typing. Neither is ever `blocking`.
+
+    # 5. Telegram: answer questions from your phone instead of the console.
+    tg_set = _configured(("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"))
+    tg = len(tg_set) == 2
     steps.append({
-        "id": "extension", "title": "Chrome extension",
-        "done": staged, "blocking": False, "manual": True,
-        "detail": ("Config staged. Load it once at chrome://extensions > Developer mode > "
-                   "Load unpacked > select the extension/ folder."
-                   if staged else
-                   "Not staged yet - use Rebuild extension on the Profile page, then load "
-                   "it at chrome://extensions."),
-        "link": "/profile",
-    })
-    import os
-    tg = bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
-    steps.append({
-        "id": "telegram", "title": "Telegram control (optional)",
-        "done": tg, "blocking": False, "manual": True,
+        "id": "telegram", "title": "Telegram control",
+        "done": tg, "blocking": False, "manual": True, "optional": True,
+        # A half-finished pair is the common state here and naming the missing half saves a
+        # hunt: "not configured" when one of the two is already set reads as a lie.
         "detail": ("Connected." if tg else
-                   "Not configured. Skip it and use this console instead, or see "
-                   "bridge/README.md - python bridge/get_chat_id.py does the fiddly part."),
+                   (f"Half configured - {tg_set[0]} is set, the other is not. See "
+                    "bridge/README.md." if tg_set else
+                    "Not configured. Skip it and use this console instead, or see "
+                    "bridge/README.md - python bridge/get_chat_id.py does the fiddly part.")),
+        "link": None,
+    })
+
+    # 6. Verification codes. Some Greenhouse boards mail an 8-character code on submit; with
+    # a mailbox credential the extension reads it back and fills it, and without one it
+    # parks the application for you to finish by hand - which is the behaviour this project
+    # shipped with for months. Manual for the same reason Telegram is: generating an App
+    # Password or an OAuth client is a conversation with Google that no script here can
+    # have on your behalf.
+    oauth_set, imap_set = _configured(_OAUTH_VARS), _configured(_IMAP_VARS)
+    mail_ready = len(oauth_set) == len(_OAUTH_VARS) or len(imap_set) == len(_IMAP_VARS)
+    if mail_ready:
+        # Which one is live matters: OAuth wins when both are set (make_reader prefers it),
+        # so a leftover App Password is not what is being used.
+        mail_detail = ("Read-only OAuth token configured."
+                       if len(oauth_set) == len(_OAUTH_VARS) else
+                       "App Password configured (IMAP, opened read-only).")
+    elif oauth_set or imap_set:
+        mail_detail = ("Partly configured - " + ", ".join(oauth_set + imap_set) +
+                       " set. Finish one of the two shapes; see bridge/README.md.")
+    else:
+        mail_detail = ("Not configured. Codes get pasted by hand, which works fine. To "
+                       "automate it, set GMAIL_ADDRESS + GMAIL_APP_PASSWORD, or run "
+                       "python bridge/gmail_auth.py for a read-only token.")
+    steps.append({
+        "id": "verify_code", "title": "Emailed verification codes",
+        "done": mail_ready, "blocking": False, "manual": True, "optional": True,
+        "detail": mail_detail,
         "link": None,
     })
 
     blocking_left = [s["id"] for s in steps
                      if s["blocking"] and not s.get("minimum_met", s["done"])]
+    core = [s for s in steps if not s["optional"]]
     return {
         "ready": not blocking_left,
         "blocking_left": blocking_left,
+        # Progress is measured over the core steps only. Counting the optional extras in
+        # the denominator would put a permanent unfinished remainder on the page of anyone
+        # who reasonably never wants Telegram or a mail credential.
+        "core_done": sum(1 for s in core if s["done"]),
+        "core_total": len(core),
         "done_count": sum(1 for s in steps if s["done"]),
         "total": len(steps),
         "steps": steps,

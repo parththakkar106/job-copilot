@@ -79,7 +79,11 @@ function Shell() {
     api.setupStatus()
       .then((d) => {
         if (cancelled) return
-        const incomplete = !d.ready || d.done_count < d.total
+        // CORE steps only. Counting the optional extras here kept the Setup tab pinned to
+        // the nav forever for anyone who reasonably never wants a Telegram bot or a mail
+        // credential - an opt-out that keeps nagging is not an opt-out.
+        const core = d.core_total ?? d.total
+        const incomplete = !d.ready || (d.core_done ?? d.done_count) < core
         setShowSetup(incomplete)
         if (!d.ready) setTab('setup')   // only *required* work forces you here
       })

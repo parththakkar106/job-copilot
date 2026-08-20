@@ -1,15 +1,28 @@
 #!/usr/bin/env python
 """gmail_auth.py — one-time consent to get a READ-ONLY Gmail refresh token.
 
-Run once:  python bridge/gmail_auth.py
+Before running, create a client in https://console.cloud.google.com: new project → enable
+the **Gmail API** → OAuth consent screen (External; add your own address as a test user) →
+Credentials → Create OAuth client ID → **Desktop app**. Then:
 
-Prints a GMAIL_REFRESH_TOKEN line to add to bridge/.env. The bridge then reads verification
-codes with it (see mailcode.GmailReader); nothing else in the pipeline touches your mail.
+    python bridge/gmail_auth.py
 
-WHY OAUTH AND NOT AN APP PASSWORD: an App Password cannot be scoped — it would grant this
-process full IMAP access, including delete, to read an 8-character code. The scope
-requested here, `gmail.readonly`, cannot modify anything, and it can be revoked on its own
-at https://myaccount.google.com/permissions without disturbing any other access.
+It asks for that client ID and secret (or reads GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET from
+the environment) and prints three lines to add to bridge/.env. The bridge then reads
+verification codes with them (see mailcode.GmailReader); nothing else in the pipeline
+touches your mail.
+
+While the consent screen is in "Testing", Google expires refresh tokens after 7 DAYS —
+publish the app to avoid re-authorising weekly. The "unverified app" warning is expected;
+verification is only about OTHER people using your client.
+
+WHY THIS RATHER THAN THE APP PASSWORD: both work — mailcode.make_reader takes either, and
+prefers this one when both are configured. An App Password cannot be scoped, so it grants
+full IMAP access, including delete, to read an 8-character code; ImapReader opens the
+mailbox read-only, but that is a property of our code rather than of the credential. The
+scope requested here, `gmail.readonly`, cannot modify anything, and it can be revoked on
+its own at https://myaccount.google.com/permissions without disturbing any other access.
+The App Password is one value and two minutes, which is a fair trade to make knowingly.
 
 Uses the loopback flow (Google's recommended flow for a desktop app): a local one-shot HTTP
 server catches the redirect, so no code is ever copied by hand. Nothing leaves this machine
@@ -63,7 +76,7 @@ def main() -> int:
     client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "").strip() or input("OAuth client secret: ").strip()
     if not client_id or not client_secret:
         print("Both the client ID and secret are required — see the setup steps in this "
-              "file's docstring.", file=sys.stderr)
+              "file's docstring, or bridge/README.md.", file=sys.stderr)
         return 1
 
     port = _free_port()

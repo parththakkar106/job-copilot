@@ -16,6 +16,12 @@ questions, so it binds `127.0.0.1` and has no auth: do not expose the port.
 
 ## One-time setup
 
+**All of it is optional.** The extension is the thing that fills forms, and in panel mode it
+fills one with the bridge switched off entirely — you answer the leftover questions in the
+panel. What the bridge adds is remote control: steps 1-3 put those questions on your phone
+and unlock queue mode, and step 4 lets a submit read the verification code some boards mail
+you. Set up none of it, some of it, or all of it.
+
 ### 1. Create the bot
 
 1. In Telegram, message **@BotFather**.
@@ -56,6 +62,69 @@ has not already set.
 
 Either way the secrets stay out of the repo. Never commit them.
 
+### 4. Verification codes (optional)
+
+Nothing depends on this one, including the rest of the bridge.
+Some Greenhouse boards mail an 8-character code on submit ("to confirm you're a human") and
+hold the application behind it. Give the bridge a read credential for that mailbox and it
+hands the code back to the extension, which types it into the gate. Skip this and nothing
+breaks: the application is parked with a reason and you paste the code yourself.
+
+**A fetch only ever follows a human action** — your Submit click, the panel's 🔐 Code
+button, or your ✅ in Telegram. Nothing polls, and the unattended queue never triggers one.
+`mailcode.py` only looks at mail that arrived after that click, and only at messages that
+read as verification, so a bank or 2FA code in the same inbox is not a candidate.
+
+Read the mailbox your applications go to — the address in `profile.json` `identity.email`.
+It is not necessarily the Google account you sign in with, and a mismatch fails as
+`[AUTHENTICATIONFAILED] Invalid credentials`, which reads like a bad password.
+
+Two shapes; set **either** set of variables in `bridge/.env`. If both are present the OAuth
+one is used, so a leftover App Password never silently outranks the stronger credential.
+
+**A. App Password** — fastest, one value. Needs 2-Step Verification on the account; then
+[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) → create one:
+
+```
+GMAIL_ADDRESS=<the address in profile.json identity.email>
+GMAIL_APP_PASSWORD=abcd efgh ijkl mnop
+```
+
+Google shows it space-grouped; either form works, the spaces are stripped for you (IMAP
+rejects them). Understand the trade: **an App Password cannot be scoped** — that credential
+grants full mailbox access, including delete. `ImapReader` opens the mailbox with `EXAMINE`
+rather than `SELECT`, so the server refuses writes and mail is not even marked read, but
+that is read-only by *our code*, not by the credential.
+
+**B. Read-only OAuth token** — more clicks once, and the grant itself cannot modify mail.
+In [console.cloud.google.com](https://console.cloud.google.com): new project → enable the
+**Gmail API** → OAuth consent screen (External; add your own address as a test user) →
+Credentials → Create OAuth client ID → **Desktop app**. Then:
+
+```powershell
+python bridge/gmail_auth.py
+```
+
+It opens the consent screen, catches the redirect on a loopback port, checks the granted
+scope is `gmail.readonly`, and prints three lines to paste into `bridge/.env`:
+
+```
+GMAIL_CLIENT_ID=...apps.googleusercontent.com
+GMAIL_CLIENT_SECRET=...
+GMAIL_REFRESH_TOKEN=...
+```
+
+Revoke any time at [myaccount.google.com/permissions](https://myaccount.google.com/permissions),
+without disturbing anything else.
+
+> **While the consent screen is in "Testing", Google expires refresh tokens after 7 days.**
+> Publish the app (Publishing status → Publish) to stop re-authorising weekly. The
+> "unverified app" warning is expected — verification is only about *other* people using
+> your client, and you are the only user.
+
+Restart the bridge after editing `.env`, and remember the precedence rule above: a real
+environment variable still beats the file.
+
 ## Running
 
 Normally you do not start the bridge directly — the launcher at the repo root starts it
@@ -79,6 +148,12 @@ Two things worth knowing:
 - **Check liveness via the port, not the log.** stdout is buffered, so a backgrounded
   bridge's log file can sit empty while it is perfectly healthy. `netstat -ano` for a
   LISTENING socket on 8765 is the reliable signal.
+- **Outbound calls to Telegram pick their IP family by measurement, not by faith.** On a
+  box where one family is dead (a VPN routing only IPv4 is the everyday case), requests
+  would otherwise hang on a route that cannot connect. The bridge probes on first use and
+  re-probes after a connection failure, so a VPN dropping mid-run recovers on its own. Pin
+  it with `TELEGRAM_IP_FAMILY=4|6|auto` only if you have measured that you need to — an
+  unset variable is the self-correcting setting.
 - **A new WebSocket connection supersedes the old one** (it closes the previous client and
   drains the inbox). Do not connect a test client while a real run is in progress — it will
   end that run.

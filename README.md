@@ -27,7 +27,9 @@ Practical consequences:
   track duplicate applications and there is no undo.
 - It is not headless and not a bulk-apply tool. It is built for 5-8 considered applications a
   day, not hundreds.
-- The Telegram control plane is optional. Skip it and use the local web console instead.
+- The extension is the product. Everything else — the console, the Telegram control plane,
+  the mail credential that reads an emailed verification code — is optional scaffolding
+  around it, and the fill engine works with none of them configured.
 
 If you want a hosted, hands-off job-applier, this is the wrong project.
 
@@ -41,19 +43,33 @@ That installs the Python dependencies, creates your config files from the shippe
 templates, and opens the console on a setup checklist that walks you through the rest in
 the browser. Requires Python 3.10+, and Node 18+ for the console UI.
 
-The checklist tracks five things, and only the first is required:
+**Four steps get you to a filled application**, and only the first is required. The
+extension is the part that does the work; the rest of the list is about feeding it:
 
 | Step | What it means |
 |---|---|
 | **Your details** | Name, contact, work authorization, EEO answers. Edited as a form; `checkfill` counts what's left |
+| **Extension** | The fill engine itself. Rebuild from the Profile page, then load it once at `chrome://extensions` |
 | **Companies** | Ten real API-verified examples ship, so a scrape works immediately. Edit any tier to make the list yours |
 | **Resumes** | Only needed for the apply half. Point `_local_resume_source.base_dir` at your PDFs, then `python -m core.resumes sync-local` |
-| **Extension** | Rebuild from the Profile page, then load it once at `chrome://extensions` |
-| **Telegram** | Optional. Skip it and use the console instead |
 
-Two of those the setup flow **cannot** do for you, and it says so rather than pretending:
-Chrome deliberately requires a human to load an unpacked extension, and creating a Telegram
-bot is a conversation with BotFather. Both have an "I did this, re-check" button.
+Then two **optional extras**, listed separately in the console and left out of its progress
+bar. The extension fills and submits without either one, and did for months before they
+existed:
+
+| Extra | What it adds | If you skip it |
+|---|---|---|
+| **Telegram** | Answer a form's open questions from your phone | Answer them in the console instead |
+| **Verification codes** | Fills the emailed code some Greenhouse boards ask for at submit | The application is parked and you paste the code yourself |
+
+Two of the four, plus both extras, the setup flow **cannot** do for you, and it says so
+rather than pretending: Chrome deliberately requires a human to load an unpacked extension,
+creating a Telegram bot is a conversation with BotFather, and so is asking Google for a mail
+credential. Each has an "I did this, re-check" button.
+
+The extras read `bridge/.env` as well as your environment, since that file is where the
+setup instructions put those values — a checklist that called the documented setup "not
+configured" would be worse than no checklist.
 
 Your three config files (`data/profile.json`, `data/companies.yaml`,
 `data/answer_bank.yaml`) are **gitignored**, so filling them in can never commit your
@@ -207,6 +223,29 @@ After editing `taxonomy.yaml` or `profile.json`, restage the extension's copies:
 ```bash
 python extension/build.py     # then reload the unpacked extension in chrome://extensions
 ```
+
+## Emailed verification codes (optional extra)
+
+**Nothing needs this.** Some Greenhouse boards mail you an 8-character code on submit and
+hold the application behind it; with no mailbox credential configured the extension parks
+that application and tells you why, which is what it has always done and costs you one
+paste. Configure one and it reads the code out of your own inbox and fills it instead.
+
+**A fetch only ever follows something you did** — your Submit click, the panel's 🔐 button,
+or your approval in Telegram. Nothing polls your mail, and the unattended queue never
+triggers a fetch on its own. The matcher only considers mail that arrived *after* that
+click, and only messages that read as verification, so an unrelated code sitting in your
+inbox cannot be lifted into a job form.
+
+Pick one credential shape — see [`bridge/README.md`](./bridge/README.md#4-verification-codes-optional):
+
+- `GMAIL_ADDRESS` + `GMAIL_APP_PASSWORD` — one value to paste, and the mailbox is opened
+  read-only in code (IMAP `EXAMINE`), though the credential itself cannot be scoped.
+- `python bridge/gmail_auth.py` — a `gmail.readonly` OAuth token, read-only by the
+  credential and revocable on its own. More clicks once, stronger afterwards.
+
+Use the mailbox your applications actually go to: the address in `profile.json`
+`identity.email`, which is not necessarily the account you sign in with elsewhere.
 
 ## Answer bank
 

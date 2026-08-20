@@ -21,12 +21,15 @@ Two safety properties, both load-bearing:
     2FA code out of his inbox and type it into a job application. A missed code costs one
     manual paste. A wrong code taken from the wrong email is a different kind of mistake.
 
-NOT YET MEASURED — the real sender and subject. Every pattern below is inferred from the
-on-page wording, not from a real Greenhouse verification email, because none was available
-when this was written. That is exactly the mistake this project keeps paying for (see the
-Workday notes: reasoning about a widget instead of opening it). So the sender and subject
-are RANKING signals only and the code shape does the work; when a real email is in hand,
-tighten `ATS_SENDERS` / `SUBJECT_HINTS` and re-run the tests.
+MEASURED against a real Greenhouse code mail 2026-08-14, which corrected two guesses the
+first draft had made from the on-page wording alone: the code is ALL LETTERS, MIXED CASE
+(so requiring a digit would have rejected it, and upper-casing it would have typed a
+different string), and it arrives from a `greenhouse-mail` sender rather than
+`greenhouse.io`. Sender and subject stay RANKING signals only — an ALLOW-list is the first
+thing to go stale when an ATS changes provider, and it fails closed and silently.
+
+Setting up a mail credential is documented in bridge/README.md; `make_reader` below takes
+either shape and says which values are missing when neither is complete.
 """
 
 from __future__ import annotations

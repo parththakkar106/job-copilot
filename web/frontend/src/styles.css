@@ -730,9 +730,12 @@ select { cursor: pointer; }
 
 .setup-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 
+/* --card was never defined anywhere in this file, so every step card fell back to #fff
+   and rendered white with near-white title text on this console's dark palette. --bg-2 is
+   the token .card itself uses. */
 .setup-step {
   display: flex; gap: 14px; align-items: flex-start;
-  background: var(--card, #fff); border: 1px solid var(--line, #e5e7eb);
+  background: var(--bg-2, #fff); border: 1px solid var(--line, #e5e7eb);
   border-radius: 10px; padding: 14px 16px;
 }
 .setup-step.is-done { opacity: .62; }
@@ -765,6 +768,16 @@ select { cursor: pointer; }
 .setup-holes code { font-size: .82rem; }
 
 .setup-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+/* The optional group. Quieter than the core list on purpose: it should read as an offer,
+   not as work still outstanding. */
+.setup-extras { display: flex; flex-direction: column; gap: 10px; }
+.setup-extras-head {
+  margin: 6px 0 0; font-size: .82rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em; color: var(--muted, #6b7280);
+}
+.setup-extras-note { margin: 0; font-size: .85rem; }
+.setup-extras .setup-step { background: transparent; border-style: dashed; }
 
 .setup-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .setup-foot .muted { font-size: .82rem; }

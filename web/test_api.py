@@ -228,18 +228,33 @@ def main() -> None:
         assert prof.get("identity") == on_disk.get("identity"), prof.get("identity"); checks += 1
         assert "first_name" in prof.get("identity", {}), prof.get("identity"); checks += 1
 
-        # 8c. Setup checklist reports the five steps and a ready flag.
+        # 8c. Setup checklist reports every step and a ready flag.
         st = c.get("/api/setup/status").json()
-        assert st["total"] == 5 and len(st["steps"]) == 5, st; checks += 1
-        assert {s["id"] for s in st["steps"]} == {
-            "profile", "companies", "resumes", "extension", "telegram"}, st; checks += 1
+        assert st["total"] == 6 and len(st["steps"]) == 6, st; checks += 1
+        # ORDER, not just membership: the extension is the product, so it comes second -
+        # right after the details that feed it, and ahead of everything optional.
+        assert [s["id"] for s in st["steps"]] == [
+            "profile", "extension", "companies", "resumes", "telegram",
+            "verify_code"], st; checks += 1
         assert isinstance(st["ready"], bool) and "blocking_left" in st, st; checks += 1
         # profile is the only blocking step, and it exists here, so nothing blocks.
         assert st["ready"] and st["blocking_left"] == [], st; checks += 1
-        # The two steps no script can do must be flagged, or the page would imply the
-        # install finishes itself.
+        # The steps no script can do must be flagged, or the page would imply the install
+        # finishes itself. Nothing here asserts whether they are DONE: the credential steps
+        # read the real environment and bridge/.env, so a machine that has them configured
+        # would fail an assertion written against a fresh clone.
         manual = {s["id"] for s in st["steps"] if s["manual"]}
-        assert manual == {"extension", "telegram"}, manual; checks += 1
+        assert manual == {"extension", "telegram", "verify_code"}, manual; checks += 1
+        # Optional means optional: only the profile may ever block, and the two add-ons
+        # are flagged so the page can group them out of the main path.
+        assert [s["id"] for s in st["steps"] if s["blocking"]] == ["profile"], st; checks += 1
+        assert [s["id"] for s in st["steps"] if s["optional"]] == [
+            "telegram", "verify_code"], st; checks += 1
+        # The progress bar counts core steps only - an install that declines both extras is
+        # finished, and must not read as 4 of 6 forever.
+        assert st["core_total"] == 4 and st["core_done"] <= 4, st; checks += 1
+        assert st["core_done"] == sum(
+            1 for s in st["steps"] if not s["optional"] and s["done"]), st; checks += 1
 
         # 8b. Drafting flag: defaults ON, PUT flips it and persists to the shared prefs.
         assert c.get("/api/prefs/drafts").json()["enabled"] is True; checks += 1
