@@ -69,17 +69,44 @@ try {
         if ($LASTEXITCODE -eq 0) {
             Log "Pushed applied.json - tomorrow's scrape will dedup against it."
         } else {
-            Log "applied.json is committed locally but the push failed; it retries tomorrow."
+            # "Retries tomorrow" is only true if the push CAN succeed tomorrow. A rejected
+            # push means this clone has diverged, and every later day rejects identically -
+            # so the ledger stops reaching CI and the scrape's already-applied filter goes
+            # back to being the no-op that ab933ec existed to fix.
+            Log "applied.json is committed locally but the push was REJECTED - this clone has"
+            Log "diverged from origin. It will keep failing until you run, in ${dataHome}:"
+            Log "    git pull --rebase origin main; git push"
         }
     } else {
         Log "applied.json unchanged since the last run."
     }
 
-    # queue.json is the only file the bridge reads; check out just that one so a missing
-    # sibling (digest.html isn't tracked on origin) can't fail the whole refresh. Redundant
-    # after a clean fast-forward, and load-bearing on a day the fast-forward was refused.
-    git checkout origin/main -- out/queue.json 2>&1 | Out-Null
-    Log "Refreshed out/queue.json from origin/main in $dataHome."
+    # Redundant after a clean fast-forward, and load-bearing on a day the fast-forward was
+    # refused. Each path is checked out SEPARATELY on purpose: a single command listing all
+    # of them fails wholesale if one path is missing on origin, and a missing sibling must
+    # never cost the queue its refresh.
+    #
+    # dream.json and digest.md are here as of 2026-08-24 because they weren't, and it broke
+    # the console's Dream pile in the least visible way possible. One un-pushed local commit
+    # ("applied 2026-08-21") made --ff-only refuse EVERY morning from then on, so this
+    # fallback was the only refresh happening - and it refreshed queue.json alone. The board
+    # showed a queue from today beside a Dream pile frozen a week earlier, with nothing
+    # anywhere saying so. The bridge still only reads queue.json; the web console reads all
+    # three, and it is just as much a consumer of the scrape.
+    foreach ($f in @('out/queue.json', 'out/dream.json', 'out/manual.json', 'out/digest.md')) {
+        git checkout origin/main -- $f 2>&1 | Out-Null
+    }
+    Log "Refreshed out/queue.json + dream.json + manual.json + digest.md from origin/main in $dataHome."
+
+    # A refusal above means this clone has drifted off origin and is now living on the
+    # narrow fallback indefinitely - every generated file NOT in that list silently rots.
+    # It used to log one indistinguishable line and carry on for a week. Say it plainly.
+    $ahead = (git rev-list --count origin/main..HEAD 2>$null)
+    if ($ahead -and [int]$ahead -gt 0) {
+        Log "WARNING: $dataHome is $ahead commit(s) ahead of origin/main, so the daily"
+        Log "         fast-forward is refused and only the files listed above refresh."
+        Log "         Fix it once with:  git -C `"$dataHome`" pull --rebase origin main; git -C `"$dataHome`" push"
+    }
 } catch {
     Log "Origin sync skipped ($($_.Exception.Message)); the bridge will flag a stale queue."
 } finally {
