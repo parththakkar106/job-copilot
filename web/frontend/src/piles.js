@@ -95,16 +95,33 @@ export const isEditable = (bucket) => bucket === 'in_queue' || bucket === 'fille
  *
  * `hideWhenEmpty` keeps the derived columns off the board on a day when they read 0, so
  * the four columns that matter get the width.
+ *
+ * `rail: true` pulls the column out of the grid entirely and parks it as a collapsible rail
+ * down the left edge. `manual` is the one that gets this: those roles are not IN the
+ * automated flow — nothing fills them, nothing sends them, Parth applies in the tab himself
+ * — so they want to be a reachable list, not a full column of board width.
  */
 export const COLUMNS = [
+  { id: 'manual', label: 'By hand', droppable: false, hideWhenEmpty: true, rail: true },
   { id: 'discovered', label: 'Discovered', droppable: false, hideWhenEmpty: true },
   { id: 'in_queue', label: 'In queue', droppable: true },
   { id: 'filled', label: 'Ready', droppable: true },
   { id: 'dream', label: 'Dream', droppable: false, hideWhenEmpty: true },
-  { id: 'manual', label: 'By hand', droppable: false, hideWhenEmpty: true },
   { id: 'submitted', label: 'Sent', droppable: true },
   { id: 'blocked', label: 'Blocked', droppable: true },
 ]
+
+/**
+ * The single move a card should offer as a one-click button, rather than burying it in ⋯.
+ *
+ * Only `in_queue` has one today ('Approve → Ready'), and that is the point: approving is
+ * the move Parth makes dozens of times a day, and it was reachable on the board only by
+ * dragging or by opening a hover-only menu — neither of which reads as "there is an
+ * approve here". Anything without a `primary` move keeps just the ⋯ menu.
+ */
+export function primaryMove(bucket) {
+  return (MOVES[bucket] || []).find((m) => m.primary) || null
+}
 
 /**
  * Can a card sitting in `fromBucket` legally be dropped on the `target` column?

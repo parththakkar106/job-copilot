@@ -455,12 +455,54 @@ kbd {
   padding: 0 6px; color: var(--muted);
 }
 
-.kb-board {
+/* The board is the rail + the column grid, side by side. The grid keeps the equal-width
+   `repeat()` it always had; the rail is outside it so it can collapse to a 34px strip,
+   which a `1fr` track cannot. */
+.kb-board { display: flex; gap: 10px; flex: 1; min-height: 360px; }
+.kb-cols {
   display: grid; grid-template-columns: repeat(var(--kb-cols, 4), minmax(210px, 1fr)); gap: 10px;
   /* Columns scroll inside themselves rather than the page growing to the tallest one —
      with ~29 roles in To apply, a page-height board would bury the other columns. */
-  flex: 1; min-height: 360px;
+  flex: 1; min-width: 0;
 }
+
+/* ── By-hand rail ──────────────────────────────────────────────────────────────────── */
+.kb-rail {
+  display: flex; flex-direction: column; min-height: 0; flex-shrink: 0;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+  transition: width .18s var(--ease), background .16s, border-color .16s;
+}
+.kb-rail-open { width: 232px; }
+.kb-rail-shut { width: 36px; }
+/* Nothing drops into By hand, so while a card is in flight the rail recedes with the other
+   non-target columns rather than sitting at full strength beside the live ones. */
+.kanban-dragging .kb-rail { opacity: .42; }
+
+.kb-rail-toggle {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  padding: 11px 12px; width: 100%; text-align: left; cursor: pointer;
+  background: none; border: 0; color: var(--text);
+  font: 700 12.5px/1 inherit; letter-spacing: -.2px;
+}
+.kb-rail-open .kb-rail-toggle { border-bottom: 1px solid var(--line); }
+.kb-rail-toggle:hover { color: var(--accent); }
+.kb-rail-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--radius); }
+.kb-rail-chev { color: var(--dim); font-size: 9px; flex-shrink: 0; }
+.kb-rail-open .kb-count { margin-left: 0; }
+
+/* Collapsed, the strip is 36px wide — too narrow for a horizontal label, so the whole
+   button turns on its side and reads bottom-to-top. The dot and the count stay upright
+   inside the rotated flow, which is what `writing-mode` on the label alone would not do. */
+.kb-rail-shut .kb-rail-toggle {
+  flex-direction: column; justify-content: flex-start; gap: 10px;
+  padding: 11px 0; height: 100%;
+}
+.kb-rail-shut .kb-rail-label {
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  text-transform: uppercase; font-size: 10.5px; letter-spacing: .8px; color: var(--muted);
+}
+.kb-rail-shut .kb-count { margin-left: 0; padding: 1px 6px; font-size: 10px; }
+.kb-rail-body { padding: 9px; }
 .kb-col {
   display: flex; flex-direction: column; min-height: 0;
   background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
@@ -532,6 +574,14 @@ kbd {
 .kb-card-top { display: flex; align-items: center; gap: 7px; }
 .kb-co { font-weight: 700; font-size: 12.5px; letter-spacing: -.2px; }
 .kb-card-top .badge { font-size: 9px; padding: 1px 5px; }
+/* Deliberately NOT hover-gated the way ⋯ is: the complaint this fixes is that the board
+   showed no way to approve, and a control that only exists on hover does not answer it. */
+.kb-approve {
+  flex-shrink: 0; padding: 2px 8px; font-size: 10.5px; font-weight: 700; line-height: 1.5;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line));
+  color: var(--blue); background: color-mix(in srgb, var(--blue) 10%, transparent);
+}
+.kb-approve:hover:not(:disabled) { background: var(--blue); color: #fff; border-color: var(--blue); }
 .kb-card .move .btn { opacity: 0; }
 .kb-card:hover .move .btn, .kb-card:has(.move-menu) .move .btn { opacity: .7; }
 .kb-role {
@@ -698,8 +748,11 @@ select { cursor: pointer; }
   .focus-next { padding: 0; }   /* no arrows to line up with */
   /* A 6-column grid can't survive a phone: the board becomes one column per screen-width,
      swiped sideways. Dragging is unusable at this size anyway — the card's ⋯ menu is. */
-  .kb-board { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 86%;
+  .kb-cols { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 86%;
     overflow-x: auto; }
+  /* A 232px rail beside an 86%-wide column leaves nothing; on a phone it only ever shows
+     as the collapsed strip, and expanding it takes the full width instead. */
+  .kb-rail-open { width: 78%; }
   .kb-card .move .btn { opacity: .7; }
   .viewswitch button { padding: 5px 10px; }
 }

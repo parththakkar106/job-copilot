@@ -12,7 +12,7 @@
  *
  * Run: node web/frontend/test_piles.mjs
  */
-import { COLUMNS, MOVES, canDrop, dropMove, isEditable, inverseMove } from "./src/piles.js";
+import { COLUMNS, MOVES, canDrop, dropMove, isEditable, inverseMove, primaryMove } from "./src/piles.js";
 
 let n = 0;
 function ok(cond, what) {
@@ -75,6 +75,29 @@ ok(COLUMNS.every((c) => c.droppable || c.hideWhenEmpty),
    "the non-droppable columns are exactly the ones hidden when empty");
 ok(!isEditable("submitted") && isEditable("in_queue") && isEditable("filled"),
    "only queue-side cards open the drawer");
+
+// ── The rail, and the one-click primary move ─────────────────────────────────────────
+// The rail is laid out beside the column grid rather than inside it, so exactly one column
+// may claim it — two would silently stack in the same 232px strip.
+const rails = COLUMNS.filter((c) => c.rail);
+ok(rails.length === 1 && rails[0].id === "manual", "By hand is the one rail column");
+ok(!rails[0].droppable, "and it stays a drag source only — nothing drops into a derived pile");
+ok(COLUMNS[0].rail, "the rail column is first, so it renders on the left edge");
+
+// A primary move must be a REAL move for that bucket, or the button would post a transition
+// the server rejects.
+ok(primaryMove("in_queue")?.target === "filled", "in_queue's one-click action is approve");
+ok(MOVES.in_queue.some((m) => m === primaryMove("in_queue")),
+   "the primary move is one of the bucket's own moves, not a second source of truth");
+ok(canDrop("in_queue", primaryMove("in_queue").target),
+   "clicking approve and dragging to Ready are the same transition");
+for (const b of Object.keys(MOVES)) {
+  const p = primaryMove(b);
+  ok(p === null || MOVES[b].includes(p), `${b}'s primary move (if any) is one of its moves`);
+}
+ok(primaryMove("manual") === null && primaryMove("dream") === null,
+   "the by-hand piles offer no approve — there is nothing to fill and nothing to send");
+ok(primaryMove("submitted") === null, "an already-sent role has nothing to approve");
 
 // ── VIEW_KEY migration ───────────────────────────────────────────────────────────────
 // Mirrors Dashboard.jsx: an unknown stored value falls back to focus rather than rendering
