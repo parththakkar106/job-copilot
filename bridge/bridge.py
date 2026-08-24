@@ -765,7 +765,10 @@ def send_summary(rec: dict) -> None:
         lines.append(f"📄 {html.escape(str(rec['resume']))}")
     # Phase-1 saw these required fields still empty in the DOM (beyond the questions) —
     # Parth shouldn't approve blind; phase 3 will retry them, the ATS validates last.
-    warns = [str(w) for w in (rec.get("warnings") or []) if str(w).strip()]
+    # Filtered through open_warnings: the raw snapshot lists fields this same record has
+    # since filled, and a gate whose warning line is mostly false is a gate you learn to
+    # tap through. See pending.open_warnings.
+    warns = pending_mod.open_warnings(rec)
     if warns:
         lines.append("⚠️ <i>Form still showed empty (required): "
                      + html.escape(_one_line(", ".join(warns), 250)) + "</i>")

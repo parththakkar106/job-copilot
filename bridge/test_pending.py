@@ -199,8 +199,171 @@ def test_corrupt_file_is_survivable():
     return n
 
 
+def test_open_warnings():
+    """The warning box only earns attention if its entries are true.
+
+    `warnings` is a one-time DOM snapshot from the phase-1 fill and nothing ever revisits
+    it, so it goes stale in both directions. Measured across the live batch 2026-08-24:
+    1785 warnings on 165 records, of which 70% were either a field the same record listed
+    as filled, or a duplicate of another warning differing only by its required marker.
+    """
+    n = 0
+    rec = {
+        "filled": [{"label": "Country", "value": "United States"},
+                   {"label": "School", "value": "Other"},
+                   {"label": "Cover letter", "value": ""}],
+        "questions": [{"label": "End date year", "answer": None},
+                      {"label": "Why us?", "answer": "Because."},
+                      {"label": "Portfolio", "answer": ""}],
+        "warnings": ["Country", "School", "Cover letter", "End date year", "Why us?",
+                     "Portfolio", "Military status?*", "Military status?", "  ", ""],
+    }
+    got = P.open_warnings(rec)
+
+    # the false ones: the record itself shows a value for these
+    assert "Country" not in got and "School" not in got, got
+    n += 1
+    assert "Why us?" not in got, "an answered question is not an empty required field"
+    n += 1
+
+    # the true ones survive, including both blank-is-an-answer cases: a field whose value
+    # is "" really IS empty on the form, which is exactly what the warning is for
+    assert "Cover letter" in got, "filled-with-blank leaves the form field empty"
+    n += 1
+    assert "Portfolio" in got, "answered-blank leaves the form field empty"
+    n += 1
+    assert "End date year" in got, "an unanswered question stays a warning"
+    n += 1
+
+    # the asterisk twins collapse to exactly one entry, and the marker is dropped
+    assert [w for w in got if "Military" in w] == ["Military status?"], got
+    n += 1
+    assert not [w for w in got if not w.strip()], "blank entries never render"
+    n += 1
+
+    # nothing is written back: the raw snapshot is the audit trail of what phase 1 saw
+    assert len(rec["warnings"]) == 10, "open_warnings must not mutate the record"
+    n += 1
+
+    # a record with no warnings at all, and one with no filled/questions keys
+    assert P.open_warnings({}) == []
+    n += 1
+    assert P.open_warnings({"warnings": ["Country"]}) == ["Country"],         "with nothing to disprove it, a warning stands"
+    n += 1
+    return n
+
+
+def test_readable_label():
+    """A question Parth cannot read is a question he cannot answer.
+
+    Greenhouse's education block is scanned before its <label for> elements are wired, so
+    labelFor() falls through to `name || id` and those fields carry ids as labels. Found on
+    disk 2026-08-24: 29 questions across 16 records, every one of them from that block.
+
+    CASES MIRRORED IN extension/test_fill_units.mjs — the same rewrites live in fill.js as
+    readableLabel(), for new fills. If one side changes, change both.
+    """
+    n = 0
+    assert P.readable_label("end-month--0") == "End date month"
+    n += 1
+    assert P.readable_label("end-year--0") == "End date year"
+    n += 1
+    assert P.readable_label("start-month--0") == "Start date month"
+    n += 1
+    assert P.readable_label("END-MONTH--0") == "End date month", "case-insensitive"
+    n += 1
+    # Row 0 reads exactly as Greenhouse labels it once hydrated, so an escalated question
+    # matches its filled sibling; a later row has to say which entry it is.
+    assert P.readable_label("end-month--1") == "End date month (education 2)"
+    n += 1
+    # the other ids actually seen on disk
+    for raw, want in (("school--0", "School"), ("degree--0", "Degree"),
+                      ("discipline--0", "Discipline")):
+        assert P.readable_label(raw) == want, raw
+        n += 1
+    assert P.readable_label("work_authorization--2") == "Work authorization (row 3)"
+    n += 1
+
+    # THE safety property: a real question is never rewritten. Every rule is gated on the
+    # label being one token with a separator, and human-written labels have spaces.
+    for real in ("Why Ramp?", "What is your gender identity?", "End date month",
+                 "Are you willing to work from the office(s) listed?",
+                 "E-mail address", "Full-time or part-time?", "Ramp"):
+        assert P.readable_label(real) == real, real
+        n += 1
+    assert P.readable_label("") == "" and P.readable_label(None) == ""
+    n += 1
+
+    # It reaches the warning box too, which is how a warning naming a field by its id gets
+    # matched against the same field named properly in `filled`.
+    rec = {"filled": [{"label": "End date month", "value": "June"}],
+           "questions": [], "warnings": ["end-month--0"]}
+    assert P.open_warnings(rec) == [],         "an id-named warning is recognised as the filled field it refers to"
+    n += 1
+    return n
+
+
+def test_draft_from_form():
+    """A question the form has already answered is a confirmation, not a typing task.
+
+    Greenhouse's resume parser fills the education block before the extension scans it and
+    none of those fields match a taxonomy rule, so they escalated as questions anyway.
+    Found on disk 2026-08-24: 115 open questions across 31 records that the SAME record
+    lists under `filled` with a value.
+    """
+    n = 0
+    rec = {
+        "filled": [{"label": "End date month", "value": "June"},
+                   {"label": "school--0", "value": "Other"},
+                   {"label": "Country", "value": ""}],
+        "questions": [
+            {"id": "a", "label": "end-month--0", "answer": None},
+            {"id": "b", "label": "School", "answer": None},
+            {"id": "c", "label": "Country", "answer": None},
+            {"id": "d", "label": "Why us?", "answer": None},
+            {"id": "e", "label": "End date month", "answer": "May"},
+            {"id": "f", "label": "End date month", "answer": None, "draft": "Mine"},
+        ],
+    }
+    qs = {q["id"]: q for q in P.draft_from_form(rec)}
+
+    # matched across the id/label divide, in both directions
+    assert qs["a"]["draft"] == "June" and qs["a"]["_on_form"] is True, qs["a"]
+    n += 1
+    assert qs["b"]["draft"] == "Other", "a question labelled properly finds a field stored by id"
+    n += 1
+
+    # a field recorded with a BLANK value proves nothing — there is nothing to confirm
+    assert "draft" not in qs["c"] and not qs["c"].get("_on_form"), qs["c"]
+    n += 1
+    assert "draft" not in qs["d"], "a question with no matching field is untouched"
+    n += 1
+
+    # never overwrite what is already there
+    assert qs["e"]["answer"] == "May" and "draft" not in qs["e"], "an answered question is left alone"
+    n += 1
+    assert qs["f"]["draft"] == "Mine", "an existing draft (the bank's) outranks the form's value"
+    n += 1
+
+    # THE gate property: offering a draft must not decide the record is complete. Approving
+    # is what sends an application to a real employer, and a value nobody has looked at is
+    # not a value Parth accepted.
+    assert not P.is_complete({**rec, "questions": P.draft_from_form(rec)}),         "a drafted question is still unanswered"
+    n += 1
+
+    # it relabels on the same pass, so the drawer never shows a raw id
+    assert qs["a"]["label"] == "End date month", qs["a"]["label"]
+    n += 1
+    # and it does not mutate the record it was handed
+    assert rec["questions"][0]["label"] == "end-month--0", "draft_from_form must not mutate"
+    n += 1
+    return n
+
+
 if __name__ == "__main__":
     n = (test_roundtrip() + test_no_clobber() + test_answers_and_completion()
          + test_approve_gate() + test_listing_and_counts() + test_restore_from_archive()
-         + test_corrupt_file_is_survivable())
+         + test_corrupt_file_is_survivable() + test_open_warnings()
+         + test_readable_label()
+         + test_draft_from_form())
     print(f"pending: {n}/{n} checks passed")

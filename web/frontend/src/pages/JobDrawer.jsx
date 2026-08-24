@@ -118,9 +118,16 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
               <label className="qa-label">
                 {q.label}
                 {q.answer == null && <span className="qa-open">needs answer</span>}
+                {/* The form already has a value here — Greenhouse's resume parser fills the
+                    education block before the extension sees it, and those fields match no
+                    taxonomy rule, so they were escalated as questions anyway. Saying so is
+                    the difference between "type this out" and "confirm this". */}
+                {q._on_form && <span className="qa-onform">already on the form</span>}
               </label>
               {q.draft && (answers[q.id] ?? '') === '' && (
-                <button className="draft-chip" onClick={() => setAns(q.id, q.draft)}>use draft ↴</button>
+                <button className="draft-chip" onClick={() => setAns(q.id, q.draft)}>
+                  {q._on_form ? 'use what the form has ↴' : 'use draft ↴'}
+                </button>
               )}
               {Array.isArray(q.options) && q.options.length > 0 ? (
                 <select value={answers[q.id] ?? ''} onChange={(e) => setAns(q.id, e.target.value)}>

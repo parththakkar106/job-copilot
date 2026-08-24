@@ -663,6 +663,13 @@ kbd {
 .qa { margin-bottom: 15px; }
 .qa-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .qa-open { font-size: 10px; text-transform: uppercase; color: var(--amber); background: rgba(230,180,94,.14); padding: 2px 6px; border-radius: 4px; letter-spacing: .4px; font-weight: 800; }
+/* Sits beside .qa-open on a question the form has already answered: same shape, but green
+   rather than amber, because it is a confirmation and not an outstanding task. */
+.qa-onform {
+  margin-left: 8px; font-size: 10px; text-transform: uppercase; color: var(--green);
+  background: color-mix(in srgb, var(--green) 15%, transparent); padding: 2px 6px;
+  border-radius: 4px; letter-spacing: .4px; font-weight: 800;
+}
 .draft-chip { background: rgba(124,108,255,.14); color: var(--violet); border: 1px solid rgba(124,108,255,.32); border-radius: 7px; padding: 4px 10px; font-size: 12px; cursor: pointer; margin-bottom: 6px; font-family: inherit; }
 .draft-chip:hover { background: rgba(124,108,255,.22); }
 .qa-value { font-size: 13px; color: var(--text); background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; white-space: pre-wrap; word-break: break-word; }

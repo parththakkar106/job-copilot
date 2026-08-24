@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -246,6 +247,153 @@ def set_resume_override(dedup_key: str, tag: str, display: str | None = None,
 
 def unanswered(rec: dict) -> list[dict]:
     return [q for q in rec.get("questions", []) if q.get("answer") is None]
+
+
+def _warn_key(label) -> str:
+    """A label reduced to what identifies the FIELD, for comparing across sources.
+
+    The asterisk matters: warnings are the union of two lists that disagree about it.
+    `emptyRequiredLabels` strips the required marker as it collects, the escalated
+    labels on report.needsInput/flagged keep it, and the `new Set()` that unions them
+    compares raw strings — so every escalated required field was listed twice, once as
+    "What is your military status?*" and once without. Normalising here collapses the
+    twins for records already on disk; fill.js stops making them going forward.
+    """
+    return _warn_text(label).casefold()
+
+
+EDU_DATE_ID = re.compile(r"^(start|end)-(month|year)--(\d+)$", re.I)
+
+
+def readable_label(label) -> str:
+    """A label that is really just the control's id, turned into something answerable.
+
+    The mirror of readableLabel() in extension/fill.js -- keep the two in step. That one
+    fixes new fills at the moment a field escalates; this one fixes the 29 questions across
+    16 records that were already written to disk before it existed, at the moment the
+    console reads them. Both are purely presentational: the question's `id` is what phase 3
+    matches an answer against, and neither touches it.
+
+    The cause is Greenhouse's education block being scanned before the page has wired its
+    <label for> elements, so labelFor() falls through to its last resort of `name || id`.
+    Every id seen on disk is from that block -- school--0, degree--0, discipline--0,
+    end-month--0.
+    """
+    raw = str(label if label is not None else "").strip()
+    # Only machine ids qualify: one token, no spaces, and a separator. A real question has
+    # spaces, so no human-written label can reach the rewrites below.
+    if not raw or re.search(r"\s", raw) or not re.search(r"[-_]", raw):
+        return raw
+
+    m = EDU_DATE_ID.match(raw)
+    if m:
+        which, part, row = m.group(1), m.group(2), m.group(3)
+        when = "Start" if which.lower() == "start" else "End"
+        unit = "year" if part.lower() == "year" else "month"
+        if row == "0":
+            return f"{when} date {unit}"
+        return f"{when} date {unit} (education {int(row) + 1})"
+
+    m = re.match(r"^(.*?)--(\d+)$", raw)
+    stem = re.sub(r"\s+", " ", re.sub(r"[-_]+", " ", m.group(1) if m else raw)).strip()
+    if not stem:
+        return raw
+    nice = stem[0].upper() + stem[1:]
+    if m and m.group(2) != "0":
+        return f"{nice} (row {int(m.group(2)) + 1})"
+    return nice
+
+
+def _warn_text(label) -> str:
+    """The label as it should READ: no required marker, no doubled whitespace.
+
+    The marker is a DOM artifact of how the ATS renders "this one is mandatory", not part
+    of the question, and the warning box already says every entry is required in its own
+    heading. Stripping it here also means the surviving twin renders the same whichever
+    of the two source lists happened to be seen first.
+    """
+    stripped = re.sub(r"\s+", " ", str(label or "").replace("✱", "").replace("*", "")).strip()
+    return readable_label(stripped)
+
+
+def open_warnings(rec: dict) -> list[str]:
+    """The record's warnings, minus the ones its own contents disprove.
+
+    `warnings` is a DOM snapshot taken once, during the phase-1 fill: the required
+    fields that still read empty at that moment. It is never revisited, so it goes stale
+    two ways. A field the fill did commit can be read back as empty on a custom widget
+    (Greenhouse's React comboboxes report an empty `el.value` even when a value is
+    showing) and stays on the list for good; and answering a question later never
+    removes anything either.
+
+    Measured on a live record 2026-08-24: 16 warnings, 15 of which the SAME record
+    listed under `filled` with a real value. A warning box where 15 of 16 entries are
+    false is worse than no warning box - it trains you to close it without reading, on
+    exactly the screen whose job is to stop you approving something half-filled.
+
+    So a warning is dropped when the record itself shows that field carrying a
+    non-empty value. Deliberately not dropped when the value is blank: an answered-blank
+    optional really does leave the form field empty, which is the case the warning is
+    for. Nothing is written back - the raw snapshot stays on disk as the audit trail of
+    what phase 1 actually saw.
+    """
+    have = {_warn_key(f.get("label")) for f in (rec.get("filled") or [])
+            if str(f.get("value") or "").strip()}
+    have |= {_warn_key(q.get("label")) for q in (rec.get("questions") or [])
+             if str(q.get("answer") or "").strip()}
+    out, seen = [], set()
+    for w in (rec.get("warnings") or []):
+        text = _warn_text(w)
+        k = _warn_key(w)
+        if not k or k in have or k in seen:
+            continue
+        seen.add(k)
+        out.append(text)
+    return out
+
+
+def form_values(rec: dict) -> dict:
+    """What the record says is already sitting in each field, keyed for comparison.
+
+    Same key as the warnings use, so a field recorded under its raw control id matches the
+    same field recorded under its hydrated label.
+    """
+    out = {}
+    for f in (rec.get("filled") or []):
+        val = str(f.get("value") or "").strip()
+        k = _warn_key(f.get("label"))
+        if k and val and k not in out:
+            out[k] = val
+    return out
+
+
+def draft_from_form(rec: dict) -> list[dict]:
+    """The record's questions, with a draft filled in from the form where one exists.
+
+    Greenhouse's resume parser answers the education block before the extension ever scans
+    it, and none of those fields match a taxonomy rule, so they escalated as "unrecognized
+    required field" - and Parth was asked to type an answer into a box that visibly already
+    had one. Measured on disk 2026-08-24: 115 open questions across 31 records that the
+    SAME record lists under `filled` with a value.
+
+    Deliberately a draft and not an answer. Resolving them outright would be a one-line
+    change and it would also decide, for 31 records at once, that they may now be approved
+    and submitted unattended - is_complete() gates approve(), and a value nobody has looked
+    at is not the same as a value Parth accepted. So the drawer offers it on the "use draft"
+    chip he already has, one click, with the gate left where it is. fill.js no longer
+    escalates these at all, so this is for the backlog rather than for new records.
+    """
+    out = []
+    have = form_values(rec)
+    for q in (rec.get("questions") or []):
+        q = {**q, "label": readable_label(q.get("label"))}
+        if q.get("answer") is None and not q.get("draft"):
+            v = have.get(_warn_key(q.get("label")))
+            if v:
+                q["draft"] = v
+                q["_on_form"] = True
+        out.append(q)
+    return out
 
 
 def is_complete(rec: dict) -> bool:

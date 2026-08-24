@@ -42,13 +42,32 @@ def get_status():
 
 # ── One job (pending record) ─────────────────────────────────────────────────────────
 
+def _for_display(rec: dict) -> dict:
+    """Decorate a pending record for the console drawer. Read-only: nothing is saved.
+
+    Two things the stored record cannot say for itself. `warnings` is a one-shot DOM
+    snapshot from the phase-1 fill that nothing ever revisits, so most of its entries are
+    disproved by the record's own `filled` list. And a question's label can be the raw
+    control id when Greenhouse had not wired its <label for> yet, which asks Parth to
+    answer something called "end-month--0".
+
+    The question `id` is deliberately untouched: it is what phase 3 matches a stored
+    answer against, so relabelling must never reach it.
+    """
+    rec["_complete"] = pending_mod.is_complete(rec)
+    rec["warnings"] = pending_mod.open_warnings(rec)
+    # Also carries a draft for any question the form has already answered — see
+    # draft_from_form. It relabels too, so this is the one pass over the questions.
+    rec["questions"] = pending_mod.draft_from_form(rec)
+    return rec
+
+
 @router.get("/jobs/{dedup_key}")
 def get_job(dedup_key: str):
     rec = pending_mod.load(dedup_key)
     if rec is None:
         raise HTTPException(404, "no pending record for that job")
-    rec["_complete"] = pending_mod.is_complete(rec)
-    return rec
+    return _for_display(rec)
 
 
 @router.put("/jobs/{dedup_key}/answers")
@@ -61,8 +80,9 @@ def update_answers(dedup_key: str, body: AnswersUpdate):
     rec = pending_mod.load(dedup_key)
     if rec is None:
         raise HTTPException(404, "record vanished")
-    rec["_complete"] = pending_mod.is_complete(rec)
-    return rec
+    # Recomputed here too, not just on GET: answering a required question is exactly the
+    # event that should retire its warning, and the drawer re-renders from this response.
+    return _for_display(rec)
 
 
 @router.put("/jobs/{dedup_key}/resume")
