@@ -472,12 +472,65 @@ def reopen(dedup_key: str, base: Path | str | None = None) -> dict | None:
     return rec
 
 
+# /next serving tiers, lowest served first.
+TIER_IN_PROGRESS = 0    # he started answering this one and did not finish
+TIER_READY = 1          # nothing left to answer, one ✅ from approved
+TIER_FRESH = 2          # never touched
+
+
+def next_tier(rec: dict) -> int:
+    """Which serving tier a record is in. See serving_order."""
+    qs = rec.get("questions") or []
+    answered = [q for q in qs if q.get("answer") is not None]
+    if answered and len(answered) < len(qs):
+        return TIER_IN_PROGRESS
+    # Covers both "every question answered" and "phase 1 found no questions at all".
+    if not unanswered(rec):
+        return TIER_READY
+    return TIER_FRESH
+
+
+def serving_order(base: Path | str | None = None) -> list[dict]:
+    """Every awaiting job in the order /next should hand them over.
+
+    Was: oldest `created` first, full stop. That was written when the batch was one
+    collect run deep, where oldest-first IS freshest-first (phase 1 writes records in the
+    order triage served them, and triage serves freshest postings first). It does not
+    survive a backlog. Measured 2026-08-24: 178 awaiting records spanning 24 collect days,
+    so /next opened on a role collected on 2026-07-22 — 33 days stale, and very likely
+    closed — and would have kept doing so for another hundred taps.
+
+    Three tiers:
+      1. Started and unfinished. Half-answered is the worst state for a record to sit in,
+         and he already paid the cost of reading the role.
+      2. Complete but unapproved. One ✅ turns it into a real application; leaving 22 of
+         them parked behind 155 unread roles is the batch's biggest cheap win.
+      3. Everything untouched, newest collect run first.
+
+    Within tier 3 the order is by RUN, not by record. Reversing the records outright would
+    put the last-written record of the newest run first, and within a run last-written is
+    the OLDEST posting — triage serves freshest first, so a plain reverse quietly inverts
+    the ordering that already exists inside each run. Bucketing by collect day and
+    reversing the buckets keeps both: newest run first, freshest posting first inside it.
+    """
+    awaiting = all_jobs(AWAITING, base)          # oldest first
+    tiers = {TIER_IN_PROGRESS: [], TIER_READY: [], TIER_FRESH: []}
+    for rec in awaiting:
+        tiers[next_tier(rec)].append(rec)
+
+    by_run: dict[str, list[dict]] = {}
+    for rec in tiers[TIER_FRESH]:
+        by_run.setdefault((rec.get("created") or "")[:10], []).append(rec)
+    fresh = [rec for day in sorted(by_run, reverse=True) for rec in by_run[day]]
+
+    return tiers[TIER_IN_PROGRESS] + tiers[TIER_READY] + fresh
+
+
 def next_job(base: Path | str | None = None) -> dict | None:
-    """The next job wanting Parth's attention: oldest awaiting job with questions left.
-    A zero-question job still counts — it's complete but unapproved, so it needs his ✅."""
-    for rec in all_jobs(AWAITING, base):
-        return rec
-    return None
+    """The next job wanting Parth's attention — see serving_order for the ordering.
+    A zero-question job still counts: it's complete but unapproved, so it needs his ✅."""
+    order = serving_order(base)
+    return order[0] if order else None
 
 
 def next_question(rec: dict) -> dict | None:

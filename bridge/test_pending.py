@@ -360,10 +360,81 @@ def test_draft_from_form():
     return n
 
 
+def test_serving_order():
+    """/next must not open on a role collected a month ago.
+
+    The old rule was oldest-`created` first, which is correct while the batch is one
+    collect run deep (phase 1 writes in triage order, and triage serves freshest first)
+    and wrong the moment it is not. Measured 2026-08-24: 178 awaiting records over 24
+    collect days, so /next served a 33-day-old posting and would have kept doing so.
+    """
+    d, n = tmp(), 0
+
+    def put(key, created, qs, answers=()):
+        rec = P.put({**JOB, "dedup_key": key}, qs, FILLED, base=d)
+        rec["created"] = created
+        for qid, val in answers:
+            for q in rec["questions"]:
+                if q["id"] == qid:
+                    q["answer"] = val
+        P.save(rec, base=d)
+        return rec
+
+    two = [{"id": "ask_0", "label": "A"}, {"id": "ask_1", "label": "B"}]
+    # two collect runs; within a run, written freshest-posting first
+    put("aaaaaaaaaaaaaaa1", "2026-07-01T09:00:00+00:00", list(two))          # old, untouched
+    put("aaaaaaaaaaaaaaa2", "2026-07-01T09:00:01+00:00", list(two))          # old, untouched
+    put("bbbbbbbbbbbbbbb1", "2026-08-01T09:00:00+00:00", list(two))          # new, freshest
+    put("bbbbbbbbbbbbbbb2", "2026-08-01T09:00:01+00:00", list(two))          # new, next
+    put("ccccccccccccccc1", "2026-07-02T09:00:00+00:00", list(two),
+        answers=[("ask_0", "done")])                                          # started
+    put("ddddddddddddddd1", "2026-07-03T09:00:00+00:00", [])                  # complete, no qs
+
+    order = [r["dedup_key"] for r in P.serving_order(base=d)]
+
+    assert order[0] == "ccccccccccccccc1", f"a half-answered record is served first: {order}"
+    n += 1
+    assert order[1] == "ddddddddddddddd1", f"then the one that only needs a ✅: {order}"
+    n += 1
+    # the untouched tier: newest RUN first...
+    assert order[2:4] == ["bbbbbbbbbbbbbbb1", "bbbbbbbbbbbbbbb2"], order
+    n += 1
+    assert order[4:] == ["aaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaa2"],         f"the month-old run goes last, not first: {order}"
+    n += 1
+    # ...and freshest posting first WITHIN a run. A plain reverse would have flipped this:
+    # triage writes freshest first, so last-written is the OLDEST posting of that run.
+    assert order.index("bbbbbbbbbbbbbbb1") < order.index("bbbbbbbbbbbbbbb2"),         "within one run the original triage order survives"
+    n += 1
+    assert P.next_job(base=d)["dedup_key"] == "ccccccccccccccc1", "next_job agrees"
+    n += 1
+
+    # tier classification, including the two ways a record reads as READY
+    assert P.next_tier({"questions": [{"answer": "x"}, {"answer": None}]}) == P.TIER_IN_PROGRESS
+    n += 1
+    assert P.next_tier({"questions": [{"answer": "x"}]}) == P.TIER_READY
+    n += 1
+    assert P.next_tier({"questions": []}) == P.TIER_READY, "no questions at all is ready, not fresh"
+    n += 1
+    assert P.next_tier({"questions": [{"answer": None}]}) == P.TIER_FRESH
+    n += 1
+    # a deliberately-blank answer is an answer, so it counts as progress
+    assert P.next_tier({"questions": [{"answer": ""}, {"answer": None}]}) == P.TIER_IN_PROGRESS
+    n += 1
+
+    # only AWAITING is served: approving must remove a record from the order entirely
+    P.approve("ddddddddddddddd1", base=d)
+    assert "ddddddddddddddd1" not in [r["dedup_key"] for r in P.serving_order(base=d)]
+    n += 1
+    assert P.serving_order(base=tmp()) == [] and P.next_job(base=tmp()) is None,         "an empty batch serves nothing rather than raising"
+    n += 1
+    return n
+
+
 if __name__ == "__main__":
     n = (test_roundtrip() + test_no_clobber() + test_answers_and_completion()
          + test_approve_gate() + test_listing_and_counts() + test_restore_from_archive()
          + test_corrupt_file_is_survivable() + test_open_warnings()
          + test_readable_label()
-         + test_draft_from_form())
+         + test_draft_from_form()
+         + test_serving_order())
     print(f"pending: {n}/{n} checks passed")
