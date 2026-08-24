@@ -1,5 +1,12 @@
 # Outreach — find people, draft the note, Parth sends it (implementation plan)
 
+> **SUPERSEDED IN DIRECTION 2026-08-18 — see `referral_flow_plan.md`.** Parth flipped the
+> flow to people -> jobs: he finds the contact himself and pastes the profile in. Phase 1
+> below (`core/contacts.py`) is unchanged and still correct, but **the new path does not
+> call it**. Phases 2-4 here are replaced by the phasing in `referral_flow_plan.md`. The
+> constraints, provider table, title filter, relevance levers and PII sections below all
+> still hold and are referenced from there rather than duplicated.
+
 Status: **PHASE 1 BUILT AND MEASURED LIVE 2026-08-04** (`core/contacts.py`, 91 checks). Phases 2-4 (drafting,
 Telegram, console) are still plan only. Companion to `dashboard_spec.md` (the pile model)
 and the apply flow in the root `CLAUDE.md` — this reuses both wholesale.
