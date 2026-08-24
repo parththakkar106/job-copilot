@@ -56,13 +56,14 @@ function extractConst(name) {
 const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,
         isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer, sharesDistinctiveWord, cleanText, shouldSearchList, LIST_LOOKS_TRUNCATED,
         makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative, splitMonthYear, eduDateField,
-        answerCandidates, matchFirstCandidate, matchOption } =
+        readableLabel, fieldKey, answerCandidates, matchFirstCandidate, matchOption } =
   new Function(
   `${extract("matchOption")}\n${extract("answerCandidates")}\n${extract("matchFirstCandidate")}\n` +
   `${extract("onlyDigits")}\n${extract("phoneish")}\n${extract("phoneEq")}\n${extract("sameAnswer")}\n` +
   `${extractConst("FOLLOW_UP")}\n${extractConst("isNegative")}\n` +
   `${extractConst("EDU_DATE_ID")}\n${extractConst("MONTH_NAMES")}\n` +
-  `${extract("splitMonthYear")}\n${extract("eduDateField")}\n` +
+  `${extract("splitMonthYear")}\n${extract("eduDateField")}\n${extract("readableLabel")}\n` +
+  `${extractConst("fieldKey")}\n` +
   `${extractConsts()}\n${extract("askId")}\n${extract("diffApproved")}\n` +
   `${extractConst("searchable")}\n${extractConst("GENERIC_SEARCH_WORD")}\n${extract("searchCandidates")}\n` +
   `${extractConst("cleanText")}\n${extract("sharesDistinctiveWord")}\n` +
@@ -78,7 +79,7 @@ const { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, make
   `return { askId, diffApproved, searchCandidates, otherOption, OTHER_OK_FIELD, makeLiveControl,` +
   ` isPickList, makeDegreeLevel, makePageCompany, canon, wb, sameAnswer, sharesDistinctiveWord, cleanText, shouldSearchList, LIST_LOOKS_TRUNCATED,` +
   ` makeLiveField, makeCurrentValue, FOLLOW_UP, isNegative, splitMonthYear, eduDateField,` +
-  ` answerCandidates, matchFirstCandidate, matchOption };`)();
+  ` readableLabel, fieldKey, answerCandidates, matchFirstCandidate, matchOption };`)();
 
 let n = 0;
 const ok = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); process.exit(1); } n++; };
@@ -1234,6 +1235,97 @@ const labelOf = (el) => (el && el._label) || "";
     ok(outcome === "needs_verification", "no code in the inbox -> Parth is told, tab left open");
     ok(page.clicks === 1, "and Submit is never clicked again without a code");
   }
+}
+
+// --- readableLabel -----------------------------------------------------------------
+
+// The bug: labelFor()'s last resort is `el.name || el.id`, and Greenhouse's education
+// block is scanned before its <label for> elements are wired, so those fields carry ids
+// as labels. school--0/degree--0 get filled anyway (the taxonomy matches the words), but
+// end-month--0 matches nothing, escalates as "unrecognized required field", and Parth is
+// asked a question literally called "end-month--0" -- seen live on a Robinhood record
+// 2026-08-24, in the console drawer and on Telegram both.
+ok(readableLabel("end-month--0") === "End date month",
+   "the id that shipped to Parth now reads as the field it is");
+ok(readableLabel("end-year--0") === "End date year", "and its year half");
+ok(readableLabel("start-month--0") === "Start date month", "start dates too");
+ok(readableLabel("END-MONTH--0") === "End date month", "the id match is case-insensitive");
+
+// Row 0 is named EXACTLY as Greenhouse labels it once hydrated ("End date month"), so an
+// escalated question reads identically to the sibling that got filled. A later row has to
+// say which entry it is -- two questions both called "End date month" are unanswerable.
+ok(readableLabel("end-month--1") === "End date month (education 2)",
+   "a second education row says which entry it is");
+
+// The generic arm: any other id-shaped label beats showing a raw id.
+ok(readableLabel("work-authorization") === "Work authorization", "separators become spaces");
+ok(readableLabel("work_authorization--2") === "Work authorization (row 3)",
+   "a row suffix is lifted out rather than printed raw");
+ok(readableLabel("legal_name") === "Legal name", "underscores too");
+
+// THE safety property: a real question is never touched. Every rewrite above is gated on
+// the label being a single token with a separator, and a human-written label has spaces.
+for (const real of ["Why Ramp?", "What is your gender identity?", "End date month",
+                    "Are you willing to work from the office(s) listed on the job description?",
+                    "If you answered \"Yes\" to the above question, please provide more detail",
+                    "E-mail address", "Full-time or part-time?"]) {
+  ok(readableLabel(real) === real, `a real question is passed through untouched: ${real}`);
+}
+ok(readableLabel("") === "" && readableLabel(null) === "" && readableLabel(undefined) === "",
+   "an absent label stays absent rather than becoming a stray string");
+ok(readableLabel("Ramp") === "Ramp", "a single word with no separator is left alone");
+ok(readableLabel("  end-month--0  ") === "End date month", "surrounding whitespace is ignored");
+
+// --- fieldKey: one control, one key ------------------------------------------------
+
+// Section 4a's accounting dedups by label, and the same control reaches it under two
+// different names: its id when it was scanned before Greenhouse wired the <label for>, and
+// its human label once hydrated. Measured on a live Robinhood report 2026-08-22: 23 filled
+// entries, 3 of them duplicates — school--0 AND "School*", degree--0 AND "Degree*",
+// end-month--0 (escalated) AND "End date month*".
+ok(fieldKey("school--0") === fieldKey("School*"),
+   "the id form and the hydrated label are one field");
+ok(fieldKey("degree--0") === fieldKey("Degree*"), "same for degree");
+ok(fieldKey("end-month--0") === fieldKey("End date month*"),
+   "and for the date half that was escalated while its twin was filled");
+ok(fieldKey("end-year--0") === fieldKey("End date year"), "no marker needed either");
+
+// The required marker is what norm() alone could not see past — it does not strip ✱/*.
+ok(fieldKey("School*") === fieldKey("School"), "an asterisk is not part of the name");
+ok(fieldKey("School✱") === fieldKey("School"), "nor the other marker Greenhouse uses");
+ok(fieldKey("  School  ") === fieldKey("School"), "nor surrounding whitespace");
+
+// It must still tell genuinely different fields apart, or 4a would silently drop a real
+// chip as "already recorded" and undercount the fill — the exact bug 4a was added to fix.
+ok(fieldKey("School") !== fieldKey("Degree"), "different fields keep different keys");
+ok(fieldKey("End date month") !== fieldKey("End date year"), "the two date halves differ");
+ok(fieldKey("start-month--0") !== fieldKey("end-month--0"), "start and end differ");
+ok(fieldKey("end-month--0") !== fieldKey("end-month--1"),
+   "a second education row is a different field, not a duplicate of the first");
+ok(fieldKey("") === "" && fieldKey(null) === "", "an absent label yields no key to match on");
+
+// --- currentValue is the test the 'already on the form' branch makes -----------------
+
+// Greenhouse's resume parser fills the education block before we scan it. None of those
+// fields match a taxonomy rule, so they reached the unrecognized-required branch and Parth
+// was asked to type an answer into a box that visibly already had one. That branch now asks
+// currentValue first — a react-select holds its answer in a chip, never in the input.
+{
+  const chip = { textContent: "June" };
+  const rs = { querySelectorAll: () => [chip] };
+  const el = { isConnected: true, tagName: "INPUT", type: "text", value: "",
+               closest: (sel) => (sel.includes("select__control") ? rs : null) };
+  const currentValue = makeCurrentValue(cleanText, () => "");
+  ok(currentValue(el, {}) === "June",
+     "a committed chip reads as a value even though the input itself is empty");
+}
+{
+  const rs = { querySelectorAll: () => [] };
+  const el = { isConnected: true, tagName: "INPUT", type: "text", value: "",
+               closest: (sel) => (sel.includes("select__control") ? rs : null) };
+  const currentValue = makeCurrentValue(cleanText, () => "");
+  ok(currentValue(el, {}) === "",
+     "no chip means genuinely empty, so the field is still escalated");
 }
 
 console.log(`fill units: ${n}/${n} checks passed`);

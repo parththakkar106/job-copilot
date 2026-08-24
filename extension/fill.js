@@ -464,6 +464,64 @@ function splitMonthYear(s) {
   return (year || month) ? { month, year } : null;
 }
 
+// A label that is really just the control's id, turned into something a human can answer.
+//
+// labelFor()'s last resort is `el.name || el.id`, and on Greenhouse that resort gets used
+// more than it looks: the education block is scanned before the page has wired its
+// <label for> elements, so the fields captured in that window carry ids as labels.
+// school--0 and degree--0 survive it (the taxonomy matches the words "school" and
+// "degree" and fills them anyway), but end-month--0 matches nothing, escalates as an
+// "unrecognized required field", and Parth is asked to answer a question called
+// "end-month--0" -- on Telegram and in the console drawer both.
+//
+// This is deliberately PRESENTATIONAL and lives at the escalate() choke point, after
+// classify() has already run on the original text. Renaming a field before classification
+// would change which taxonomy rules match it and therefore what gets auto-filled, which is
+// a fill-behaviour change wearing a labelling change's clothes. Nothing here can do that.
+//
+// Note this does not stop end-month--0 being escalated at all -- eduDateField() refuses it
+// because Greenhouse re-keys school--0 to school--1 when the resume parses, so its
+// same-row block proof fails. That is a real and separate bug about WHICH row a date
+// belongs to after a re-key, and it needs a live form to settle. This makes the question
+// readable meanwhile.
+function readableLabel(label) {
+  const raw = String(label == null ? "" : label).trim();
+  // Only machine ids qualify: one token, no spaces, and a separator. A real question has
+  // spaces, so no human-written label can reach the rewrites below.
+  if (!raw || /\s/.test(raw) || !/[-_]/.test(raw)) return raw;
+
+  const edu = EDU_DATE_ID.exec(raw);
+  if (edu) {
+    const [, which, part, row] = edu;
+    const when = which.toLowerCase() === "start" ? "Start" : "End";
+    const unit = part.toLowerCase() === "year" ? "year" : "month";
+    // Row 0 is the first education entry and is named exactly as Greenhouse labels it once
+    // hydrated, so the escalated question reads the same as the filled sibling. A later row
+    // says which entry it is -- "End date month" twice over would be unanswerable.
+    return row === "0" ? `${when} date ${unit}` : `${when} date ${unit} (education ${Number(row) + 1})`;
+  }
+
+  // Anything else id-shaped: strip a trailing --N row suffix, split on the separators, and
+  // sentence-case it. "work-authorization--2" -> "Work authorization (row 3)".
+  const m = /^(.*?)--(\d+)$/.exec(raw);
+  const stem = (m ? m[1] : raw).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!stem) return raw;
+  const nice = stem.charAt(0).toUpperCase() + stem.slice(1);
+  return m && m[2] !== "0" ? `${nice} (row ${Number(m[2]) + 1})` : nice;
+}
+
+// One control, ONE key — whatever it happened to be called when it was recorded.
+//
+// The accounting in section 4a dedups by label, and the same control can reach it under two
+// different names: an id when it was scanned before Greenhouse wired its <label for>, and
+// the human label once hydrated. So school--0 and "School*" read as two different fields and
+// the same answer was recorded twice — 3 of the 23 `filled` entries on a live Robinhood
+// record were duplicates of entries already in the list.
+//
+// Strips the required marker (norm() does not), then routes through readableLabel so an
+// id-named entry compares as the field it actually is.
+const fieldKey = (label) => norm(readableLabel(String(label == null ? "" : label).replace(/[✱*]/g, "").trim()));
+
 // Which education date does this control want, if any? `doc` is injected so this stays
 // testable. Returns {profileKey, part} or null.
 function eduDateField(el, doc) {
@@ -1483,10 +1541,16 @@ async function runFill(autoSubmit = false, opts = {}) {
   // folded into the ask id so two same-labeled fields of different kinds can't swap
   // answers between phase 1 and phase 3 (see askId).
   const escalate = (bucket, item, apply) => {
+    // askId still hashes the ORIGINAL label: it is the identity that has to survive between
+    // phase 1 collecting a question and phase 3 landing the answer on that same field, and
+    // re-keying it here would strand every answer already stored against the old id.
     const id = askId(item.label || item.key, item.kind, usedIds);
     item._askId = id;
-    asks.push({ id, label: item.label || item.key, why: item.why, draft: item.draft, answer_key: item.answer_key, required: item.required, options: item.options, optional: bucket === "optional", apply });
-    report[bucket].push(item);
+    // What Parth READS, though, must be answerable. See readableLabel: a control whose
+    // label is really its id reaches here as "end-month--0".
+    const shown = readableLabel(item.label || item.key);
+    asks.push({ id, label: shown, why: item.why, draft: item.draft, answer_key: item.answer_key, required: item.required, options: item.options, optional: bucket === "optional", apply });
+    report[bucket].push({ ...item, label: shown });
   };
   try {
     const deps = await loadDeps();
@@ -1844,6 +1908,23 @@ async function runFill(autoSubmit = false, opts = {}) {
       } else if (c.bucket === "always_ask") {
         escalate("needsInput", { label, why: "always_ask", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
       } else if (req) {
+        // ALREADY ANSWERED ON THE PAGE. Greenhouse's resume parser fills the education
+        // block (school, degree, discipline, the end date) before we ever scan it, and none
+        // of those match a taxonomy rule, so they came through here and Parth was asked to
+        // type an answer into a box that visibly already had one. Live on Robinhood: two
+        // questions, "End date month" and "End date year", both sitting in the summary with
+        // values while the console showed them as still needing an answer.
+        //
+        // An unrecognized field means we do not know what SHOULD go there — it does not
+        // mean the form is empty. When the control already holds a committed value, record
+        // it instead of asking. The value is not taken on trust: it rides into the ✅
+        // summary like every other field, which is the gate that exists for exactly this.
+        // `via` marks where it came from so the report never implies we chose it.
+        const already = currentValue(el, adapter);
+        if (already) {
+          report.filled.push({ label, value: already, via: "already on the form" });
+          continue;
+        }
         escalate("needsInput", { label, why: "unrecognized required field", required: true, options: await optsFor(), kind: ctlKind }, applyCtl);
       } else if (mode === "panel") {
         // Optional and unrecognized: the form will submit without it, but Parth is sitting
@@ -1868,16 +1949,22 @@ async function runFill(autoSubmit = false, opts = {}) {
     // showed on the review yet the safety-net accounting couldn't see it). Walk the
     // committed chips directly (same source reviewValueSummary uses) and record any not
     // already claimed by label, so the report matches what will actually be submitted.
+    // fieldKey, not norm: `handled` alone is not enough to tell "already recorded" here.
+    // It holds the nodes captured during the scan, and Greenhouse REPLACES the education
+    // block's nodes when the resume parses — so the chip's live input is a different object
+    // than the one we filled, `handled` misses it, and the label comparison is all that is
+    // left. That comparison then failed too, because the scan recorded those fields under
+    // their ids. Both halves had to be wrong to produce a duplicate, and both were.
     const recordedLabels = new Set(
       [...report.filled, ...report.skipped, ...report.flagged, ...report.needsInput]
-        .map(i => norm(i.label || i.key || "")).filter(Boolean));
+        .map(i => fieldKey(i.label || i.key || "")).filter(Boolean));
     for (const ctl of document.querySelectorAll(".select__control")) {
       const chips = [...ctl.querySelectorAll(".select__single-value, .select__multi-value")];
       if (!chips.length) continue;
       const inp = ctl.querySelector("input");
       if (inp && handled.has(inp)) continue;          // a core field already owns it
       const label = inp ? fieldLabel(inp, adapter) : "";
-      if (label && recordedLabels.has(norm(label))) continue; // already in the report
+      if (label && recordedLabels.has(fieldKey(label))) continue; // already in the report
       const value = chips.map(cleanText).join(", ");
       report.filled.push({ label: label || "(unlabeled dropdown)", value });
     }
@@ -2017,7 +2104,20 @@ async function runFill(autoSubmit = false, opts = {}) {
         // DOM says is required-but-empty (a late resume-parser wipe, or any silent drop).
         const escalatedEmpty = [...report.needsInput, ...report.flagged]
           .filter(i => i.required).map(i => i.label || i.key);
-        const warnings = [...new Set([...escalatedEmpty, ...emptyRequiredLabels(adapter)])];
+        // Dedup on the label WITHOUT its required marker. emptyRequiredLabels strips ✱/*
+        // as it collects and the escalated labels keep it, so a plain Set over the union
+        // compared "Military status?*" against "Military status?" and kept both — every
+        // escalated required field was warned about twice. Measured on a live record:
+        // 4 of 17 warnings were twins of another 4.
+        const warnKey = (s) => String(s || "").replace(/[✱*]/g, "").replace(/\s+/g, " ").trim();
+        const warnings = [];
+        const warnSeen = new Set();
+        for (const w of [...escalatedEmpty, ...emptyRequiredLabels(adapter)]) {
+          const k = warnKey(w);
+          if (!k || warnSeen.has(k)) continue;
+          warnSeen.add(k);
+          warnings.push(k);
+        }
         // Ride on the report too: in collect mode these used to be computed and thrown
         // away, so the ✅ summary couldn't warn about required fields the fill left empty.
         report.warnings = warnings;
