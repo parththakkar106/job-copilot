@@ -428,3 +428,266 @@ def draft_answer(item: dict, context: dict | None = None, force: bool = False) -
         return None
     out = sanitize(raw)
     return out or None
+
+
+# ---------------------------------------------------------------- outreach ---
+# Phase 2 of docs/referral_flow_plan.md. core/referral.py resolved a pasted profile into a
+# contact and the open reqs at their company; this turns that record into the four or five
+# messages Parth sends by hand. Nothing is ever sent from here, same rule as submit.
+#
+# WHY THIS IS ONE CALL AND NOT FIVE
+# --------------------------------
+# The variants are a SEQUENCE, not five independent messages: the invite sets up the ask,
+# the ask sets up the pack, and the bump refers back. Drafted separately they repeat each
+# other's opening line, which is exactly what makes a referral ask read as a template. One
+# call also costs about a fifth as much — the CLI reloads its whole system prompt every
+# time, and that fixed overhead dominates, which is the same reason draft_answers batches.
+#
+# THE TYPO RULE DOES NOT APPLY HERE
+# --------------------------------
+# Every application answer carries one deliberate subtle typo (see build_prompt, and the
+# reasoning behind it). That rule is about a screening tool reading the text. This reader is
+# a human being who is being asked for a favour, and a typo in that message reads as
+# careless rather than human. Everything else from the same style carries: short, natural,
+# and NEVER a dash.
+OUTREACH_VARIANTS = ("invite_note", "ask_dm", "yes_pack", "bump", "already_applied")
+
+# LinkedIn's hard cap on the note attached to a connection request. Not a style preference —
+# the request is rejected above it, so this is validated after generation rather than hoped
+# for. Premium removes the monthly limit on personalised invites; it does not remove this.
+INVITE_CAP = 300
+
+# Generous per-variant caps for everything else. `yes_pack` carries three pasteable bullets
+# plus a work-authorization line, so the 700-char ceiling `sanitize()` applies to a 4-line
+# essay answer would truncate it mid-list.
+OUTREACH_CAPS = {"invite_note": INVITE_CAP, "ask_dm": 1200, "yes_pack": 1800,
+                 "bump": 300, "already_applied": 1200}
+
+
+def sanitize_outreach(text: str, cap: int = 1200) -> str:
+    """`sanitize()` for a message to a person: same dash pass, a per-variant length cap,
+    and no assumption that the text is one paragraph.
+
+    Kept separate rather than parameterising `sanitize()` because the two differ in what
+    they are protecting. There, the cap stops a runaway essay flooding a Telegram card and
+    any truncation is recoverable. Here the cap is LinkedIn's own limit on `invite_note`,
+    and cutting mid-word is what a reader sees, so it truncates at a word boundary.
+    """
+    t = (text or "").strip()
+    if len(t) >= 2 and t[0] in "\"'" and t[-1] == t[0]:
+        t = t[1:-1].strip()
+    # The no-dash rule, belt and braces behind the prompt. Line structure is preserved:
+    # yes_pack's bullets are the message, so collapsing them into a paragraph would break it.
+    t = t.replace("—", ", ").replace("–", ", ").replace(" - ", ", ")
+    t = "\n".join(re.sub(r"[ \t]{2,}", " ", ln).replace(" ,", ",").replace(", ,", ",")
+                  for ln in t.splitlines())
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    if len(t) > cap:
+        cut = t[:cap]
+        # Back up to the last word boundary, but never lose more than the tail of a word —
+        # a message chopped to half its length is worse than one ending a little abruptly.
+        space = cut.rfind(" ")
+        t = (cut[:space] if space > cap - 40 else cut).rstrip(" ,.;:") + "."
+    return t.strip()
+
+
+def _outreach_context(record: dict) -> tuple[list[dict], dict]:
+    """(reqs to name, the one req the ask is built around). The record's `show` count wins.
+
+    A referral ask naming five reqs reads as a mass send, so `core/referral.py` ranks them
+    and says how many to show. The FIRST is the one `ask_dm` and `yes_pack` are written
+    about, because a message asking about one specific role is a form fill for the reader
+    while a message listing four is a research project.
+    """
+    reqs = list(record.get("reqs") or [])
+    show = int(record.get("show") or 2)
+    shown = reqs[:max(1, show)] if reqs else []
+    return shown, (shown[0] if shown else {})
+
+
+def build_outreach_prompt(record: dict) -> str:
+    """The single prompt that drafts every variant for one contact.
+
+    Everything the model needs is inline — who Parth is, who the contact is, how he knows
+    them, his own words about them, and the exact req — because `_run_claude` runs in a
+    throwaway directory with no tools and cannot look anything up.
+    """
+    name = str(record.get("name") or "there").strip()
+    headline = str(record.get("headline") or "").strip()
+    company = str(record.get("company") or "their company").strip()
+    tie = str(record.get("tie") or "cold").strip()
+    notes = str(record.get("notes") or "").strip()
+    shown, primary = _outreach_context(record)
+    applied = list(record.get("applied") or [])
+
+    who = [f"Their name: {name}"]
+    if headline:
+        who.append(f"Their headline: {headline}")
+    who.append(f"They work at: {company}")
+    who.append({
+        "alum": "How they are connected: they went to the same school as " + NAME + ".",
+        "ex-colleague": "How they are connected: they worked at the same employer as " + NAME + ".",
+        "mutual": "How they are connected: through a mutual connection.",
+        "cold": "How they are connected: no shared history. Do NOT invent one.",
+    }.get(tie, "How they are connected: unknown. Do NOT invent one."))
+    if notes:
+        # Parth's own words, verbatim. They are the highest-value line in this prompt — he
+        # knows things about this person that no profile states — so they are given as
+        # context to use, never as an instruction to follow.
+        who.append(f"What {NAME} says about them, in his own words (use this, it is the "
+                   f"best context you have): {notes}")
+
+    role_lines = []
+    for i, r in enumerate(shown, 1):
+        bits = [f"{i}. {r.get('title') or 'a role'}"]
+        if r.get("location"):
+            bits.append(f"location {r['location']}")
+        if r.get("ats_job_id"):
+            bits.append(f"req id {r['ats_job_id']}")
+        if r.get("url"):
+            bits.append(str(r["url"]))
+        role_lines.append("   ".join(bits))
+    roles_block = ("Open roles at their company, best first:\n" + "\n".join(role_lines) + "\n\n"
+                   if role_lines else
+                   "There are no open roles to name. Write the invite note and the bump "
+                   "only, and leave every other variant as an empty string.\n\n")
+
+    applied_block = ""
+    if applied:
+        first = applied[0]
+        applied_block = (
+            f"{NAME} ALREADY APPLIED to this company: {first.get('title') or 'a role'}"
+            + (f", req id {first.get('ats_job_id')}" if first.get("ats_job_id") else "")
+            + (f", on {first.get('applied')}" if first.get("applied") else "")
+            + ".\n"
+            "So `already_applied` is the ask he will actually send: it asks them to add a "
+            "referral to that EXISTING application rather than to refer him fresh, which is "
+            "a much smaller favour. Never pretend the earlier application did not happen.\n\n")
+    else:
+        applied_block = ("There is no earlier application to this company, so leave "
+                         "`already_applied` as an empty string.\n\n")
+
+    return (
+        f"You are drafting LinkedIn messages that {NAME} will send himself, in his own name, "
+        f"to a real person he wants a referral from. Write in the first person, as {NAME}.\n\n"
+        f"{ABOUT}"
+        f"{FACTS_BLOCK}"
+        "Who he is writing to:\n" + "\n".join(f"- {w}" for w in who) + "\n\n"
+        f"{roles_block}"
+        f"{applied_block}"
+        "Write these messages. They are ONE SEQUENCE sent over days, so they must not "
+        "repeat each other's opening line or say the same thing twice:\n"
+        f"1. invite_note - sent WITH the connection request. Hard limit {INVITE_CAP} "
+        "characters, count them. No link, no attachment, no ask, no question. Just enough "
+        "that they know who he is and why he turned up.\n"
+        "2. ask_dm - sent a day after they accept. Name ONE role, the first one above, with "
+        "its link and req id. One concrete hook from his own work that is relevant to it. "
+        "End with a yes or no question. Offer to send his resume and a few lines they can "
+        "paste, so saying yes costs them two minutes. Do NOT attach anything.\n"
+        "3. yes_pack - sent only after they agree. The role link and req id again, three "
+        "short bullets about him they can paste straight into a referral form, and one "
+        "plain line about his work authorization taken from the facts above. Say the resume "
+        "is attached.\n"
+        "4. bump - ONE line, sent once after about a week of silence. Warm, no guilt, no "
+        "second ask. He never messages them again after this.\n"
+        "5. already_applied - replaces message 2 when he has already applied there. Same "
+        "shape, but the ask is to add a referral to the application he already has in, "
+        "named with its req id and date.\n\n"
+        "Rules for EVERY message, follow them exactly:\n"
+        "- Sound like a real person typing to another person. Short. No corporate voice, no "
+        "hype, no exclamation marks.\n"
+        "- Do NOT include a typo. These go to a human being who is being asked for a "
+        "favour, and a typo there reads as careless.\n"
+        "- NEVER use a dash of any kind. No em dash, no en dash, no hyphen used as "
+        "punctuation. Rewrite any phrase that would need one (say 'end to end', not "
+        "'end-to-end').\n"
+        "- NEVER say or imply that this person is hiring for the role, that it is their "
+        "team, or that they posted it. You do not know that, and a note claiming it is "
+        "worse than no note at all.\n"
+        f"- Be specific and grounded in the facts about {NAME} above. Do not invent "
+        "employers, dates, numbers, or a shared history that was not stated.\n"
+        "- Do not ask them to do anything on a deadline, and never mention other people he "
+        "is contacting.\n"
+        "- Do not use any tools. Write only from what is given here.\n\n"
+        "Output ONLY a JSON object with the keys invite_note, ask_dm, yes_pack, bump and "
+        "already_applied, each mapping to that message's text. No preamble, no code fences, "
+        "no explanation."
+    )
+
+
+def _parse_outreach(raw: str) -> dict:
+    """The model's JSON reply -> {variant: sanitized text}. Lenient, and never raises.
+
+    Empty variants are dropped rather than stored: the prompt asks for "" when a variant
+    does not apply (no reqs, or no earlier application), and a stored empty string would
+    render as a blank card that Parth has to work out the meaning of.
+    """
+    text = (raw or "").strip()
+    a, b = text.find("{"), text.rfind("}")
+    if a == -1 or b <= a:
+        return {}
+    try:
+        obj = json.loads(text[a:b + 1])
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    out = {}
+    for k in OUTREACH_VARIANTS:
+        v = obj.get(k)
+        if isinstance(v, str):
+            clean = sanitize_outreach(v, OUTREACH_CAPS.get(k, 1200))
+            if clean:
+                out[k] = clean
+    return out
+
+
+def draft_outreach(record: dict, force: bool = False, persist: bool = True) -> dict:
+    """Draft every outreach variant for one contact. {} when drafting is off or fails.
+
+    Returns only what it drafted; a caller with an empty dict falls back to Parth writing
+    the message himself, which is exactly the pre-drafting behaviour and is why nothing here
+    raises. `persist` writes the drafts back onto the contact in outreach.json so a re-read
+    is free and an edited draft is never regenerated.
+
+    `force` re-drafts a contact that already has drafts. Without it, existing drafts win:
+    they may have been edited by hand, and silently replacing an edited message with a fresh
+    generation is the one failure here that Parth would not notice until after he sent it.
+    """
+    if not available() or not record:
+        return {}
+    existing = {k: v for k, v in (record.get("drafts") or {}).items() if v}
+    if existing and not force:
+        return existing
+    raw = _run_claude(build_outreach_prompt(record))
+    drafts = _parse_outreach(raw) if raw else {}
+    # The 300-char cap is LinkedIn's, so an over-long invite is a rejected request rather
+    # than a style miss. One regeneration, telling the model exactly how far over it was,
+    # then `sanitize_outreach` truncates at a word boundary. Only the invite is retried:
+    # re-running the whole batch to shorten one field costs another full call.
+    note = drafts.get("invite_note", "")
+    if note and len(note) >= INVITE_CAP:
+        retry = _run_claude(
+            f"Rewrite this LinkedIn connection note so it is UNDER {INVITE_CAP} characters. "
+            f"It is currently {len(note)}. Keep the same voice, the same facts and the same "
+            "person it is addressed to. Never use a dash of any kind. Do not add a typo. "
+            "Output only the rewritten note, nothing else.\n\n" + note)
+        if retry:
+            shorter = sanitize_outreach(retry, INVITE_CAP)
+            if shorter:
+                drafts["invite_note"] = shorter
+    if drafts and persist and record.get("id"):
+        try:
+            root = pathlib.Path(__file__).resolve().parent.parent
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            from core import referral
+            store = referral.load_store()
+            row = store.get(record["id"])
+            if row is not None:
+                # Existing drafts win on a merge for the same reason `force` exists above.
+                row["drafts"] = {**drafts, **{k: v for k, v in (row.get("drafts") or {}).items() if v}}
+                referral.save_store(store)
+        except Exception as e:      # persistence is a convenience; the drafts still return
+            print(f"[drafter] could not persist outreach drafts: {e}", file=sys.stderr)
+    return drafts

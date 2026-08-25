@@ -421,11 +421,42 @@ def main() -> int:
             assert not G.scan([("f.py", 1, "let bo = 1;")], C), \
                 "a one-part name is too generic to hunt"
             checks += 1
+            # The referral paste flow stores a HEADLINE, which the search path never did and
+            # which names the person's employer as well as their role.
+            op.write_text(json.dumps([
+                {"name": "Dagny Halloran", "profile_url": "",
+                 "headline": "Senior Data Scientist at Northwind"},
+                {"name": "Ivo Brennan", "profile_url": "", "headline": "Engineer"},
+            ]), encoding="utf-8")
+            C = G.derive_contact_patterns()
+            assert G.scan([("f.py", 1, '# headline: Senior Data Scientist at Northwind')], C),                 "a real contact's headline must flag"
+            checks += 1
+            assert not G.scan([("f.py", 1, 'role = "Engineer"')], C),                 "a one-word headline is an ordinary job title, not an identity"
+            checks += 1
+
             op.write_text("{ not json", encoding="utf-8")
             assert G.derive_contact_patterns() == [], "a corrupt outreach file is not fatal"
             checks += 1
         finally:
             G.paths.OUTREACH = orig_out
+
+    # --- the profile-URL shape, widened for pasted links --------------------------------
+    S = G.SHAPE_PATTERNS
+    assert hits(S, "see https://www.linkedin.com/in/dagny-halloran-77 for the headline"),         "a hyphenated slug must flag"
+    checks += 1
+    # The referral flow's addition: Parth pastes whatever link the person has, and a custom
+    # unhyphenated slug is common. This was invisible to the search-era rule.
+    assert hits(S, "url = 'linkedin.com/in/dagnyhalloran'"),         "an unhyphenated custom slug must flag"
+    checks += 1
+    # ...without firing on prose that explains the URL format, which is what the placeholder
+    # list defends. A guard that flags its own documentation gets bypassed.
+    for placeholder in ("linkedin.com/in/foo", "linkedin.com/in/username",
+                        "linkedin.com/in/your-name", "linkedin.com/in/firstname"):
+        assert not hits(S, f"# profile URLs look like {placeholder}"), placeholder
+        checks += 1
+    # `example-` stays reserved for invented fixtures, both shapes.
+    assert not hits(S, "https://www.linkedin.com/in/example-dagny-halloran-77"); checks += 1
+    assert not hits(S, "https://www.linkedin.com/in/example-rui-oyelaran-4b2"); checks += 1
 
     print(f"pii_guard: {checks}/{checks} checks passed")
     return 0

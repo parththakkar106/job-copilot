@@ -147,6 +147,11 @@ def is_configured() -> bool:
 # one of them somewhere safe wrote to the real file through the other.
 OUT = STATE / "out"
 QUEUE = OUT / "queue.json"
+# The dream pile: roles the auto-apply loop deliberately skips, to be approached by hand or
+# via a referral. Same shape as queue.json and just as much a snapshot of who is being
+# targeted, so it follows HOME for the same reason. Named here because the referral flow
+# reads it alongside the queue — a dream row is the best thing to put in front of a contact.
+DREAM = OUT / "dream.json"
 APPLIED = STATE / "applied.json"
 # Outreach contacts: OTHER PEOPLE's names, headlines and profile URLs, gathered from public
 # search results. Everything else under HOME is Parth's own data; this is the one file that

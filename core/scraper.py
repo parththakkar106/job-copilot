@@ -742,6 +742,23 @@ def run(args):
     filt = load_yaml(Path(args.filters))
     fields_cfg = filt["fields"]
 
+    # --only: ONE company's board, right now. The referral flow's tier 3 needs this — a
+    # pasted contact works somewhere that is tracked but had nothing open last night, and
+    # re-scraping 100+ boards to answer that is exactly what the local-only rule forbids.
+    #
+    # It writes NOTHING. The daily run's out/ files are a shared snapshot that the console,
+    # the extension and applied.json dedup all read, and a one-company run would replace
+    # every one of them with a single company's roles — a silent, total data loss that looks
+    # like a successful run. So the results go to stdout as JSON and out/ is left alone.
+    only = (getattr(args, "only", "") or "").strip()
+    if only:
+        wanted = {norm(x) for x in only.split(",") if x.strip()}
+        companies = [c for c in companies
+                     if norm(c.get("name", "")) in wanted or norm(c.get("slug", "")) in wanted]
+        if not companies:
+            print(f"no company in {args.companies} matches {only!r}", file=sys.stderr)
+            return
+
     applied_path = Path(args.applied)
     applied = set()
     if applied_path.exists():
@@ -772,7 +789,9 @@ def run(args):
     # location strings, a true posted date, an id the liveness check can use).
     dream_names = {norm(c.get("name", "")) for c in companies
                    if c.get("tier") == "dream" and c.get("name")}
-    for src in (filt.get("sources") or []):
+    # Feeds are whole-list sources covering every employer at once, so a one-company run
+    # would fetch 12MB to throw nearly all of it away.
+    for src in ([] if only else (filt.get("sources") or [])):
         if not src.get("enabled", True):
             continue
         print(f"- {src.get('name', src.get('format', '?'))} [feed]")
@@ -847,6 +866,15 @@ def run(args):
     rest = [j for j in kept if j.tier != "dream"]
     pipeline = [j for j in rest if fillable(j.ats)]
     manual = [j for j in rest if not fillable(j.ats)]
+
+    if only:
+        # Every kept row, in one list: the caller asked about a company, not about which
+        # pile the row would have landed in. `fillable` still tags each so a surface can
+        # tell an auto-appliable req from an apply-by-hand one.
+        rows = [{**asdict(j), "fillable": fillable(j.ats)} for j in kept]
+        print(json.dumps(rows, indent=2))
+        print(f"{len(rows)} live roles for {only} (nothing written)", file=sys.stderr)
+        return
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -1155,6 +1183,12 @@ if __name__ == "__main__":
     ap.add_argument("--out", default=str(paths.OUT))
     ap.add_argument("--verify-liveness", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--only", default="",
+                    help="scrape ONLY these companies (name or slug, comma separated), "
+                         "print them as JSON and write nothing")
+    # Accepted and ignored: --only always emits JSON. It exists so callers can say what they
+    # mean without having to know that, and so the flag can grow a table mode later.
+    ap.add_argument("--json", action="store_true", help="with --only: JSON on stdout (default)")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:

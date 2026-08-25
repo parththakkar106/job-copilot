@@ -145,7 +145,16 @@ SHAPE_PATTERNS: list[tuple[str, str]] = [
     # reserved above: core/contacts.py's selftest needs realistic profile URLs to test
     # against, and mangling them until they stop looking real would stop them testing
     # anything. Anything NOT so prefixed is presumed to be a person.
-    (r"linkedin\.com/in/(?!example-)[a-z0-9]+(?:-[a-z0-9]+){1,}",
+    # A hyphenated multi-part slug, OR a single run of at least eight characters that is not
+    # one of the placeholder words prose uses. The second half was added for the referral
+    # paste flow (core/referral.py): the search path only ever produced slugs the way search
+    # engines index them, but Parth pastes whatever link the person actually has, and a
+    # custom unhyphenated slug is extremely common. The placeholder list is what keeps the
+    # widening from firing on documentation explaining the URL format.
+    (r"linkedin\.com/in/(?!example-)"
+     r"(?!(?:foo|bar|baz|name|slug|user|username|profile|someone|firstname|lastname|"
+     r"yourname|your-name|handle|placeholder|example)\b)"
+     r"(?:[a-z0-9]+(?:-[a-z0-9]+){1,}|[a-z0-9]{8,})",
      "someone else's LinkedIn profile"),
 ]
 
@@ -455,6 +464,15 @@ def derive_contact_patterns() -> list[tuple[str, str]]:
             slug = url.split("/in/", 1)[1].strip("/").split("?")[0]
             if len(slug) > 3:
                 _add_ci(out, slug, "an outreach contact's profile")
+        # The HEADLINE, which the referral paste flow records and the search path never did.
+        # It is the line most likely to be copied into a comment or a fixture while writing
+        # the drafter ("headline: Senior Data Scientist at Northwind"), and unlike a name it
+        # names the person's employer too. Only hunted when it is distinctive enough to be
+        # one specific person's: three real words, none of them generic. Two would flag
+        # ordinary job titles, and a guard that cries wolf is a guard that gets bypassed.
+        headline = str(r.get("headline") or "").strip()
+        if len(_tokens(headline)) >= 3:
+            _add_ci(out, headline, "an outreach contact's headline")
     return out
 
 

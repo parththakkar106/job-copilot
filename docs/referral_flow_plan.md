@@ -1,6 +1,10 @@
 # Referral flow — paste a person, get reqs + the drafts (scope)
 
-Status: **SCOPE ONLY, nothing built.** Decided with Parth 2026-08-18. This supersedes the
+Status: **P1 AND P2 BUILT 2026-08-25** (`core/referral.py`, 75 checks; `draft_outreach()` in
+`bridge/drafter.py`, covered by `bridge/test_drafter.py`). P3-P5 (Telegram, screenshot input,
+the console page) are still plan only, and **nothing has been measured against a real paste
+yet** - the tier mix below is the thing to watch first. Scope decided with Parth 2026-08-18.
+This supersedes the
 *direction* of `outreach_plan.md` phases 2-4; that document's phase 1 (`core/contacts.py`)
 stays valid and stays in the repo, but is **not on this path**. Read the constraints,
 provider table, title filter, and PII sections of `outreach_plan.md` first — they still hold
@@ -77,8 +81,12 @@ Match the pasted employer against local files only, in this order. `employer_is(
 | 3 | `companies.yaml` (tracked, no current row) | Tracked but nothing open matched last night. **Offer a one-company live pull** — a single ATS call for that slug, not a re-scrape. Opt-in per paste, never automatic. This respects "don't re-fetch all companies" while not dead-ending. |
 | 4 | unknown | Say so plainly, offer to append the company to `companies.yaml` so tonight's run picks it up. Draft nothing — a referral ask with no req in it is the weak version of this whole idea. |
 
-Tier 3 needs `core/scraper.py --only <company>`; today it takes `--companies <file>` and
-nothing narrower, so the alternative is writing a temp yaml. Ten-line add.
+Tier 3 needs `core/scraper.py --only <company>`; **added 2026-08-25.** It takes names or
+slugs, comma separated, skips the whole-list feeds, and **writes nothing** - the results go
+to stdout as JSON. That last part is not a convenience: the daily run's `out/` files are a
+shared snapshot the console, the extension and the applied-dedup all read, and a one-company
+run through the normal output path would replace every one of them with a single company's
+roles.
 
 A company can hit tiers 1 and 2 at once (open req AND a past application). Tier 1 wins for
 the ask, but the draft should mention the earlier application rather than pretend it did not
@@ -147,16 +155,56 @@ LinkedIn. A Telegram nudge sweeps invites older than N days and asks, rather tha
 remember. Dedupe on `id` at paste time: **the same recruiter covers three roles, and
 inviting one person twice is the failure that gets an account restricted.**
 
+## What shipped (P1 + P2, 2026-08-25)
+
+`core/referral.py` (new, `python -m core.referral --selftest`, 75 checks), the outreach half
+of `bridge/drafter.py`, `core/paths.py` (+`DREAM`), `core/scraper.py` (+`--only`),
+`scripts/pii_guard.py` (+ the widened profile-URL shape, + headlines in
+`derive_contact_patterns()`), and the matching cases in `test_home_layout.py` (58) and
+`scripts/test_pii_guard.py` (132).
+
+    python -m core.referral --dry-run --notes "same lab, two years above me" < profile.txt
+
+Deviations from the scope below, and why:
+
+- **`apply_after`'s Workday rule is `sent + 4 days` capped at `posted + 10 days`**, not the
+  literal `min(sent + 4d, now)` written under `apply_after` below. Taken literally that
+  expression returns today for every req that has not already waited, which is not a wait at
+  all. The 10-day cap is this document's own staleness rule doing the same job precisely.
+- **A tier-3 live pull that FINDS something is recorded as tier 1**, not tier 3. The only
+  difference from the overnight path is when the fetch happened, and logging it as a miss
+  would corrupt the coverage measurement this document asks for.
+- **`--only` writes nothing and prints JSON.** The obvious implementation reuses the
+  scraper's normal output path, which would replace `out/queue.json`, `out/dream.json` and
+  `out/manual.json` with one company's roles: a total data loss that looks like a successful
+  run. It also skips the whole-list feeds, which would fetch ~12MB to discard nearly all.
+- **`resume_for()` lives in `core/referral.py` and rides on each req**, so the Telegram card
+  can name the PDF even when drafting is off. That is the cheap half of the open question
+  under "Resume delivery" below; `sendDocument` is still not written.
+- **The store defends `state`, `history` and existing drafts on a re-paste.** Re-pasting
+  somebody invited last week must refresh their reqs without resetting them to `found`, or
+  the surface re-offers an invite to a person already invited.
+- **The PII guard's profile-URL rule was widened**, because the search path only ever
+  produced slugs the way an index writes them while a paste carries whatever link the person
+  actually has, and an unhyphenated custom slug was invisible to the old shape. It also
+  hunts contact HEADLINES now, which the paste flow records and the search path did not.
+  The guard caught this work twice while it was being written, both times a real detail in a
+  fixture; `example-` stays the reserved prefix.
+
+**Not built, and deliberately:** the ask is never sent, `--live` never fires unless asked
+for, and no surface exists yet - P1 is a library plus a CLI, on purpose, so the tier mix can
+be measured before anything depends on it.
+
 ## Phasing
 
-**P1 — `core/referral.py`, library + CLI, no bridge.** Profile-text parser (name, headline,
+**P1 — `core/referral.py`, library + CLI, no bridge. DONE 2026-08-25.** Profile-text parser (name, headline,
 employer, school, location; reuse `parse_profile_card()` where the shape matches), the
 four-tier resolver, req ranking, `apply_after`, `outreach.json` read/write with dedupe.
 Pure functions with `--selftest`, invented people in fixtures. **`scripts/pii_guard.py`
 learns the pasted-profile shape BEFORE the first fixture is written** — it has caught its own
 author three times and this feature is entirely other people's personal data.
 
-**P2 — `drafter.draft_outreach()`.** One batched Claude call per contact producing every
+**P2 — `drafter.draft_outreach()`. DONE 2026-08-25.** One batched Claude call per contact producing every
 variant. Reuses `build_prompt`'s voice rules, `_run_claude`, the `DRAFTS_ENABLED` kill
 switch, and persistence. New: the 300-char validator, the no-dash pass, the tie and Parth's
 `notes` in the prompt, and a hard rule that a note must never assert the person is hiring

@@ -1,6 +1,12 @@
 # Outreach — find people, draft the note, Parth sends it (implementation plan)
 
-> **SUPERSEDED IN DIRECTION 2026-08-18 — see `referral_flow_plan.md`.** Parth flipped the
+> **SUPERSEDED IN DIRECTION 2026-08-18, and the replacement's P1+P2 SHIPPED 2026-08-25 —
+> see `referral_flow_plan.md`.** Phase 2 below (`draft_outreach`) was BUILT, but for the
+> paste flow: it drafts from a `core/referral.py` contact record, not from a
+> `core/contacts.py` search result. The two gaps this document defers into its own phase 2 —
+> wiring `fetch_description()` into `find_contacts()`, and a title-similarity term in
+> `score()` — are still open, and still only matter if the search path is turned back on.
+> Phases 3 and 4 here are replaced by `referral_flow_plan.md`'s P3-P5.** Parth flipped the
 > flow to people -> jobs: he finds the contact himself and pastes the profile in. Phase 1
 > below (`core/contacts.py`) is unchanged and still correct, but **the new path does not
 > call it**. Phases 2-4 here are replaced by the phasing in `referral_flow_plan.md`. The

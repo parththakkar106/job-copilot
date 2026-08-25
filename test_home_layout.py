@@ -35,6 +35,7 @@ EXPECTED = {
     "AUDIT_INDEX": True,
     "OUT": True,                # a snapshot of who is being targeted
     "QUEUE": True,
+    "DREAM": True,           # the same snapshot, for the roles applied to by hand
     # The one file here that is somebody ELSE's data — names, headlines and profile links
     # of people to contact. Everything else under HOME belongs to the user; this belongs to
     # third parties, which makes leaving it in the checkout the worst failure of the set.
