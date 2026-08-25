@@ -112,6 +112,7 @@ from core import apply_log as apply_log_mod  # Workday entry-route policy (reads
 from core import bank as bank_mod
 from core import paths as paths_mod       # the one place that knows where anything lives
 from core import profile as profile_mod  # resume track tags + display names for /resume
+from core import referral as referral_mod  # pasted-profile resolution + the outreach store
 from core import scraper as scraper_mod  # dedup_key — the panel path must mint the same key
 
 
@@ -302,6 +303,21 @@ def tg_send(text: str, buttons=None) -> int:
     return r.json()["result"]["message_id"]
 
 
+def tg_send_plain(text: str) -> int:
+    """Send text with NO HTML parsing — for a message meant to be long-pressed and copied.
+
+    Every other send here is HTML, which is right for a card: bold, links, escaped values.
+    It is wrong for a drafted message to a real person. `&amp;` and `&#39;` are what an
+    escaped apostrophe looks like once it has been copied into LinkedIn, and a stray `<`
+    in somebody's note would make Telegram reject the whole send.
+    """
+    r = SESSION.post(f"{API}/sendMessage",
+                     json={"chat_id": CHAT_ID, "text": text,
+                           "disable_web_page_preview": True}, timeout=30)
+    r.raise_for_status()
+    return r.json()["result"]["message_id"]
+
+
 def tg_answer_callback(cb_id: str, text: str = "") -> None:
     try:
         SESSION.post(f"{API}/answerCallbackQuery",
@@ -372,6 +388,7 @@ async def _safe(label: str, coro):
 
 
 async def telegram_poller(offset):
+    global REFER_WAITING
     while True:
         try:
             updates = await asyncio.to_thread(tg_get_updates, offset)
@@ -427,6 +444,16 @@ async def telegram_poller(offset):
                 if low == "/apply" or low.startswith("/apply ") or low.startswith("/apply\n"):
                     await _safe("/apply", handle_apply(text.strip()))
                     continue
+                if low == "/refer" or low.startswith("/refer ") or low.startswith("/refer\n"):
+                    await _safe("/refer", handle_refer(text.strip()))
+                    continue
+                if low in ("/refers", "/outreach"):
+                    await _safe("/refers", handle_outreach_list())
+                    continue
+                if low == "/cancel" and REFER_WAITING:
+                    REFER_WAITING = False
+                    await _safe("/cancel", asyncio.to_thread(tg_send, "👍 Forgotten."))
+                    continue
                 if low in ("/help", "help", "/commands"):
                     await _safe("/help", handle_help())
                     continue
@@ -436,6 +463,13 @@ async def telegram_poller(offset):
                 if low.startswith("/"):
                     await _safe("unknown command", asyncio.to_thread(
                         tg_send, "❓ Unknown command. Send /help to see them all."))
+                    continue
+                # An armed /refer eats exactly the next message. Checked BEFORE the answer
+                # paths, because a pasted profile swallowed as the current question's answer
+                # is a profile submitted to a real employer.
+                if REFER_WAITING:
+                    REFER_WAITING = False
+                    await _safe("/refer paste", resolve_referral(text.strip()))
                     continue
                 # A typed reply belongs to the legacy blocking ask ONLY while one is
                 # actually in flight (LOCK held) — that's a manual panel fill, where
@@ -1104,6 +1138,313 @@ async def handle_apply(text: str) -> None:
 
 # Single source of truth for the command list: drives both /help and the Telegram command
 # menu (setMyCommands, the "/" button). Keep the two in sync by construction.
+
+# --- referrals: paste a person, get the reqs and the drafts -------------------------
+#
+# P3 of docs/referral_flow_plan.md. core/referral.py resolves the paste and drafter.py
+# writes the messages; everything here is the view over them. Nothing is ever sent to the
+# contact from the bridge — the messages are shown so Parth can copy them, which is the same
+# rule as submit and the reason this feature cannot get his account restricted.
+#
+# WHY A PASTE NEEDS ITS OWN MODE
+# ------------------------------
+# Free text in this poller answers the current batch question. A profile pasted while a form
+# is half-answered would be stored verbatim as somebody's answer to "Why us?", on a real
+# application. So a paste only ever arrives one of two ways: inside `/refer <text>`, or as
+# the ONE message after a bare `/refer`, which arms REFER_WAITING and is checked before the
+# answer path. Anything else is an answer, exactly as before.
+REFER_WAITING = False
+# The outreach namespace inside the batch callback space. `a`/`o` are answers, `j` is a job,
+# `r` is a resume; `x` is a contact.
+CB_REF = "x"
+
+
+def _refer_state_label(state: str) -> str:
+    return {"found": "🆕 not contacted", "invited": "📨 invited", "accepted": "🤝 accepted",
+            "messaged": "💬 asked", "replied": "✅ replied", "no_reply": "🔇 no reply",
+            "bumped": "👋 bumped", "skipped": "⏭️ skipped"}.get(str(state or ""), str(state or "?"))
+
+
+def referral_card(rec: dict) -> tuple[str, list]:
+    """(text, buttons) for one contact. Pure, so the tests can read it without a network."""
+    ref = referral_mod.short_id(rec.get("id") or "")
+    tier = rec.get("tier")
+    lines = [f"👤 <b>{html.escape(str(rec.get('name') or '?'))}</b> · "
+             f"{html.escape(str(rec.get('tie') or 'cold'))}"]
+    if rec.get("headline"):
+        lines.append(html.escape(_one_line(rec["headline"], 120)))
+    if rec.get("profile_url"):
+        lines.append(f'🔗 <a href="{html.escape(str(rec["profile_url"]))}">their profile</a>')
+    lines.append(f"🏢 <b>{html.escape(str(rec.get('company') or '?'))}</b> · "
+                 f"tier {tier} ({html.escape(referral_mod.TIER_NAMES.get(tier, '?'))}) · "
+                 f"{_refer_state_label(rec.get('state'))}")
+
+    reqs = list(rec.get("reqs") or [])
+    show = int(rec.get("show") or referral_mod.REQ_SHOW)
+    for r in reqs[:max(1, show)] if reqs else []:
+        bits = [f"• <b>{html.escape(str(r.get('title') or '?'))}</b>"]
+        if r.get("location"):
+            bits.append(html.escape(str(r["location"])))
+        if r.get("ats_job_id"):
+            bits.append(f"req {html.escape(str(r['ats_job_id']))}")
+        lines.append(" · ".join(bits))
+        if r.get("url"):
+            lines.append(f'  <a href="{html.escape(str(r["url"]))}">open</a>')
+        # The parallel-tracks rule: this is when to stop waiting and apply yourself, and it
+        # is nearly always today. Only a Workday req with a reply pending ever says later.
+        if r.get("apply_after"):
+            when = str(r["apply_after"])
+            lines.append(f"  <i>apply yourself: {html.escape(when)}</i>")
+    for a in (rec.get("applied") or [])[:1]:
+        lines.append(f"📌 <i>you already applied "
+                     f"{html.escape(str(a.get('applied') or ''))}: "
+                     f"{html.escape(_one_line(a.get('title'), 60))}</i>")
+
+    buttons = []
+    drafts = {k: v for k, v in (rec.get("drafts") or {}).items() if v}
+    if drafts:
+        row = [{"text": "✉️ Note", "callback_data": f"{CB}:{CB_REF}:{ref}:m:invite_note"}]
+        # already_applied REPLACES the ask when there is an application to attach to, so
+        # only one of the two is ever offered. Showing both would put two different asks in
+        # front of him for the same person and invite sending the wrong one.
+        ask = "already_applied" if drafts.get("already_applied") else "ask_dm"
+        if drafts.get(ask):
+            row.append({"text": "🙋 Ask", "callback_data": f"{CB}:{CB_REF}:{ref}:m:{ask}"})
+        buttons.append(row)
+        row2 = []
+        if drafts.get("yes_pack"):
+            row2.append({"text": "📦 Pack", "callback_data": f"{CB}:{CB_REF}:{ref}:m:yes_pack"})
+        if drafts.get("bump"):
+            row2.append({"text": "👋 Bump", "callback_data": f"{CB}:{CB_REF}:{ref}:m:bump"})
+        if row2:
+            buttons.append(row2)
+    else:
+        buttons.append([{"text": "✍️ Draft the messages",
+                         "callback_data": f"{CB}:{CB_REF}:{ref}:draft"}])
+    if len(reqs) > max(1, show):
+        buttons.append([{"text": f"➡️ Other reqs ({len(reqs) - show})",
+                         "callback_data": f"{CB}:{CB_REF}:{ref}:more"}])
+    if tier == referral_mod.TIER_TRACKED:
+        buttons.append([{"text": "🔎 Check this company now",
+                         "callback_data": f"{CB}:{CB_REF}:{ref}:live"}])
+    buttons.append([{"text": "📨 Invited", "callback_data": f"{CB}:{CB_REF}:{ref}:s:invited"},
+                    {"text": "🤝 Accepted", "callback_data": f"{CB}:{CB_REF}:{ref}:s:accepted"}])
+    buttons.append([{"text": "✅ Replied", "callback_data": f"{CB}:{CB_REF}:{ref}:s:replied"},
+                    {"text": "⏭️ Drop", "callback_data": f"{CB}:{CB_REF}:{ref}:s:skipped"}])
+    return "\n".join(lines), buttons
+
+
+async def send_referral_card(rec: dict) -> None:
+    text, buttons = referral_card(rec)
+    await asyncio.to_thread(tg_send, text, buttons)
+
+
+async def handle_refer(text: str) -> None:
+    """/refer — resolve a pasted profile into reqs, or arm the paste mode when sent bare."""
+    global REFER_WAITING
+    touch_activity()
+    body = re.sub(r"(?is)^/refer\b[ \t]*", "", str(text or "")).strip()
+    if not body:
+        REFER_WAITING = True
+        await asyncio.to_thread(tg_send,
+            "👤 Send me the profile: paste the LinkedIn page text, or just the link.\n"
+            "<i>Add a line about how you know them and I'll use it in the drafts. "
+            "/cancel to forget it.</i>")
+        return
+    REFER_WAITING = False
+    await resolve_referral(body)
+
+
+async def resolve_referral(body: str, live: bool = False) -> None:
+    """Resolve one paste and show the card. Everything after the profile is Parth's notes.
+
+    The notes are the highest-value line the drafter gets — he knows things about this person
+    that no profile states — so a paste that carries any is worth more than one that does
+    not, and the split is done here rather than asking him for two messages.
+    """
+    text, notes = _split_paste(body)
+    rec = await asyncio.to_thread(referral_mod.resolve_paste, text, notes, "", live)
+    if rec is None:
+        await asyncio.to_thread(tg_send,
+            "🤔 I couldn't find a person in that. Paste the profile text or the "
+            "linkedin.com/in/... link.")
+        return
+    if not rec.get("id"):
+        # No profile URL means no dedupe key, and the store is what stops the same recruiter
+        # being invited about three different roles. The card is still worth showing.
+        await asyncio.to_thread(tg_send,
+            "⚠️ <i>No profile link in that paste, so I can't remember this person or check "
+            "whether you've already contacted them. Send the link and I'll file it.</i>")
+    await send_referral_card(rec)
+    if rec.get("tier") == referral_mod.TIER_UNKNOWN and rec.get("company"):
+        await asyncio.to_thread(tg_send,
+            f"🆕 <b>{html.escape(str(rec['company']))}</b> isn't in companies.yaml. Add it "
+            f"and tonight's run will find its roles.")
+
+
+_NOTE_SPLIT = re.compile(r"(?im)^\s*(?:notes?|how i know them|context)\s*:\s*")
+
+
+def _split_paste(body: str) -> tuple[str, str]:
+    """(profile text, Parth's notes). An explicit `notes:` line wins; otherwise a short
+    trailing line after a blank line is treated as his comment.
+
+    Deliberately conservative: mis-reading half a profile as a note loses the employer and
+    drops the paste to tier 4, while mis-reading a note as profile text costs nothing but a
+    slightly noisier parse.
+    """
+    m = _NOTE_SPLIT.search(body or "")
+    if m:
+        return body[:m.start()].strip(), body[m.end():].strip()
+    parts = re.split(r"\n\s*\n", str(body or "").strip())
+    if len(parts) > 1 and len(parts[-1]) < 200 and "\n" not in parts[-1].strip():
+        return "\n\n".join(parts[:-1]).strip(), parts[-1].strip()
+    return str(body or "").strip(), ""
+
+
+async def referral_callback(ref: str, rest: list, cb_id: str) -> None:
+    """Every contact button. `rest` is whatever followed the token in the callback data."""
+    touch_activity()
+    rec = await asyncio.to_thread(referral_mod.find_by_short, ref)
+    if rec is None:
+        await asyncio.to_thread(tg_answer_callback, cb_id, "That contact's gone")
+        return
+    action = rest[0] if rest else ""
+
+    if action == "draft":
+        if not drafter_mod.available():
+            await asyncio.to_thread(tg_answer_callback, cb_id, "Drafting is off")
+            await asyncio.to_thread(tg_send, "✍️ Drafting is off or unavailable. /draft on")
+            return
+        await asyncio.to_thread(tg_answer_callback, cb_id, "Drafting…")
+        drafts = await asyncio.to_thread(drafter_mod.draft_outreach, rec)
+        if not drafts:
+            await asyncio.to_thread(tg_send, "✍️ Couldn't draft that one. Try again, or "
+                                             "write it yourself.")
+            return
+        fresh = await asyncio.to_thread(referral_mod.find_by_short, ref)
+        await send_referral_card(fresh or {**rec, "drafts": drafts})
+        return
+
+    if action == "m" and len(rest) > 1:
+        # One message per send, as plain text with NO html parsing and no link preview:
+        # this is meant to be long-pressed and copied, and an escaped entity or a rendered
+        # tag would be copied along with it into a message to a real person.
+        variant = rest[1]
+        body = ((rec.get("drafts") or {}).get(variant) or "").strip()
+        if not body:
+            await asyncio.to_thread(tg_answer_callback, cb_id, "Not drafted")
+            return
+        await asyncio.to_thread(tg_answer_callback, cb_id, "Copy it below")
+        label = {"invite_note": "connection note", "ask_dm": "the ask",
+                 "already_applied": "the ask (you already applied)",
+                 "yes_pack": "the pack", "bump": "the bump"}.get(variant, variant)
+        extra = ""
+        if variant == "invite_note":
+            extra = f"\n\n({len(body)}/{drafter_mod.INVITE_CAP} characters)"
+        if variant == "yes_pack":
+            res = next((r.get("resume") for r in (rec.get("reqs") or []) if r.get("resume")), None)
+            if res and res.get("path"):
+                # Naming the file is the agreed v1: the bridge has no sendDocument, and
+                # attaching the wrong track's resume is worse than fetching it by hand.
+                extra = f"\n\nattach: {res['path']}"
+        await asyncio.to_thread(tg_send_plain, f"— {label} —\n\n{body}{extra}")
+        return
+
+    if action == "more":
+        rec["show"] = len(rec.get("reqs") or []) or 1
+        await asyncio.to_thread(tg_answer_callback, cb_id, "All reqs")
+        await send_referral_card(rec)
+        return
+
+    if action == "live":
+        await asyncio.to_thread(tg_answer_callback, cb_id, "Checking…")
+        await asyncio.to_thread(tg_send, "🔎 Pulling that one company's board, one moment.")
+        text = rec.get("profile_url") or rec.get("name") or ""
+        # Re-resolve from the stored profile URL rather than the original paste: the paste
+        # is not kept, and the URL is enough to rebuild the same person.
+        await resolve_referral(f"{rec.get('name', '')}\n{rec.get('headline', '')}\n{text}",
+                               live=True)
+        return
+
+    if action == "s" and len(rest) > 1:
+        state = rest[1]
+        row = await asyncio.to_thread(referral_mod.set_state, rec.get("id") or "", state)
+        await asyncio.to_thread(tg_answer_callback, cb_id, _refer_state_label(state))
+        if row:
+            await send_referral_card(row)
+        return
+
+    await asyncio.to_thread(tg_answer_callback, cb_id, "")
+
+
+async def handle_outreach_list() -> None:
+    """/refers — everyone in flight, grouped by state, so nothing is quietly dropped."""
+    touch_activity()
+    store = await asyncio.to_thread(referral_mod.load_store)
+    rows = [r for r in store.values() if isinstance(r, dict)]
+    live = [r for r in rows if str(r.get("state")) not in referral_mod.NUDGE_DONE_STATES]
+    if not rows:
+        await asyncio.to_thread(tg_send,
+            "🙂 No contacts yet. Send /refer and paste somebody's profile.")
+        return
+    lines = [f"👥 <b>Outreach</b> — {len(live)} in flight, {len(rows)} total"]
+    for r in sorted(live, key=lambda x: str(x.get("company") or ""))[:25]:
+        lines.append(f"• {html.escape(str(r.get('name') or '?'))} · "
+                     f"{html.escape(str(r.get('company') or '?'))} · "
+                     f"{_refer_state_label(r.get('state'))}")
+    if len(live) > 25:
+        lines.append(f"<i>…and {len(live) - 25} more</i>")
+    await asyncio.to_thread(tg_send, "\n".join(lines))
+
+
+# How often the follow-up sweep looks. Deliberately slow: every due nudge is a question for
+# a human, `due_nudges` measures in DAYS, and each one fires at most once per contact.
+OUTREACH_SWEEP_SECS = int(os.environ.get("OUTREACH_SWEEP_SECS", "3600") or 3600)
+
+
+async def outreach_watcher() -> None:
+    """Ask about invites that have gone quiet, and offer the bump when one is due.
+
+    `accepted` is the only transition the pipeline cannot observe — it cannot see his
+    LinkedIn — so without this the state machine stalls at `invited` forever and the
+    follow-up that makes outreach work never happens. It asks rather than assuming, and
+    `mark_nudged` means it asks once.
+    """
+    while True:
+        await asyncio.sleep(OUTREACH_SWEEP_SECS)
+        try:
+            due = await asyncio.to_thread(referral_mod.due_nudges)
+            for key, kind in due[:5]:      # a phone buzzing ten times is a muted phone
+                store = await asyncio.to_thread(referral_mod.load_store)
+                rec = store.get(key)
+                if not rec:
+                    continue
+                ref = referral_mod.short_id(key)
+                who = html.escape(str(rec.get("name") or "?"))
+                company = html.escape(str(rec.get("company") or "?"))
+                if kind == "accepted":
+                    await asyncio.to_thread(tg_send,
+                        f"🤝 Did <b>{who}</b> ({company}) accept your invite?",
+                        [[{"text": "Yes", "callback_data": f"{CB}:{CB_REF}:{ref}:s:accepted"},
+                          {"text": "Not yet", "callback_data": f"{CB}:{CB_REF}:{ref}:s:invited"}],
+                         [{"text": "Give up on this one",
+                           "callback_data": f"{CB}:{CB_REF}:{ref}:s:no_reply"}]])
+                else:
+                    bump = ((rec.get("drafts") or {}).get("bump") or "").strip()
+                    await asyncio.to_thread(tg_send,
+                        f"👋 <b>{who}</b> ({company}) has been quiet for "
+                        f"{referral_mod.NUDGE_BUMP_DAYS} days. One bump, then drop it.",
+                        [[{"text": "👋 Bump text",
+                           "callback_data": f"{CB}:{CB_REF}:{ref}:m:bump"}] if bump else
+                         [{"text": "✍️ Draft it", "callback_data": f"{CB}:{CB_REF}:{ref}:draft"}],
+                         [{"text": "Sent it", "callback_data": f"{CB}:{CB_REF}:{ref}:s:bumped"},
+                          {"text": "Drop it", "callback_data": f"{CB}:{CB_REF}:{ref}:s:no_reply"}]])
+                await asyncio.to_thread(referral_mod.mark_nudged, key, kind)
+        except Exception as e:
+            print(f"[outreach] sweep error: {redact(e)}", file=sys.stderr)
+
+
 COMMANDS = [
     ("run", "Start a collection pass over today's queue"),
     ("apply", "Fill a job link and collect its questions"),
@@ -1112,6 +1453,8 @@ COMMANDS = [
     ("edit", "Change an answer before you approve"),
     ("resume", "Swap the resume for the current job"),
     ("retry", "Re-queue jobs that couldn't submit"),
+    ("refer", "Paste someone's profile, get the reqs and the messages"),
+    ("refers", "Everyone you're in outreach with"),
     ("draft", "Turn Claude answer-drafting on or off"),
     ("stop", "Halt the queue"),
     ("help", "Show all commands"),
@@ -1284,6 +1627,10 @@ async def batch_callback(data: str, cb_id: str) -> None:
     if kind == "later":
         await asyncio.to_thread(tg_answer_callback, cb_id, "Paused")
         await asyncio.to_thread(tg_send, "⏸ Paused — nothing lost. Send /next whenever.")
+        return
+
+    if kind == CB_REF and len(parts) >= 3:      # b:x:<token>:<action>[:<arg>]
+        await referral_callback(parts[2], parts[3:], cb_id)
         return
 
     if kind in ("a", "o") and len(parts) == 5:
@@ -2124,12 +2471,14 @@ async def main():
         idle = asyncio.create_task(idle_watcher())
         trigger = asyncio.create_task(trigger_watcher())
         flush_trigger = asyncio.create_task(flush_trigger_watcher())
+        outreach = asyncio.create_task(outreach_watcher())
         try:
             await telegram_poller(offset)
         finally:
             idle.cancel()
             trigger.cancel()
             flush_trigger.cancel()
+            outreach.cancel()
 
 
 if __name__ == "__main__":

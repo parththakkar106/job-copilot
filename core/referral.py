@@ -759,6 +759,109 @@ def set_state(key: str, state: str) -> dict | None:
     return row
 
 
+
+# ------------------------------------------------------- surfaces (P3+) ---
+# A Telegram callback_data field is capped at 64 BYTES, and the store's key is a whole
+# profile URL — `linkedin.com/in/firstname-lastname-a1b2c3` is already 40 of them before the
+# namespace and the action are prefixed. So buttons carry a short token instead, and the
+# store is searched for it. The store key stays the URL because `core/contacts.py` uses the
+# same file with the same rule, and two modules keying one file differently is how a person
+# ends up in it twice.
+def short_id(key: str) -> str:
+    """A stable 8-hex token for one contact, for anywhere the full key will not fit.
+
+    FNV-1a, the same hash `docs/referral_flow_plan.md` names in the data model, chosen there
+    for the same reason it is right here: it is stable across runs, unlike a sequence
+    number, so a button pressed tomorrow still means the person it meant today.
+    """
+    h = 0x811C9DC5
+    for b in normalize_profile_url(key).encode("utf-8"):
+        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+    return f"{h:08x}"
+
+
+def find_by_short(token: str, store: dict | None = None) -> dict | None:
+    """The contact a button token refers to, or None if it has since been removed."""
+    tok = str(token or "").strip().lower()
+    if not tok:
+        return None
+    for key, row in (load_store() if store is None else store).items():
+        if short_id(key) == tok:
+            return row
+    return None
+
+
+# How long to wait before ASKING whether an invite was accepted, and before offering the
+# bump. `accepted` is the only transition Parth reports by hand — the pipeline cannot see
+# his LinkedIn — so without a sweep the whole state machine stalls at `invited` forever and
+# the follow-up that makes outreach work never happens.
+#
+# The bump window is the plan's 5-7 days. Six rather than five because the ask itself is
+# often sent a day after the invite is accepted, and a bump that arrives before the person
+# has had a working day to answer reads as pressure.
+NUDGE_ACCEPT_DAYS = 3
+NUDGE_BUMP_DAYS = 6
+# States a nudge would be pointless or rude in. `replied` has done its job, and the plan is
+# explicit that after ONE bump the contact is dropped forever rather than chased.
+NUDGE_DONE_STATES = {"replied", "no_reply", "skipped", "bumped"}
+
+
+def _state_ts(row: dict, state: str) -> datetime | None:
+    """When this contact most recently entered `state`, from its history. None if never."""
+    best = None
+    for h in reversed(row.get("history") or []):
+        if h.get("state") != state:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(h.get("ts") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        best = ts if best is None or ts > best else best
+        break
+    return best
+
+
+def due_nudges(store: dict | None = None, now: datetime | None = None) -> list[tuple[str, str]]:
+    """[(contact key, kind)] for every follow-up that is due. Kinds: `accepted`, `bump`.
+
+    Pure, so the sweep that sends these can be tested without a clock or a network. Each
+    kind fires at most ONCE per contact: `nudged` records what has already been asked, and a
+    follow-up loop that re-asks every hour is a loop Parth mutes, which costs him the
+    feature entirely.
+    """
+    now = now or datetime.now(timezone.utc)
+    out: list[tuple[str, str]] = []
+    for key, row in (load_store() if store is None else store).items():
+        if not isinstance(row, dict):
+            continue
+        state = str(row.get("state") or "")
+        if state in NUDGE_DONE_STATES:
+            continue
+        asked = row.get("nudged") or {}
+        if state == "invited" and "accepted" not in asked:
+            ts = _state_ts(row, "invited")
+            if ts and (now - ts) >= timedelta(days=NUDGE_ACCEPT_DAYS):
+                out.append((key, "accepted"))
+        elif state in ("accepted", "messaged") and "bump" not in asked:
+            ts = _state_ts(row, state)
+            if ts and (now - ts) >= timedelta(days=NUDGE_BUMP_DAYS):
+                out.append((key, "bump"))
+    return out
+
+
+def mark_nudged(key: str, kind: str) -> dict | None:
+    """Record that a follow-up has been asked, so the sweep never asks it twice."""
+    store = load_store()
+    row = store.get(key)
+    if row is None:
+        return None
+    row.setdefault("nudged", {})[kind] = _now()
+    save_store(store)
+    return row
+
+
 # -------------------------------------------------------------- the paste ---
 def resolve_paste(text: str, notes: str = "", tie: str = "", live: bool = False,
                   source: str = "paste", puller=pull_company, today: date | None = None,
@@ -1103,6 +1206,43 @@ def selftest():
         finally:
             (paths.OUTREACH, paths.QUEUE, paths.DREAM, paths.APPLIED, paths.COMPANIES,
              paths.PROFILE) = orig
+
+    # --- short_id + find_by_short: a button field is 64 BYTES ------------------
+    K = "linkedin.com/in/example-dagny-halloran-77"
+    assert len(short_id(K)) == 8 and short_id(K) == short_id("https://in.linkedin.com/in/"
+                                                             "example-dagny-halloran-77/")
+    checks += 1
+    # The whole reason the token exists: the key alone nearly fills the callback field.
+    assert len(f"b:x:{short_id(K)}:invited".encode()) < 64; checks += 1
+    assert short_id(K) != short_id("linkedin.com/in/example-rui-oyelaran-4b2"); checks += 1
+    fake = {K: {"name": "Dagny Halloran"}}
+    assert find_by_short(short_id(K), fake)["name"] == "Dagny Halloran"; checks += 1
+    assert find_by_short("deadbeef", fake) is None; checks += 1
+    assert find_by_short("", fake) is None; checks += 1
+
+    # --- due_nudges: the sweep that keeps the state machine moving --------------
+    NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+
+    def _row(state, days_ago, **extra):
+        ts = (NOW - timedelta(days=days_ago)).isoformat()
+        return {"state": state, "history": [{"state": state, "ts": ts}], **extra}
+
+    store = {
+        "a": _row("invited", NUDGE_ACCEPT_DAYS + 1),      # due: did they accept?
+        "b": _row("invited", 1),                          # too soon
+        "c": _row("accepted", NUDGE_BUMP_DAYS + 1),       # due: bump
+        "d": _row("accepted", 1),                         # too soon
+        "e": _row("replied", 30),                         # done, never chase
+        "f": _row("invited", 30, nudged={"accepted": "x"}),   # already asked once
+        "g": {"state": "invited"},                        # no history: cannot age it
+    }
+    due = dict(due_nudges(store, NOW))
+    assert due.get("a") == "accepted", due; checks += 1
+    assert due.get("c") == "bump", due; checks += 1
+    assert set(due) == {"a", "c"}, sorted(due); checks += 1
+    # One bump and then the contact is dropped forever, per the plan. A follow-up loop that
+    # re-asks every hour is one Parth mutes, which costs him the whole feature.
+    assert due_nudges({"h": _row("bumped", 30)}, NOW) == []; checks += 1
 
     # --- the tier constants are the coverage measurement; pin them --------------
     assert (TIER_QUEUE, TIER_APPLIED, TIER_TRACKED, TIER_UNKNOWN) == (1, 2, 3, 4); checks += 1

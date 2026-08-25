@@ -1,9 +1,10 @@
 # Referral flow — paste a person, get reqs + the drafts (scope)
 
-Status: **P1 AND P2 BUILT 2026-08-25** (`core/referral.py`, 75 checks; `draft_outreach()` in
-`bridge/drafter.py`, covered by `bridge/test_drafter.py`). P3-P5 (Telegram, screenshot input,
-the console page) are still plan only, and **nothing has been measured against a real paste
-yet** - the tier mix below is the thing to watch first. Scope decided with Parth 2026-08-18.
+Status: **P1, P2 AND P3 BUILT 2026-08-25/26** (`core/referral.py`, 75 checks; `draft_outreach()` in
+`bridge/drafter.py`; the Telegram surface in `bridge/bridge.py`, 42 checks in
+`bridge/test_outreach.py`). P4 (screenshot input) and P5 (the console page) are still plan
+only, and **nothing has been measured against a real paste yet** - the tier mix below is the
+thing to watch first. Scope decided with Parth 2026-08-18.
 This supersedes the
 *direction* of `outreach_plan.md` phases 2-4; that document's phase 1 (`core/contacts.py`)
 stays valid and stays in the repo, but is **not on this path**. Read the constraints,
@@ -210,9 +211,31 @@ switch, and persistence. New: the 300-char validator, the no-dash pass, the tie 
 `notes` in the prompt, and a hard rule that a note must never assert the person is hiring
 for the req.
 
-**P3 — Telegram.** Paste text to the bot -> card with reqs and drafts, buttons per the
-existing `CB` batch namespace (`copy` / `edit` / `next req` / `skip`). State transitions
-write `outreach.json`. The bump sweep rides the existing idle-flush loop.
+**P3 — Telegram. DONE 2026-08-26.** `/refer <paste>` (or a bare `/refer`, which arms the
+next message) -> a card with the reqs and, on a tap, the drafts. `/refers` lists everyone in
+flight. Buttons live in the `CB` batch namespace under a new `x` kind. State transitions
+write `outreach.json`.
+
+Deviations:
+
+- **Buttons carry an 8-hex `short_id`, not the store key.** A callback_data field is 64
+  BYTES and a profile URL is already 40 of them. The store key stays the URL, because
+  `core/contacts.py` writes the same file with the same rule and two modules keying it
+  differently is how one person ends up in it twice.
+- **A pasted profile is consumed BEFORE the answer path.** Free text in that poller answers
+  the current batch question, so an unguarded paste would be stored as somebody's answer to
+  "Why us?" on a real application. Hence the two entry points and nothing else.
+- **Drafted messages go out with NO HTML parsing** (`tg_send_plain`). Every other send is
+  HTML, which is right for a card and wrong for text meant to be long-pressed and copied:
+  `&#39;` is what an escaped apostrophe looks like once it is in LinkedIn.
+- **The bump sweep is its OWN hourly task, not the idle-flush loop.** That loop fires on
+  Parth going quiet for five minutes and is about releasing approved applications;
+  `due_nudges` measures in days and each nudge fires once. Sharing them would have coupled a
+  follow-up question to whether Chrome happens to be open.
+- **`already_applied` replaces the ask on the card rather than sitting beside it.** Two
+  different asks for one person is an invitation to send the wrong one.
+- The sweep sends **at most five nudges per tick**. A phone that buzzes ten times is a muted
+  phone, and a muted phone costs the whole feature.
 
 **P4 — screenshot input (spike first, may not land).** Two unknowns, both new surface:
 `getFile` + download in the bridge (no photo handling exists there today), and getting an
@@ -225,9 +248,10 @@ standalone.**
 
 ## Open
 
-- **Resume delivery on Telegram.** `yes_pack` needs the right PDF from `resumes/`
-  (`quant|ds|tech|ai` by req `field`). `sendDocument` does not exist in the bridge yet.
-  Cheapest v1: name the file and let him grab it off disk. Decide at P3.
+- **Resume delivery on Telegram.** ~~Decide at P3.~~ **Settled 2026-08-26: the file is
+  NAMED, not sent.** `resume_for()` puts the track on each req and the `📦 Pack` message ends
+  with `attach: resumes/<tag>.pdf`. `sendDocument` still does not exist in the bridge, and
+  attaching the wrong track's PDF is worse than fetching the right one by hand.
 - **Volume ceiling.** Still open from `outreach_plan.md`. Premium removes the note cap, but
   a sub-30% acceptance rate is what triggers restrictions, so this stays a quality problem.
 - Nothing is ever sent automatically. Same rule as submit.
