@@ -1,0 +1,50 @@
+{
+  "_comment": [
+    "Evidence for the one-time reconcile of jobs held by the channel-loss bug. See",
+    "scripts/reconcile_channel_loss.py. Every entry under `confirmed` is a held job whose",
+    "submit reached the ATS: the company sent a confirmation email within roughly a minute",
+    "of the hold timestamp. Entries under `not_confirmed` stay held, because the only mail",
+    "they produced is a Greenhouse security code and no confirmation ever followed.",
+    "",
+    "The two True Anomaly confirmations do not name the role, so they are paired with the",
+    "two held True Anomaly jobs by arrival order. The pairing does not affect the outcome:",
+    "both roles are confirmed either way."
+  ],
+  "expect_hold_reason": "couldn't confirm the submit (error)",
+  "confirmed": [
+    { "dedup_key": "dafd15070b1deef7", "company": "Together AI", "title": "Software Engineer, Customer Insights",
+      "held": "2026-08-27T07:59:51+00:00", "email": "2026-08-27T08:00:09Z Thank you for applying to Together AI" },
+    { "dedup_key": "9fadefc7ebf9b0af", "company": "Chime", "title": "Software Engineer, Lending",
+      "held": "2026-08-27T08:00:39+00:00", "email": "2026-08-27T08:01:10Z Chime — received your application for the Software Engineer, Lending position" },
+    { "dedup_key": "e1cb2c7ee0dba9e8", "company": "Cloudflare", "title": "Senior Systems Engineer",
+      "held": "2026-08-27T08:01:47+00:00", "email": "2026-08-27T08:02:06Z Cloudflare Recruiting | Application Received - Senior Systems Engineer" },
+    { "dedup_key": "e68a367e8f66bc12", "company": "Chime", "title": "Software Engineer, AI Enablement",
+      "held": "2026-08-27T08:03:14+00:00", "email": "2026-08-27T08:04:10Z Chime — received your application for the Software Engineer, AI Enablement position" },
+    { "dedup_key": "08f2bc65afad22fb", "company": "Okta", "title": "Senior Site Reliability Engineer",
+      "held": "2026-08-27T08:03:58+00:00", "email": "2026-08-27T08:04:05Z Thank you for applying to Okta!" },
+    { "dedup_key": "aa1093316b0c1243", "company": "Cloudflare", "title": "Product Security Engineer",
+      "held": "2026-08-27T08:04:41+00:00", "email": "2026-08-27T08:05:05Z Cloudflare Recruiting | Application Received - Product Security Engineer" },
+    { "dedup_key": "33b578e6d339cdae", "company": "Cloudflare", "title": "Senior Systems Engineer - Go-To-Market Data Team",
+      "held": "2026-08-27T08:05:30+00:00", "email": "2026-08-27T08:06:06Z Cloudflare Recruiting | Application Received - Senior Systems Engineer - Go-To-Market Data Team" },
+    { "dedup_key": "a40cf60ae9cc1953", "company": "Cloudflare", "title": "Software Engineer, Network Firewall",
+      "held": "2026-08-27T08:06:30+00:00", "email": "2026-08-27T08:07:05Z Cloudflare Recruiting | Application Received - Software Engineer, Network Firewall" },
+    { "dedup_key": "eed30a76c979220a", "company": "SpaceX", "title": "Software Security Engineer New Grad - Software Security - Starlink",
+      "held": "2026-08-27T08:09:23+00:00", "email": "2026-08-27T08:10:09Z SpaceX — New Graduate Engineer, Software Security - '26/'27 (Starlink)" },
+    { "dedup_key": "b806b0a2b9c54764", "company": "Chime", "title": "Senior Software Engineer, Growth",
+      "held": "2026-08-27T08:09:59+00:00", "email": "2026-08-27T08:10:09Z Chime — received your application for the Senior Software Engineer, Growth position" },
+    { "dedup_key": "5bf1abb66f651bf8", "company": "True Anomaly", "title": "Software Engineer 1 New Grad - Perception",
+      "held": "2026-08-27T08:10:54+00:00", "email": "2026-08-27T08:11:06Z Thank you for applying to True Anomaly" },
+    { "dedup_key": "f25afd131a4f8d34", "company": "True Anomaly", "title": "Software Engineer 1 New Grad - Spacecraft Simulation",
+      "held": "2026-08-27T08:14:37+00:00", "email": "2026-08-27T08:15:07Z Thank you for applying to True Anomaly" },
+    { "dedup_key": "08e619d92ab1139c", "company": "Reddit", "title": "Senior Software Engineer, Media Creation",
+      "held": "2026-08-27T08:15:31+00:00", "email": "2026-08-27T08:16:04Z Reddit — received your application for our Senior Software Engineer, Media Creation role" },
+    { "dedup_key": "7e1189e2608d57d6", "company": "Reddit", "title": "Senior Software Engineer, Media Experience",
+      "held": "2026-08-27T08:16:24+00:00", "email": "2026-08-27T08:17:03Z Reddit — received your application for our Senior Software Engineer, Media Experience role" }
+  ],
+  "not_confirmed": [
+    { "dedup_key": "5f946ccae73039bf", "company": "Twilio", "title": "Software Engineer (L4)",
+      "held": "2026-08-27T08:02:31+00:00", "why": "a Greenhouse security code arrived at 08:02:16Z and no confirmation followed" },
+    { "dedup_key": "cdd524126f706108", "company": "Twilio", "title": "Software Engineer L2-Messaging API",
+      "held": "2026-08-24T12:30:24+00:00", "why": "a Greenhouse security code arrived on 2026-08-24 at 12:30:08Z and no confirmation followed" }
+  ]
+}
