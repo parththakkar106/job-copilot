@@ -574,6 +574,64 @@ async function captureAudit(tab, report, job) {
   }
 }
 
+// Confirmation and rejection wording, duplicated from fill.js `matchedConfirmPhrases` and
+// `matchedRejectPhrases`. Background keeps its own copy because the page that answers this
+// check is the one that replaced the form, so the content script holding those lists is
+// gone by the time the check runs.
+const CONFIRM_TEXT = ["thank you for applying", "thanks for applying", "application submitted",
+  "your application has been submitted", "application received", "successfully submitted",
+  "successfully completed", "we'll contact you", "we will contact you", "application complete"];
+const REJECT_TEXT = ["already applied", "duplicate application", "you have already submitted"];
+
+// Decide the outcome of a submit whose message channel closed, by reading the tab.
+//
+// Three signals, in order of strength. Rejection text means the ATS processed the form and
+// refused it. Confirmation text means it accepted the form. A URL that changed means the
+// form navigated, which is the same test `submitWithRetry` applies at fill.js
+// `location.href !== urlBefore`, so treating it as confirmation here matches the verdict
+// the content script would have returned had it survived to report.
+//
+// If none of the three holds, return the original channel error unchanged and let the
+// caller park the job. Reading the text needs host permission for whatever page the submit
+// landed on, and a board that redirects to a company domain does not grant it, so a failed
+// read falls back to the URL comparison rather than failing the check.
+async function confirmFromTab(tabId, urlBefore, channelError) {
+  const parked = { outcome: "error", detail: channelError };
+  try {
+    // The channel closes when the navigation starts, so the replacement document is still
+    // loading. Wait for it before reading anything off the tab.
+    await sleepBg(1000);
+    await waitForComplete(tabId);
+    const tab = await chrome.tabs.get(tabId);
+    const urlNow = String((tab && tab.url) || "");
+
+    let text = "";
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => ((document.body && document.body.innerText) || "").toLowerCase(),
+      });
+      text = (res && res.result) || "";
+    } catch (_) { /* no host permission for the landing page: URL comparison decides */ }
+
+    const rejected = REJECT_TEXT.find(t => text.includes(t));
+    if (rejected) return { outcome: "rejected", detail: rejected };
+    const confirmed = CONFIRM_TEXT.find(t => text.includes(t));
+    if (confirmed) return { outcome: "confirmed", detail: `channel closed; page says "${confirmed}"` };
+
+    // Compare without the hash, so a fragment the form appends on its own is not read as a
+    // navigation. An empty `urlBefore` or `urlNow` leaves the job parked.
+    const bare = u => u.split("#")[0];
+    if (urlBefore && urlNow && bare(urlNow) !== bare(urlBefore)) {
+      return { outcome: "confirmed", detail: `channel closed; the form navigated to ${urlNow}` };
+    }
+    return parked;
+  } catch (e) {
+    console.warn("[submit] post-navigation check failed:", (e && e.message) || e);
+    return parked;
+  }
+}
+
 // Submit the approved form by driving the content script's submitWithRetry — the SAME
 // hardened loop the on-page panel's Submit button uses: multi-pass, reassertChoices for
 // Ashby's post-resume choice-wipe, server-side validation reading with per-field resync,
@@ -582,10 +640,21 @@ async function captureAudit(tab, report, job) {
 // wipe race made otherwise-fine applications silently never submit. Returns
 // { outcome, detail } where outcome is submitWithRetry's verdict and detail is the last
 // error/warn log line for the Telegram note. See fill.js submitWithRetry for the outcomes.
-function submitViaRetry(tabId) {
+//
+// A submit that navigates kills its own reporter. `submitWithRetry` treats a changed
+// `location.href` as success, but the navigation that proves it also destroys the content
+// script mid-poll, so `sendResponse` never runs and Chrome closes the message channel with
+// "back/forward cache" or "Receiving end does not exist". Both messages describe a page
+// that submitted and moved on. If the channel dies, read the tab instead of the content
+// script: see `confirmFromTab`.
+function submitViaRetry(tabId, urlBefore) {
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, { type: "SUBMIT" }, (res) => {
-      if (chrome.runtime.lastError) { resolve({ outcome: "error", detail: chrome.runtime.lastError.message }); return; }
+      if (chrome.runtime.lastError) {
+        const detail = chrome.runtime.lastError.message;
+        confirmFromTab(tabId, urlBefore, detail).then(resolve);
+        return;
+      }
       const logs = (res && res.logs) || [];
       const last = [...logs].reverse().find(l => l.kind === "err" || l.kind === "warn");
       resolve({ outcome: (res && res.outcome) || "error", detail: (last && last.m) || "" });
@@ -709,7 +778,12 @@ async function runFlush() {
         }
 
         await captureAudit(tab, report, { company: rec.company, title: rec.title, url: rec.url });
-        const sub = await submitViaRetry(tab.id);
+        // Read the URL now rather than reusing `applyUrl(rec)`. The page may have
+        // redirected while it loaded, and the post-navigation check compares against
+        // wherever the form actually sits.
+        let urlBefore = "";
+        try { urlBefore = (await chrome.tabs.get(tab.id)).url || ""; } catch (_) {}
+        const sub = await submitViaRetry(tab.id, urlBefore);
         const who = `<b>${escHtml(rec.company)}</b> — ${escHtml(rec.title)}`;
         if (sub.outcome === "confirmed") {
           // Also retires the pending record — applied.json is the permanent one now.
