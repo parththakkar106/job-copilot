@@ -45,6 +45,23 @@
     { "dedup_key": "5f946ccae73039bf", "company": "Twilio", "title": "Software Engineer (L4)",
       "held": "2026-08-27T08:02:31+00:00", "why": "a Greenhouse security code arrived at 08:02:16Z and no confirmation followed" },
     { "dedup_key": "cdd524126f706108", "company": "Twilio", "title": "Software Engineer L2-Messaging API",
-      "held": "2026-08-24T12:30:24+00:00", "why": "a Greenhouse security code arrived on 2026-08-24 at 12:30:08Z and no confirmation followed" }
+      "held": "2026-08-24T12:30:24+00:00", "why": "a Greenhouse security code arrived on 2026-08-24 at 12:30:08Z and no confirmation followed" },
+    { "dedup_key": "62fd58353fd617f8", "company": "Harvey", "title": "Senior Software Engineer, Data Platform (New York)",
+      "held": "2026-08-27T08:12:53+00:00", "hold_reason": "couldn't confirm the submit (failing)",
+      "why": "Harvey sent one confirmation on 2026-08-27, at 08:13:09Z, and it belongs to the SAN FRANCISCO posting (dedup_key 6a50d8a866527a33), which ran in the 08:12:53-08:14:37 gap after this job and is already logged applied. Harvey does not merge confirmations: the two Senior Product Security Engineer applications on 2026-08-24 produced two separate emails, at 09:53:08Z and 11:25:39Z. One email therefore means one application, and this New York posting is not it." },
+    { "dedup_key": "61596f640cfc29c5", "company": "Abnormal Security", "title": "Software Engineer II - Dev Accelerator",
+      "held": "2026-08-27T08:17:24+00:00", "hold_reason": "couldn't confirm the submit (unknown)",
+      "why": "no mail of any kind arrived from Abnormal Security on 2026-08-27, neither a confirmation nor a Greenhouse security code. This was the last job of the run and the day's final message landed at 08:17:03Z, before the hold." }
+  ],
+  "_reading_the_timestamps": [
+    "A record's `updated` field is the batch APPROVAL time for every job that submitted",
+    "successfully, because the confirmed path archives the file without saving it again.",
+    "All nine of the 2026-08-27 successes therefore read 07:58:46. Only a held record",
+    "carries a meaningful `updated`, since `hold()` does save.",
+    "",
+    "So a successful job leaves no timestamp of its own, and you place it by the gap it",
+    "occupies between two holds. The confirmation emails line up with those gaps:",
+    "Replit at 07:59:01 before the first hold, Notion and Baseten inside 08:06:30-08:09:23,",
+    "Notion Developer Platform inside 08:09:59-08:10:54, and Harvey inside 08:12:53-08:14:37."
   ]
 }
