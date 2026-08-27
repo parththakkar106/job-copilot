@@ -12,15 +12,44 @@
 const attached = new Set(); // tabIds we currently hold a debugger session on
 let stopRequested = false;  // set by the popup Stop button or a Telegram /stop; runQueue halts between jobs
 
-function attach(tabId) {
-  return new Promise((resolve, reject) => {
-    if (attached.has(tabId)) return resolve();
-    chrome.debugger.attach({ tabId }, "1.3", () => {
-      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-      attached.add(tabId);
-      resolve();
-    });
+const rawAttach = (tabId) => new Promise((resolve, reject) => {
+  chrome.debugger.attach({ tabId }, "1.3", () => {
+    if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+    resolve();
   });
+});
+
+// Detach without consulting `attached`. The recovery below has to drop a session the set
+// does not know about, which is the whole point of that path.
+const rawDetach = (tabId) => new Promise((resolve, reject) => {
+  chrome.debugger.detach({ tabId }, () => {
+    if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+    resolve();
+  });
+});
+
+// Take a debugger session on `tabId`, recovering from a session this worker has forgotten.
+//
+// `attached` lives in the service worker's memory, and MV3 evicts the worker after about
+// 30 seconds idle. Chrome does NOT drop the debugger when that happens, so after an
+// eviction the set is empty while the session is still live: the next attach fails with
+// "Another debugger is already attached", every trusted click is refused, and the whole
+// form reports "debugger not attached". A fill that ended without its CDP_DETACH (the tab
+// navigated on submit, the fill threw) leaves the same state.
+//
+// Detaching first and re-attaching is what clears it. If DevTools is the holder rather
+// than a stale session of ours, the detach fails, and the original error is re-thrown so
+// the report still names the case a human has to fix.
+async function attach(tabId) {
+  if (attached.has(tabId)) return;
+  try {
+    await rawAttach(tabId);
+  } catch (e) {
+    if (!/already attached/i.test(e.message || "")) throw e;
+    try { await rawDetach(tabId); } catch (_) { throw e; }
+    await rawAttach(tabId);
+  }
+  attached.add(tabId);
 }
 
 function detach(tabId) {

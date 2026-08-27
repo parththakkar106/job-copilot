@@ -106,6 +106,25 @@ buckets:
     # a per-company override would have been tighter, but overrides key on an exact company
     # string and the reports spell this one both "SpaceX" and "Spacex".
     - {pattern: '\S+\s*(&|and|/|,)\s*\S+\s+employment history', value_key: affiliations.previously_employed}  # SpaceX
+    # "Are you currently an employee or contractor at Abnormal? (if Yes, please add your
+    # Abnormal email in the email section of the application page)". A Yes/No dropdown whose
+    # own parenthetical says where to put an email, so the identity.email rule below matched
+    # it and the fill offered Parth's address to a list containing only Yes and No.
+    # Ordering is the fix: a rule specific enough to read the QUESTION must be tested before
+    # the generic 'e-?mail' substring, which is why this sits above the identity block
+    # rather than with the other affiliations rules. Scoped to the employee/contractor
+    # phrasing, not a bare "are you currently employed", which asks about his job elsewhere
+    # and has a different answer.
+    #
+    # Sitting this high means it is also tested before the government and external-business
+    # rules further down, so it has to decline the questions those own. Both lookaheads
+    # cover a phrasing that opens identically and asks something else:
+    #   "Are you an employee referral?"                        -> a referral source
+    #   "Are you currently an employee of a government agency?" -> government_affiliation
+    # Every one of those keys is false today, so the answer would have been "No" either
+    # way. The rule still must not claim them: flipping one key later has to change the
+    # questions it names and no others.
+    - {pattern: '\bare you (currently |presently )?(an?|the )?\s*(current |former |existing )?(employee|contractor|intern|consultant)\b(?!\s+referral)(?!.{0,30}\b(government|public official|state-owned|politically exposed|competing business|outside business)\b)|\bare you (currently |presently )?employed (by|at|with)\b(?!.{0,30}\b(government|customer|partner|client|vendor|supplier|competitor)\b)', value_key: affiliations.current_employee}  # Abnormal Security
     # ── end observed phrasings ───────────────────────────────────────────────────
 
     - {pattern: '\bfirst name\b',                                   value_key: identity.first_name}
