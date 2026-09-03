@@ -423,6 +423,9 @@ async def telegram_poller(offset):
                 if low in ("/next", "next", "/start", "▶️"):
                     await _safe("/next", serve_next())
                     continue
+                if low == "/jobs" or low.startswith("/jobs ") or low.startswith("/jobs\n"):
+                    await _safe("/jobs", handle_jobs(text.strip()))
+                    continue
                 if low in ("/status", "status"):
                     await _safe("/status", send_status())
                     continue
@@ -755,6 +758,43 @@ def job_meta_lines(rec: dict) -> list[str]:
     return out
 
 
+def _found_on(rec: dict) -> str:
+    """When phase 1 collected this role, as "24 Aug". The batch runs weeks deep, so
+    "found today" and "found three weeks ago" are very different things to be answering."""
+    raw = str(rec.get("created") or "")[:10]
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").strftime("%d %b").lstrip("0")
+    except ValueError:
+        return raw
+
+
+# The last job a card was sent for. The batch is otherwise cursorless on purpose, and this
+# stays deliberately in-memory rather than on disk: it is not state anyone needs to be
+# correct about, only a de-duplicator so the card doesn't repeat above every question of
+# the same job. Losing it to a restart re-shows the card once, which is the right answer
+# anyway — he has been away.
+_LAST_CARD_KEY = None
+
+
+def send_job_card(rec: dict) -> None:
+    """The little box that goes above a job's FIRST question.
+
+    Answering on the phone, the questions used to arrive with nothing but a bolded
+    company name for context: no idea which role at that company, whether it was found
+    today or three weeks ago, or how many questions were coming. This is that context,
+    once per job, before the asking starts."""
+    lines = [f"📋 {job_title_line(rec)}"]
+    lines += job_meta_lines(rec)
+    tail = [f"📅 found {html.escape(_found_on(rec))}"]
+    qs = rec.get("questions") or []
+    if qs:
+        tail.append(f"❓ {pending_mod.answered_count(rec)}/{len(qs)} answered")
+    if rec.get("resume"):
+        tail.append(f"📄 {html.escape(_one_line(str(rec['resume']), 60))}")
+    lines.append(" · ".join(tail))
+    tg_send("\n".join(lines))
+
+
 def send_question(rec: dict, q: dict) -> None:
     key, qid = rec["dedup_key"], q["id"]
     qs = rec.get("questions") or []
@@ -783,7 +823,12 @@ def send_question(rec: dict, q: dict) -> None:
     if not q.get("required"):
         buttons.append([{"text": "⏭️ Leave blank", "callback_data": f"{CB}:a:{key}:{qid}:blank"}])
         hint += " · or ⏭️ leave it blank"
-    buttons.append([{"text": "⏸ Later", "callback_data": f"{CB}:later"}])
+    # ✋ mid-answer: the summary's skip is unreachable from here (it needs every question
+    # answered first), so without this the only way out of a role he doesn't want is to
+    # answer the rest of it. Defers rather than deletes — the answers already given are
+    # kept, and /jobs brings it back.
+    buttons.append([{"text": "⏸ Later", "callback_data": f"{CB}:later"},
+                    {"text": "✋ Skip this job", "callback_data": f"{CB}:j:{key}:defer"}])
 
     text += f"\n\n<i>{hint}</i>"
     tg_send(text, buttons)
@@ -1054,11 +1099,104 @@ async def serve_next() -> None:
             msg += f"\n{c['approved']} approved — submitting in the background."
         await asyncio.to_thread(tg_send, msg)
         return
+    global _LAST_CARD_KEY
     q = pending_mod.next_question(rec)
+    fresh_job = rec["dedup_key"] != _LAST_CARD_KEY
+    _LAST_CARD_KEY = rec["dedup_key"]
     if q:
+        # The card only leads a job's questions. The summary carries the same facts
+        # already, so heading it with a card would just say everything twice.
+        if fresh_job:
+            await asyncio.to_thread(send_job_card, rec)
         await asyncio.to_thread(send_question, rec, q)
     else:
         await asyncio.to_thread(send_summary, rec)
+
+
+# --- /jobs: the whole batch as a pickable list ---------------------------------------
+#
+# /next serves what it thinks is most useful next; this is the override for when Parth
+# knows which role he wants to do. Rows are numbered across the whole list (not per page)
+# so a number means the same thing on page 3 as on page 1.
+
+JOBS_PAGE = 8      # rows per page — one Telegram screen, and 8 inline buttons stay tappable
+
+
+def _jobs_listing() -> list[dict]:
+    """Every live record, in the order /jobs shows them: the ones wanting answers first
+    (in /next's own order, so the list and the queue agree), then the piles that need a
+    different kind of attention, then what's already out of his hands."""
+    out = pending_mod.serving_order()
+    for status in (pending_mod.HELD, pending_mod.SKIPPED, pending_mod.APPROVED):
+        out += list(reversed(pending_mod.all_jobs(status)))   # newest first within a pile
+    return out
+
+
+def _jobs_status_label(rec: dict) -> str:
+    status = rec.get("status")
+    if status == pending_mod.APPROVED:
+        return "📤 queued to submit"
+    if status == pending_mod.HELD:
+        reason = rec.get("hold_reason")
+        return "⚠️ needs you" + (f" — {_one_line(reason, 40)}" if reason else "")
+    if status == pending_mod.SKIPPED:
+        return "✋ skipped"
+    return "✅ ready to submit" if pending_mod.is_complete(rec) else "⏳ waiting on you"
+
+
+def jobs_page(rows: list[dict], page: int) -> tuple[str, list]:
+    """Render one page of the listing. Pure — takes the rows, returns text + buttons —
+    so the test can read what Parth would see without a bot token."""
+    pages = max(1, (len(rows) + JOBS_PAGE - 1) // JOBS_PAGE)
+    page = max(0, min(page, pages - 1))
+    start = page * JOBS_PAGE
+    chunk = rows[start:start + JOBS_PAGE]
+
+    lines = [f"📋 <b>Jobs</b> — {start + 1}–{start + len(chunk)} of {len(rows)}", ""]
+    buttons = []
+    for i, rec in enumerate(chunk, start + 1):
+        lines.append(f"<b>{i}.</b> {job_title_line(rec)}")
+        lines.append(f"    📅 {html.escape(_found_on(rec))} · ❓ {pending_mod.progress(rec)} · "
+                     f"{html.escape(_jobs_status_label(rec))}")
+        if rec.get("status") != pending_mod.APPROVED:
+            # An approved job is mid-flight to a real employer; re-opening it under a flush
+            # is the one race the store exists to prevent, so it lists but doesn't tap.
+            label = _one_line(f"{i} · {rec.get('company') or '?'} — {rec.get('title') or ''}", 55)
+            buttons.append([{"text": label,
+                             "callback_data": f"{CB}:f:{rec['dedup_key']}"}])
+
+    nav = []
+    if page > 0:
+        nav.append({"text": "⬅️ Prev", "callback_data": f"{CB}:p:{page - 1}"})
+    if page < pages - 1:
+        nav.append({"text": "Next ➡️", "callback_data": f"{CB}:p:{page + 1}"})
+    if nav:
+        buttons.append(nav)
+
+    lines.append("")
+    lines.append("<i>Tap one to answer it next — or /next to carry on where you were.</i>")
+    return "\n".join(lines), buttons
+
+
+async def handle_jobs(text: str = "/jobs") -> None:
+    """/jobs [page] — the whole batch at a glance, and a tap to pick which one to fill."""
+    touch_activity()
+    parts = text.strip().split()
+    try:
+        page = max(1, int(parts[1])) - 1 if len(parts) > 1 else 0
+    except ValueError:
+        page = 0
+    await send_jobs_page(page)
+
+
+async def send_jobs_page(page: int) -> None:
+    rows = await asyncio.to_thread(_jobs_listing)
+    if not rows:
+        await asyncio.to_thread(tg_send,
+            "📋 No jobs in the batch. /run to collect today's queue.")
+        return
+    text, buttons = jobs_page(rows, page)
+    await asyncio.to_thread(tg_send, text, buttons)
 
 
 async def send_status() -> None:
@@ -1082,7 +1220,7 @@ async def send_status() -> None:
         f"• {c['ready']} answered, needing a ✅\n"
         f"• {c['approved']} approved, queued to submit\n"
         f"{held_line}\n"
-        f"<i>/next to carry on</i>")
+        f"<i>/next to carry on · /jobs to pick a particular one</i>")
 
 
 async def handle_retry() -> None:
@@ -1450,6 +1588,7 @@ COMMANDS = [
     ("apply", "Fill a job link and collect its questions"),
     ("next", "Next question, or the summary to approve"),
     ("status", "What's pending"),
+    ("jobs", "List every job and pick which one to fill"),
     ("edit", "Change an answer before you approve"),
     ("resume", "Swap the resume for the current job"),
     ("retry", "Re-queue jobs that couldn't submit"),
@@ -1629,6 +1768,28 @@ async def batch_callback(data: str, cb_id: str) -> None:
         await asyncio.to_thread(tg_send, "⏸ Paused — nothing lost. Send /next whenever.")
         return
 
+    if kind == "p" and len(parts) == 3:            # /jobs paging -> b:p:<page>
+        await asyncio.to_thread(tg_answer_callback, cb_id, "")
+        await send_jobs_page(int(parts[2]) if parts[2].isdigit() else 0)
+        return
+
+    if kind == "f" and len(parts) == 3:            # /jobs pick -> b:f:<key>
+        key = parts[2]
+        rec = await asyncio.to_thread(pending_mod.load, key)
+        if rec is None:
+            await asyncio.to_thread(tg_answer_callback, cb_id, "That one's gone")
+            return
+        if rec.get("status") == pending_mod.APPROVED:
+            await asyncio.to_thread(tg_answer_callback, cb_id, "Already approved — it's on its way")
+            return
+        global _LAST_CARD_KEY
+        picked = await asyncio.to_thread(pending_mod.focus, key)
+        await asyncio.to_thread(tg_answer_callback, cb_id,
+                                str(picked.get("company") or "Picked")[:60])
+        _LAST_CARD_KEY = None      # picking it deliberately means he wants the card again
+        await serve_next()
+        return
+
     if kind == CB_REF and len(parts) >= 3:      # b:x:<token>:<action>[:<arg>]
         await referral_callback(parts[2], parts[3:], cb_id)
         return
@@ -1698,6 +1859,17 @@ async def batch_callback(data: str, cb_id: str) -> None:
             await asyncio.to_thread(
                 tg_send, f"✅ <b>{html.escape(str(rec.get('company')))}</b> approved — "
                          f"it'll go out shortly.")
+
+        elif action == "defer":
+            # The ✋ on a QUESTION, not on the summary. Different verb on purpose: it keeps
+            # the record and every answer he already typed (pending.skip), where the
+            # summary's ✋ deletes it for tomorrow's queue to re-serve. Half-answered work
+            # is exactly what you must not throw away to get out of a question.
+            await asyncio.to_thread(pending_mod.skip, key)
+            await asyncio.to_thread(tg_answer_callback, cb_id, "Skipped")
+            await asyncio.to_thread(
+                tg_send, f"✋ Skipped <b>{html.escape(str(rec.get('company')))}</b> — "
+                         f"your answers are kept. /jobs to come back to it.")
 
         elif action == "skip":
             await asyncio.to_thread(pending_mod.delete, key)

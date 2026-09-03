@@ -13,8 +13,9 @@ Status flow:
   awaiting   phase 1 wrote it; some questions may still need answers
   approved   Parth tapped ✅; phase 3 fills + submits it unattended
   held       filled but couldn't submit — needs Parth (out of the auto-flush pile)
-  skipped    deferred from the dashboard — kept visible, but out of flush + re-scrape
-  (deleted)  submitted / rejected / (Telegram ✋) skipped — see below
+  skipped    deferred (dashboard, or ✋ mid-question on Telegram) — kept visible with its
+             answers, but out of flush + re-scrape until it's picked again
+  (deleted)  submitted / rejected / (Telegram summary ✋) skipped — see below
 
 Terminal states delete the file, because applied.json is the permanent record and a
 pending file is only ever work-in-flight:
@@ -54,11 +55,13 @@ APPROVED = "approved"
 # hand). Held jobs drop out of the auto-flush pile so the idle-watcher stops re-firing
 # them every 5 minutes forever; Parth finishes them with the panel or /retry re-queues.
 HELD = "held"
-# Deferred from the dashboard: Parth doesn't want this one now, but wants it kept VISIBLE
-# (unlike the Telegram ✋ skip, which deletes the record so tomorrow's scrape re-serves it).
+# Deferred from the dashboard, or by ✋ on a question in Telegram: Parth doesn't want this
+# one now, but wants it kept VISIBLE with whatever he has already answered (unlike the ✋ on
+# the Telegram SUMMARY, which deletes the record so tomorrow's scrape re-serves it — fine
+# there, because by then there is a full set of answers and nothing half-done to lose).
 # A skipped record drops out of the auto-flush pile (that pile only pulls APPROVED) and is
 # not re-served by the daily queue (handle_queue excludes every pending key). He un-skips
-# it from the dashboard when he's ready.
+# it from the dashboard, or by picking it out of /jobs, when he's ready.
 SKIPPED = "skipped"
 
 
@@ -410,6 +413,7 @@ def approve(dedup_key: str, base: Path | str | None = None) -> dict | None:
     if rec is None or not is_complete(rec):
         return None
     rec["status"] = APPROVED
+    rec.pop("focus_at", None)   # it has left the answering pile; the pin has nothing to hold
     save(rec, base)
     return rec
 
@@ -426,6 +430,7 @@ def hold(dedup_key: str, base: Path | str | None = None,
     if rec is None:
         return None
     rec["status"] = HELD
+    rec.pop("focus_at", None)
     if reason:
         rec["hold_reason"] = reason
     save(rec, base)
@@ -454,6 +459,7 @@ def skip(dedup_key: str, base: Path | str | None = None) -> dict | None:
         return None
     rec["status"] = SKIPPED
     rec.pop("hold_reason", None)
+    rec.pop("focus_at", None)   # deferring it is the opposite of pinning it
     save(rec, base)
     return rec
 
@@ -470,6 +476,55 @@ def reopen(dedup_key: str, base: Path | str | None = None) -> dict | None:
     rec.pop("hold_reason", None)
     save(rec, base)
     return rec
+
+
+def clear_focus(base: Path | str | None = None) -> None:
+    """Drop the /jobs pin from every record. Only one job is ever pinned: the pin means
+    "serve THIS one next", and two of those is a contradiction."""
+    for rec in all_jobs(None, base):
+        if rec.pop("focus_at", None) is not None:
+            save(rec, base)
+
+
+def focus(dedup_key: str, base: Path | str | None = None) -> dict | None:
+    """Pin one job to the front of the /next queue — what tapping a row in /jobs does.
+
+    The batch has deliberately no cursor: "the current job" is derived from disk every
+    time, which is what makes an hour-long gap and a bridge restart survivable. A pin has
+    to survive the same gaps, so it is not a variable in this process — it is a `focus_at`
+    stamp ON the record, read back by serving_order(). Picking a job from the phone and
+    then answering it an hour later after a restart lands on the same job.
+
+    Picking a deferred or held job implies wanting to work on it, so it comes back to the
+    awaiting pile first (reopen keeps its answers). An APPROVED job is not pinnable: it is
+    queued for an unattended submit, and re-opening it under a flush in flight is the one
+    race this store exists to avoid — the caller checks status and says so.
+
+    Returns the pinned record, or None if the job is gone.
+    """
+    rec = load(dedup_key, base)
+    if rec is None:
+        return None
+    clear_focus(base)
+    if rec.get("status") != AWAITING:
+        rec = reopen(dedup_key, base) or rec
+    rec["focus_at"] = _now()
+    save(rec, base)
+    return rec
+
+
+def answered_count(rec: dict) -> int:
+    """How many of this job's questions are resolved — the 2 in "2/4"."""
+    return len([q for q in (rec.get("questions") or []) if q.get("answer") is not None])
+
+
+def progress(rec: dict) -> str:
+    """The at-a-glance "2/4" for the /jobs list. "no questions" reads better than 0/0:
+    a job phase 1 found nothing to ask about is ready to approve, not unstarted."""
+    total = len(rec.get("questions") or [])
+    if not total:
+        return "no questions"
+    return f"{answered_count(rec)}/{total}"
 
 
 # /next serving tiers, lowest served first.
@@ -500,7 +555,7 @@ def serving_order(base: Path | str | None = None) -> list[dict]:
     so /next opened on a role collected on 2026-07-22 — 33 days stale, and very likely
     closed — and would have kept doing so for another hundred taps.
 
-    Three tiers:
+    A job picked by hand from /jobs is pinned and comes before all of it. Then three tiers:
       1. Started and unfinished. Half-answered is the worst state for a record to sit in,
          and he already paid the cost of reading the role.
       2. Complete but unapproved. One ✅ turns it into a real application; leaving 22 of
@@ -514,8 +569,18 @@ def serving_order(base: Path | str | None = None) -> list[dict]:
     reversing the buckets keeps both: newest run first, freshest posting first inside it.
     """
     awaiting = all_jobs(AWAITING, base)          # oldest first
+
+    # Tier 0: the one job Parth picked from /jobs, if any. An explicit pick outranks every
+    # heuristic below — the tiers are a guess at what he'd want next, and this is him
+    # saying it. Only ever one (focus() clears the others), but sort defensively so a
+    # hand-edited record can't produce an order that depends on the glob.
+    pinned = [r for r in awaiting if r.get("focus_at")]
+    pinned.sort(key=lambda r: r.get("focus_at") or "", reverse=True)
+
     tiers = {TIER_IN_PROGRESS: [], TIER_READY: [], TIER_FRESH: []}
     for rec in awaiting:
+        if rec.get("focus_at"):
+            continue
         tiers[next_tier(rec)].append(rec)
 
     by_run: dict[str, list[dict]] = {}
@@ -523,7 +588,7 @@ def serving_order(base: Path | str | None = None) -> list[dict]:
         by_run.setdefault((rec.get("created") or "")[:10], []).append(rec)
     fresh = [rec for day in sorted(by_run, reverse=True) for rec in by_run[day]]
 
-    return tiers[TIER_IN_PROGRESS] + tiers[TIER_READY] + fresh
+    return pinned + tiers[TIER_IN_PROGRESS] + tiers[TIER_READY] + fresh
 
 
 def next_job(base: Path | str | None = None) -> dict | None:

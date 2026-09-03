@@ -189,6 +189,27 @@ The batch flow adds `collect` (phase 1 parks a job's open questions on disk), `a
 with the reply shape for each, is documented in the module docstring at the top of
 `bridge.py` — that is the source of truth, since it sits next to the dispatch table.
 
+## Answering on the phone
+
+Questions arrive one job at a time, led by a short card — company and role, location and
+pay, the link, when it was found, and how many questions are coming — so you know what you
+are answering before the first one lands. The card is sent once per job, not above every
+question.
+
+Every question also carries **✋ Skip this job**, for a role you decide against halfway
+through. It *defers* rather than discards: the record and the answers you already typed
+stay on disk, and the job drops out of the queue until you pick it up again. (The ✋ on the
+final summary still deletes the record, so tomorrow's scrape re-serves the role — by then
+there is a full set of answers and nothing half-done to lose.)
+
+**`/jobs`** lists the whole batch — company, role, when it was found, `2/4` answered, and
+its state — eight to a page, and tapping a row pins it as the next thing `/next` serves.
+The pin is a `focus_at` stamp on the record itself, not a variable in the bridge, so
+picking a job on the phone and answering it an hour later after a restart still lands on
+the same job. Approved jobs are listed but not tappable: they are already on their way to
+an employer, and reopening one under a flush in flight is the race the pending store
+exists to prevent.
+
 ## Drafting (Tier 2)
 
 Essay answers are drafted by shelling out to the **Claude Code CLI** (`drafter.py`), so it
