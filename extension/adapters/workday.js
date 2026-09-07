@@ -365,15 +365,15 @@ export const WORKDAY = {
 
       // A CLONE ARRIVES WITH THE PREVIOUS APPLICATION'S PDF ALREADY ATTACHED, and that is
       // the one mismatch reconciling text cannot fix: every visible answer can be correct
-      // while the wrong CV hangs off the form. Our uploads are named Parth_Resume_<tag>.pdf
-      // (see cleanResumeName), so the track that is currently attached is readable straight
-      // off the container text — for anything we uploaded, which is every clone source from
-      // now on.
-      // ONE LETTER, not the tag. cleanResumeName() collapses the track tag to its initial
-      // on the way out ("ds" -> Parth_Resume_d.pdf), so the filename never contains the
-      // tag itself and a pattern demanding two or more characters matches nothing. The
-      // four tags have distinct initials (q/d/t/a), which is what makes this readable at
-      // all — asserted in the tests so a fifth track cannot quietly collide.
+      // while the wrong CV hangs off the form. Our uploads are named First_Last_<letter>.pdf
+      // (see resumeFilename in attach.js), so the track that is currently attached is
+      // readable straight off the container text — for anything we uploaded, which is every
+      // clone source from now on.
+      // ONE LETTER, not the tag. resumeFilename() suffixes the track tag's initial
+      // ("ds" -> Parth_Thakkar_d.pdf), so the filename never contains the tag itself and a
+      // pattern demanding two or more characters matches nothing. The four tags have
+      // distinct initials (q/d/t/a), which is what makes this readable at all — asserted in
+      // the tests so a fifth track cannot quietly collide.
       attachedNamePattern: /_([a-z])\.pdf\b/i,
       // UNVERIFIED. Replacing an attachment needs Workday's own remove control; a second
       // upload may otherwise append rather than replace, leaving BOTH CVs on the form.

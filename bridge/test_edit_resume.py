@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for /edit and /resume — changing an answer or the resume BEFORE the ✅.
+"""Tests for /edit, /resume and /myresume — changing an answer or the resume BEFORE the
+✅, and sending the cached PDF to the phone.
 
 Same harness as test_batch.py: point the modules at throwaway state, capture Telegram
 sends and callback-answer toasts, and drive the handlers the way the poller does.
@@ -14,6 +15,7 @@ import triage as T
 
 SENT: list = []
 TOASTS: list = []
+DOCS: list = []
 
 
 def setup(tmp: Path):
@@ -25,6 +27,9 @@ def setup(tmp: Path):
     TOASTS.clear()
     B.tg_send = lambda text, buttons=None: SENT.append((text, buttons)) or 1
     B.tg_answer_callback = lambda cb_id, text="": TOASTS.append(text)
+    DOCS.clear()
+    B.tg_send_document = lambda path, filename, caption="": (
+        DOCS.append((str(path), filename, caption)) or 1)
     B.bank_draft = lambda item, company: (item.get("draft"), None)
 
 
@@ -193,13 +198,130 @@ async def test_resume_override_stale_button_no_crash():
     return n
 
 
+def stub_cache(tmp: Path):
+    """A cache directory holding one PDF per track, and B pointed at it.
+
+    /myresume sends the CACHE, so a test that wrote the PDFs anywhere else would pass
+    while the real command sent nothing.
+    """
+    cache = tmp / "resumes"
+    cache.mkdir(parents=True, exist_ok=True)
+    for track in B.profile_mod.load_profile()["resume_tracks"]:
+        (cache / Path(track["local_path"]).name).write_bytes(b"%PDF-1.4 fake")
+    B.paths_mod.RESUMES = cache
+    B.resumes_mod.load_manifest = lambda: {"ai": {"synced": "2026-09-01"}}
+    return cache
+
+
+async def test_myresume_lists_tracks():
+    tmp = Path(tempfile.mkdtemp())
+    setup(tmp)
+    stub_cache(tmp)
+    n = 0
+    await B.handle_myresume("/myresume")
+    text, buttons = SENT[-1]
+    tags = [t["tag"] for t in B.profile_mod.load_profile()["resume_tracks"]]
+    assert buttons_flat(buttons) == [f"{B.CB}:{B.CB_FILE}:{t}" for t in tags], buttons
+    n += 1
+    assert "Which resume?" in text, text
+    n += 1
+    # The sync date is the point of the list: a stale PDF is invisible once it's on the phone.
+    assert "2026-09-01" in "".join(b["text"] for row in buttons for b in row), buttons
+    n += 1
+    assert not DOCS, "listing must not upload anything"
+    n += 1
+    return n
+
+
+async def test_myresume_arg_sends_the_named_track():
+    tmp = Path(tempfile.mkdtemp())
+    setup(tmp)
+    cache = stub_cache(tmp)
+    n = 0
+    await B.handle_myresume("/myresume AI")     # case-insensitive
+    path, filename, caption = DOCS[-1]
+    assert path == str(cache / "ai.pdf"), path
+    n += 1
+    # Named the way an employer sees it, never the PDF's name on disk.
+    track = next(t for t in B.profile_mod.load_profile()["resume_tracks"] if t["tag"] == "ai")
+    assert filename == B.profile_mod.resume_filename(track), filename
+    n += 1
+    assert "ai" in caption, caption
+    n += 1
+    return n
+
+
+async def test_myresume_button_sends_the_pdf():
+    tmp = Path(tempfile.mkdtemp())
+    setup(tmp)
+    cache = stub_cache(tmp)
+    n = 0
+    await B.batch_callback(f"{B.CB}:{B.CB_FILE}:quant", "cb")
+    assert DOCS[-1][0] == str(cache / "quant.pdf"), DOCS
+    n += 1
+    assert TOASTS, "the button must be answered so its spinner stops"
+    n += 1
+    return n
+
+
+async def test_myresume_unknown_track_says_so():
+    tmp = Path(tempfile.mkdtemp())
+    setup(tmp)
+    stub_cache(tmp)
+    n = 0
+    await B.handle_myresume("/myresume banana")
+    assert not DOCS, "an unknown track must not send a file"
+    n += 1
+    assert "banana" in SENT[-1][0], SENT[-1][0]
+    n += 1
+    return n
+
+
+async def test_myresume_track_without_a_path_is_not_the_cache_dir():
+    """A track with no local_path must read as missing, not as the cache directory."""
+    tmp = Path(tempfile.mkdtemp())
+    setup(tmp)
+    stub_cache(tmp)
+    n = 0
+    real = B.profile_mod.load_profile
+    B.profile_mod.load_profile = lambda: dict(
+        real(), resume_tracks=[{"tag": "quant", "current_file": "x.pdf"}])
+    try:
+        await B.handle_myresume("/myresume quant")
+    finally:
+        B.profile_mod.load_profile = real
+    assert not DOCS, "must not try to upload the cache directory"
+    n += 1
+    assert "sync-local" in SENT[-1][0], SENT[-1][0]
+    n += 1
+    return n
+
+
+async def test_myresume_uncached_track_says_how_to_sync():
+    tmp = Path(tempfile.mkdtemp())
+    setup(tmp)
+    cache = stub_cache(tmp)
+    (cache / "ds.pdf").unlink()
+    n = 0
+    await B.handle_myresume("/myresume ds")
+    assert not DOCS, "a missing file must not be uploaded"
+    n += 1
+    assert "sync-local" in SENT[-1][0], SENT[-1][0]
+    n += 1
+    return n
+
+
 async def main():
     n = 0
     for t in (test_edit_lists_answers, test_edit_one_shot, test_edit_reopen_re_asks,
               test_edit_rejects_bad_number, test_edit_no_questions_points_to_resume,
               test_edit_nothing_pending, test_resume_shows_track_buttons,
               test_resume_override_callback_sets_tag, test_resume_override_unknown_track_noop,
-              test_resume_override_refused_after_approve, test_resume_override_stale_button_no_crash):
+              test_resume_override_refused_after_approve, test_resume_override_stale_button_no_crash,
+              test_myresume_lists_tracks, test_myresume_arg_sends_the_named_track,
+              test_myresume_button_sends_the_pdf, test_myresume_unknown_track_says_so,
+              test_myresume_uncached_track_says_how_to_sync,
+              test_myresume_track_without_a_path_is_not_the_cache_dir):
         n += await t()
     print(f"edit/resume: {n}/{n} checks passed")
 

@@ -113,6 +113,7 @@ from core import bank as bank_mod
 from core import paths as paths_mod       # the one place that knows where anything lives
 from core import profile as profile_mod  # resume track tags + display names for /resume
 from core import referral as referral_mod  # pasted-profile resolution + the outreach store
+from core import resumes as resumes_mod  # the cache /myresume sends from (sync dates)
 from core import scraper as scraper_mod  # dedup_key — the panel path must mint the same key
 
 
@@ -318,6 +319,20 @@ def tg_send_plain(text: str) -> int:
     return r.json()["result"]["message_id"]
 
 
+def tg_send_document(path, filename: str, caption: str = "") -> int:
+    """Upload a file to the chat. The one send here that is multipart rather than JSON.
+
+    Telegram caps a bot upload at 50 MB; a resume is three orders of magnitude under that,
+    so the only realistic failure is a missing file, which the caller checks first.
+    """
+    with open(path, "rb") as fh:
+        r = SESSION.post(f"{API}/sendDocument",
+                         data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
+                         files={"document": (filename, fh, "application/pdf")}, timeout=120)
+    r.raise_for_status()
+    return r.json()["result"]["message_id"]
+
+
 def tg_answer_callback(cb_id: str, text: str = "") -> None:
     try:
         SESSION.post(f"{API}/answerCallbackQuery",
@@ -434,6 +449,9 @@ async def telegram_poller(offset):
                     continue
                 if low == "/resume":  # slash required: "resume" is too plausible as an answer
                     await _safe("/resume", handle_resume())
+                    continue
+                if low == "/myresume" or low.startswith("/myresume "):
+                    await _safe("/myresume", handle_myresume(text.strip()))
                     continue
                 if low in ("/retry", "retry"):
                     await _safe("/retry", handle_retry())
@@ -1591,6 +1609,7 @@ COMMANDS = [
     ("jobs", "List every job and pick which one to fill"),
     ("edit", "Change an answer before you approve"),
     ("resume", "Swap the resume for the current job"),
+    ("myresume", "Send me my latest resume PDF"),
     ("retry", "Re-queue jobs that couldn't submit"),
     ("refer", "Paste someone's profile, get the reqs and the messages"),
     ("refers", "Everyone you're in outreach with"),
@@ -1656,14 +1675,19 @@ async def handle_draft(text: str) -> None:
     await asyncio.to_thread(tg_send, _draft_status_text(), [[button]])
 
 
-def _resume_display(track: dict) -> str:
+def _resume_display(track: dict, profile: dict | None = None) -> str:
     """The string shown on the summary's 📄 line — mirrors fill.js's report format
-    (`<file> (<tag> track)`) so an overridden resume reads the same as an auto-picked one."""
-    return f"{track.get('current_file') or track.get('tag')} ({track.get('tag')} track)"
+    (`<file> (<tag> track)`) so an overridden resume reads the same as an auto-picked one.
+
+    The name is the OUTGOING one, `resume_filename`, not the PDF's name on disk. This line
+    is how Parth checks which CV is going out, so showing the source filename here while
+    the extension attached a different one made the check meaningless.
+    """
+    return f"{profile_mod.resume_filename(track, profile)} ({track.get('tag')} track)"
 
 
-def _track_button_label(track: dict) -> str:
-    return f"{str(track.get('tag') or '?').title()} — {track.get('current_file') or ''}".strip(" —")
+def _track_button_label(track: dict, profile: dict | None = None) -> str:
+    return f"{str(track.get('tag') or '?').title()} — {profile_mod.resume_filename(track, profile)}"
 
 
 async def handle_edit(text: str) -> None:
@@ -1734,14 +1758,90 @@ async def handle_resume() -> None:
             "Nothing in front of you right now. /status to see the batch.")
         return
     key = rec["dedup_key"]
-    tracks = (profile_mod.load_profile() or {}).get("resume_tracks", [])
+    profile = profile_mod.load_profile() or {}
+    tracks = profile.get("resume_tracks", [])
     cur = rec.get("resume") or "auto-picked at fill time"
-    buttons = [[{"text": _track_button_label(t), "callback_data": f"{CB}:r:{key}:{t['tag']}"}]
+    buttons = [[{"text": _track_button_label(t, profile), "callback_data": f"{CB}:r:{key}:{t['tag']}"}]
                for t in tracks]
     await asyncio.to_thread(tg_send,
         f"📄 <b>Resume</b> — {job_title_line(rec)}\n"
         f"Currently: <b>{html.escape(str(cur))}</b>\n\n<i>Tap a track to override.</i>",
         buttons)
+
+
+# The resume-download namespace inside the batch callback space: `rf` is "resume file",
+# distinct from `r`, which overrides the track on the job in front of Parth.
+CB_FILE = "rf"
+
+
+def _resume_tracks() -> tuple[dict, list[dict]]:
+    profile = profile_mod.load_profile() or {}
+    return profile, profile.get("resume_tracks", [])
+
+
+def _cached_resume(track: dict) -> pathlib.Path | None:
+    """Where the track's PDF sits in the local cache, or None for a track without one.
+
+    The cache, not the Finals folder: the cache is what `sync-local` refreshes and what the
+    extension attaches, so sending anything else could hand Parth a file no employer got.
+    A track with no `local_path` returns None rather than the cache DIRECTORY, which exists
+    and would be opened as if it were the PDF.
+    """
+    name = pathlib.Path(track.get("local_path") or "").name
+    return paths_mod.RESUMES / name if name else None
+
+
+async def send_resume_file(tag: str) -> None:
+    """Upload one track's cached PDF, named the way an employer sees it."""
+    profile, tracks = await asyncio.to_thread(_resume_tracks)
+    track = next((t for t in tracks if t.get("tag") == tag), None)
+    if track is None:
+        known = ", ".join(str(t.get("tag")) for t in tracks) or "none configured"
+        await asyncio.to_thread(tg_send, f"No resume track called <b>{html.escape(tag)}</b>. "
+                                         f"Known tracks: {html.escape(known)}.")
+        return
+    src = _cached_resume(track)
+    if src is None or not src.is_file():
+        await asyncio.to_thread(tg_send,
+            f"📄 The <b>{html.escape(tag)}</b> resume isn't cached yet.\n"
+            f"Run <code>python -m core.resumes sync-local --tag {html.escape(tag)}</code> on the laptop.")
+        return
+    name = profile_mod.resume_filename(track, profile)
+    synced = (await asyncio.to_thread(resumes_mod.load_manifest)).get(tag, {}).get("synced", "?")
+    await asyncio.to_thread(tg_send_document, src, name,
+                            f"📄 {html.escape(tag)} track — synced {html.escape(str(synced))}")
+
+
+async def handle_myresume(text: str) -> None:
+    """/myresume         list the tracks, tap one to get the PDF
+       /myresume ai      send that track straight away
+
+    Sends the CACHED PDF — the same bytes the extension attaches — under the same name an
+    employer sees, so what arrives on the phone is what went out on the application.
+    """
+    touch_activity()
+    arg = (text.strip().split() + [""])[1].lower()
+    if arg:
+        await send_resume_file(arg)
+        return
+    profile, tracks = await asyncio.to_thread(_resume_tracks)
+    if not tracks:
+        await asyncio.to_thread(tg_send, "No resume tracks in your profile.")
+        return
+    manifest = await asyncio.to_thread(resumes_mod.load_manifest)
+    buttons = []
+    for t in tracks:
+        tag = str(t.get("tag") or "?")
+        rec = manifest.get(tag, {})
+        # Say when it was cached, not just which track: a stale PDF is the failure this
+        # command exists to catch, and it is invisible once the file is on the phone.
+        cached = _cached_resume(t)
+        when = rec.get("synced") if cached and cached.is_file() else "not cached"
+        buttons.append([{"text": f"{tag.title()} — {when or '?'}",
+                         "callback_data": f"{CB}:{CB_FILE}:{tag}"}])
+    await asyncio.to_thread(tg_send,
+        "📄 <b>Which resume?</b>\n<i>Tap a track and I'll send the PDF. "
+        "/myresume ai skips the tap.</i>", buttons)
 
 
 async def answer_current(text: str) -> bool:
@@ -1816,6 +1916,11 @@ async def batch_callback(data: str, cb_id: str) -> None:
         await asyncio.to_thread(pending_mod.set_answer, key, qid, val)
         await asyncio.to_thread(tg_answer_callback, cb_id, "Saved")
         await serve_next()
+        return
+
+    if kind == CB_FILE and len(parts) == 3:        # /myresume pick -> b:rf:<tag>
+        await asyncio.to_thread(tg_answer_callback, cb_id, "Sending…")
+        await send_resume_file(parts[2])
         return
 
     if kind == "r" and len(parts) == 4:  # resume override -> b:r:<key>:<tag>

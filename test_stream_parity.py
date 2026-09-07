@@ -81,16 +81,44 @@ ALT_CASES = [
     ({}, "nothing.here"),                                        # neither source -> []
 ]
 
+# resume_filename decides the name an employer actually sees on the PDF, and the Workday
+# adapter reads the track back OFF that name. A drift between the ports means the extension
+# attaches one name while the backend reports another, which is the bug this pair replaced.
+NAME_PROFILE = {
+    "identity": {"first_name": "Ada", "last_name": "Lovelace", "full_name": "Ada Lovelace"},
+    "resume_tracks": [
+        {"tag": "quant", "current_file": "Ada Quant Resume v4.pdf", "local_path": "resumes/quant.pdf"},
+        {"tag": "ds", "current_file": "ds_final.pdf", "local_path": "resumes/ds.pdf"},
+        {"tag": "tech", "current_file": "FILL_ME", "local_path": "resumes/tech.pdf"},
+        {"tag": "ai", "current_file": "Ada AI ML Resume.pdf", "local_path": "resumes/ai.pdf"},
+    ],
+}
+# (profile, track) pairs: every track of the four-track profile, then the edge cases —
+# one track only (no suffix), a hyphenated name, no identity at all.
+_ONE_TRACK = {"identity": NAME_PROFILE["identity"],
+              "resume_tracks": [NAME_PROFILE["resume_tracks"][0]]}
+_HYPHEN = dict(NAME_PROFILE, identity={"first_name": "Ada-May", "last_name": "O'Lovelace"})
+_NAMELESS = dict(NAME_PROFILE, identity={"first_name": "FILL_ME", "last_name": "FILL_ME"})
+NAME_CASES = (
+    [[NAME_PROFILE, t] for t in NAME_PROFILE["resume_tracks"]]
+    + [[_ONE_TRACK, NAME_PROFILE["resume_tracks"][0]],
+       [_HYPHEN, NAME_PROFILE["resume_tracks"][3]],
+       [_NAMELESS, NAME_PROFILE["resume_tracks"][1]],
+       [_NAMELESS, NAME_PROFILE["resume_tracks"][2]]]   # unfilled source too
+)
+
 JS = r"""
 import { resolveStream } from "./stream.js";
 import { dig, resolveAlternates } from "./classify.js";
-const [fixture, tags, keys, altProfile, altCases] = JSON.parse(process.argv[2]);
+import { resumeFilename } from "./attach.js";
+const [fixture, tags, keys, altProfile, altCases, nameCases] = JSON.parse(process.argv[2]);
 const out = {};
 for (const tag of tags) {
   const resolved = resolveStream(fixture, tag);
   out[tag] = { resolved, dug: Object.fromEntries(keys.map(k => [k, dig(resolved, k)])) };
 }
 out._alternates = altCases.map(([rule, vk]) => resolveAlternates(altProfile, rule, vk));
+out._names = nameCases.map(([prof, track]) => resumeFilename(track, prof));
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -115,7 +143,7 @@ def main() -> int:
         try:
             r = subprocess.run(
                 [node, "_parity_tmp.mjs",
-                 json.dumps([FIXTURE, TAGS, DIG_KEYS, ALT_PROFILE, ALT_CASES])],
+                 json.dumps([FIXTURE, TAGS, DIG_KEYS, ALT_PROFILE, ALT_CASES, NAME_CASES])],
                 cwd=EXT, capture_output=True, text=True)
         finally:
             (EXT / "_parity_tmp.mjs").unlink(missing_ok=True)
@@ -141,6 +169,11 @@ def main() -> int:
         if p != j:
             fails.append(f"  resolve_alternates({rule}, {vk!r}): py={p!r} js={j!r}")
 
+    for (prof, track), j in zip(NAME_CASES, js["_names"]):
+        p = P.resume_filename(track, prof)
+        if p != j:
+            fails.append(f"  resume_filename({track['tag']!r}): py={p!r} js={j!r}")
+
     # Content assertions — parity alone would pass if BOTH sides were wrong together.
     q = py["quant"]["resolved"]["work_history"][0]
     checks = [
@@ -163,6 +196,19 @@ def main() -> int:
         ("list index digs", P.dig(q, "description") == "quant desc"),
         ("out-of-range dig is None", py["quant"]["dug"]["work_history.5.employer"] is None),
         ("non-numeric list segment is None", py["quant"]["dug"]["work_history.notanindex.x"] is None),
+        # The source filename never reaches the employer: four tracks, four names, all
+        # built from the identity and all differing only in the one-letter suffix.
+        ("name ignores the source file",
+         [P.resume_filename(t, NAME_PROFILE) for t in NAME_PROFILE["resume_tracks"]]
+         == ["Ada_Lovelace_q.pdf", "Ada_Lovelace_d.pdf", "Ada_Lovelace_t.pdf", "Ada_Lovelace_a.pdf"]),
+        ("one track carries no suffix",
+         P.resume_filename(NAME_PROFILE["resume_tracks"][0], _ONE_TRACK) == "Ada_Lovelace.pdf"),
+        ("punctuation in a name is collapsed",
+         P.resume_filename(NAME_PROFILE["resume_tracks"][3], _HYPHEN) == "Ada_May_O_Lovelace_a.pdf"),
+        ("no identity falls back to the source name",
+         P.resume_filename(NAME_PROFILE["resume_tracks"][1], _NAMELESS) == "ds_final.pdf"),
+        ("no identity and no source name never sends FILL_ME.pdf",
+         P.resume_filename(NAME_PROFILE["resume_tracks"][2], _NAMELESS) == "tech.pdf"),
     ]
     for name, ok in checks:
         if not ok:
@@ -173,7 +219,7 @@ def main() -> int:
         print("\n".join(fails))
         return 1
     print(f"OK: {len(TAGS)} tags x {len(DIG_KEYS)} keys in parity, "
-          f"{len(ALT_CASES)} alternates cases in parity, "
+          f"{len(ALT_CASES)} alternates cases and {len(NAME_CASES)} resume names in parity, "
           f"{len(checks)} behaviour checks green")
     return 0
 

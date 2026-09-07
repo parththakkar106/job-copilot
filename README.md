@@ -270,6 +270,15 @@ python -m core.resumes sync-local        # refresh the cache
 python -m core.resumes status            # show the configured source + what's cached
 ```
 
+Whatever a PDF is called on disk, it is attached as `First_Last_<letter>.pdf` — built from
+`identity` in your profile, with the track tag's initial as the suffix, and no suffix at
+all when the profile defines one track. `core/profile.py resume_filename` and its port in
+`extension/attach.js` are the one source of that name; `test_stream_parity.py` checks the
+two agree.
+
+Send yourself the current PDF from the phone with `/myresume` (a list of tracks with their
+cache dates) or `/myresume ai` (that track straight away).
+
 ## Daily operation
 
 The GitHub Actions workflow runs `python -m core.scraper` daily at 03:00 UTC (08:30 IST):

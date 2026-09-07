@@ -724,8 +724,8 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
 
   const attachmentMatchesTrack = eval(`(${extract("attachmentMatchesTrack")})`);
 
-  // THE FILENAME CARRIES A LETTER, NOT THE TAG. cleanResumeName collapses "ds" to "d" on
-  // the way out, so the real attachment reads Parth_Resume_d.pdf. A pattern expecting the
+  // THE FILENAME CARRIES A LETTER, NOT THE TAG. resumeFilename suffixes "ds" as "d" on
+  // the way out, so the real attachment reads First_Last_d.pdf. A pattern expecting the
   // tag itself matches nothing, and comparing "d" to "ds" never agrees — which would have
   // replaced the attachment on every run forever. Caught by a live report showing
   // resumeChoice {tag:"ds", file:"Parth_Resume_d.pdf"}.

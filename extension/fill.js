@@ -37,7 +37,7 @@ async function loadDeps() {
     adapters: [ghMod.GREENHOUSE, leverMod.LEVER, ashbyMod.ASHBY, wdMod.WORKDAY],
     pickResume: pickMod.pickResume,
     attachResume: attachMod.attachResume,
-    cleanResumeName: attachMod.cleanResumeName,
+    resumeFilename: attachMod.resumeFilename,
   };
 }
 
@@ -1558,7 +1558,7 @@ async function runFill(autoSubmit = false, opts = {}) {
     // dig/render are only read by the Workday branch below, but they must be destructured
     // here with the rest: the branch builds one ctx object literal, so a name missing from
     // this line is a ReferenceError that kills the whole fill before it touches the page.
-    const { adapters, classify, dig, render, pickResume, attachResume, cleanResumeName } = deps;
+    const { adapters, classify, dig, render, pickResume, attachResume, resumeFilename } = deps;
 
     const adapter = adapters.find(a => a.urlPatterns.some(re => re.test(location.href)));
     if (!adapter) { report.errors.push("no adapter matched this URL"); return report; }
@@ -1596,7 +1596,11 @@ async function runFill(autoSubmit = false, opts = {}) {
       // Pick the resume track FIRST, then resolve the profile through that same tag. The
       // four resumes describe the same jobs in four vocabularies, so filling from the raw
       // profile would type quant wording onto a form carrying the AI PDF.
-      const track = pickResume(opts.field || report.company || "", opts.jd || "", profile);
+      // Carry the outgoing filename ON the track: the Workday driver attaches through
+      // the same `track` object several steps later, and one resolved name keeps the
+      // attach, the report and the Telegram summary all saying the same thing.
+      const picked = pickResume(opts.field || report.company || "", opts.jd || "", profile);
+      const track = { ...picked, send_as: resumeFilename(picked, profile) };
       const streamed = resolveStream(profile, track.tag);
 
       const wd = await runWorkday({
@@ -1611,9 +1615,7 @@ async function runFill(autoSubmit = false, opts = {}) {
       // The SAME key the single-page path uses (see resumeChoice below). One name for one
       // fact: logApplied reads exactly one place to record which CV an application used,
       // and a Workday-only alias would be the one it silently missed.
-      report.resumeChoice = { tag: track.tag,
-                              file: cleanResumeName(track.current_file, track.tag),
-                              overridden: false };
+      report.resumeChoice = { tag: track.tag, file: track.send_as, overridden: false };
 
       // Log here too. The single LOG_REPORT at the bottom of runFill is past the early
       // return above, so without this the Workday path writes NOTHING to
@@ -1699,13 +1701,14 @@ async function runFill(autoSubmit = false, opts = {}) {
       }
       if (!track && !opts.resumeTag) track = pickResume(roleTitle, "", profile);
       if (track) {
+        track = { ...track, send_as: resumeFilename(track, profile) };
         // Surface which resume is going out (name + track) in the end-of-form review.
-        report.resumeChoice = { tag: track.tag, file: cleanResumeName(track.current_file, track.tag),
+        report.resumeChoice = { tag: track.tag, file: track.send_as,
                                 overridden: !!opts.resumeTag && track.tag === opts.resumeTag };
         try {
           const ok = await attachResume(resumeInput, track);
           handled.add(resumeInput);
-          (ok ? report.filled : report.skipped).push({ key: "resume", value: `${track.tag} (${cleanResumeName(track.current_file, track.tag)})` });
+          (ok ? report.filled : report.skipped).push({ key: "resume", value: `${track.tag} (${track.send_as})` });
         } catch (e) { report.errors.push(`resume attach: ${e.message}`); }
       }
     } else {

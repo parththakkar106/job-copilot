@@ -144,6 +144,47 @@ def classify(field_text: str, company: str | None = None,
     return {"bucket": None}
 
 
+def resume_filename(track: dict, profile: dict | None = None) -> str:
+    """The filename a resume is attached under, built from your name rather than the PDF's.
+
+    The source filename is whatever the file happened to be called on disk, and after
+    `python -m core.resumes sync-local` that is the Finals-folder name. Deriving the
+    outgoing name from it meant an employer saw a different string per track, and any
+    name that did not already read `..._<tag>_vN.pdf` went out verbatim. Build the name
+    from `identity` instead, so every track sends `First_Last[_x].pdf`.
+
+    The suffix is the track tag's FIRST LETTER, and only when the profile defines more
+    than one track. One letter because the Workday adapter reads the attached track back
+    off the filename (`attachedNamePattern`), which needs the letters to stay distinct.
+
+    If the identity is unset, fall back to the source filename: an application with an
+    oddly named CV is better than one carrying `FILL_ME.pdf`.
+    """
+    profile = profile if profile is not None else load_profile()
+    ident = profile.get("identity") or {}
+
+    def _clean(v) -> str:
+        v = "" if v is None or v == FILL_ME else str(v).strip()
+        return re.sub(r"[^A-Za-z0-9]+", "_", v).strip("_")
+
+    first, last = _clean(ident.get("first_name")), _clean(ident.get("last_name"))
+    stem = "_".join(p for p in (first, last) if p)
+    if not stem:
+        stem = _clean(ident.get("full_name"))
+    if not stem:
+        src = track.get("current_file")
+        # An unfilled track carries the placeholder rather than omitting the key, so
+        # without this check the file goes out called FILL_ME.pdf.
+        return src if src and src != FILL_ME else f"{track.get('tag') or 'resume'}.pdf"
+
+    tracks = profile.get("resume_tracks") or []
+    tag = str(track.get("tag") or "")
+    if len(tracks) > 1 and tag:
+        stem = f"{stem}_{tag[0].lower()}"
+    ext = Path(track.get("local_path") or track.get("current_file") or "x.pdf").suffix or ".pdf"
+    return f"{stem}{ext}"
+
+
 def pick_resume(field_text: str, jd_text: str = "", profile: dict | None = None) -> dict:
     """Static best-of-4 pick by keyword overlap (role title weighted 2x over JD body)."""
     profile = profile if profile is not None else load_profile()
@@ -164,7 +205,8 @@ def pick_resume(field_text: str, jd_text: str = "", profile: dict | None = None)
         best = next((t for t in profile["resume_tracks"] if t["tag"] == tag), best)
         best_score = 0
     return {"tag": best["tag"], "local_path": best["local_path"],
-            "current_file": best["current_file"], "score": best_score}
+            "current_file": best["current_file"], "score": best_score,
+            "send_as": resume_filename(best, profile)}
 
 
 def resolve_stream(profile: dict, tag: str) -> dict:
@@ -502,6 +544,21 @@ def selftest():
         fails += 1; print("FAIL: resume pick ai")
     if pick_resume("Barista")["tag"] != profile["default_resume_tag"]:
         fails += 1; print("FAIL: resume default fallback")
+
+    # Outgoing filename: built from identity, never from the PDF's own name.
+    named = dict(profile, identity=dict(profile.get("identity") or {},
+                                        first_name="Ada", last_name="Lovelace"))
+    quant = next(t for t in named["resume_tracks"] if t["tag"] == "quant")
+    if resume_filename(dict(quant, current_file="whatever_v9.pdf"), named) != "Ada_Lovelace_q.pdf":
+        fails += 1; print("FAIL: resume filename ignores the source name")
+    one_track = dict(named, resume_tracks=[quant])
+    if resume_filename(quant, one_track) != "Ada_Lovelace.pdf":
+        fails += 1; print("FAIL: single track carries no suffix")
+    unnamed = dict(named, identity={"first_name": FILL_ME, "last_name": FILL_ME})
+    if resume_filename(dict(quant, current_file="src.pdf"), unnamed) != "src.pdf":
+        fails += 1; print("FAIL: unset identity falls back to the source name")
+    if len({resume_filename(t, named) for t in named["resume_tracks"]}) != len(named["resume_tracks"]):
+        fails += 1; print("FAIL: two tracks share one outgoing filename")
 
     holes = find_fillme(profile)
     print(f"\n{len(cases)+5} checks, {fails} failure(s). "

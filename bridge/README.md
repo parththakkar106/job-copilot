@@ -210,6 +210,29 @@ the same job. Approved jobs are listed but not tappable: they are already on the
 an employer, and reopening one under a flush in flight is the race the pending store
 exists to prevent.
 
+## Getting the resume itself (`/myresume`)
+
+**`/myresume`** lists the four tracks with the date each was last cached; tap one and the
+bridge uploads that PDF to the chat. **`/myresume ai`** skips the tap. It sends the file
+from `resumes/` — the same bytes the extension attaches — under the same name an employer
+sees, so what lands on your phone is what went out on the application.
+
+The cache is refreshed on the laptop with `python -m core.resumes sync-local`. If a track
+has no cached file, `/myresume` says so and names that command rather than sending
+something stale.
+
+### The name on the file
+
+Every resume goes out as `First_Last_<letter>.pdf`, built from `identity` in your profile:
+`Parth_Thakkar_q.pdf` for quant, `_d` for DS, `_t` for tech, `_a` for AI. The suffix is
+dropped when the profile defines a single track.
+
+The source PDF's own name is never used. It was, and after `python -m core.resumes
+sync-local` that name is whatever the file is called in the Finals folder, so each track
+went out under a different string and any name not already shaped `..._<tag>_vN.pdf` went
+out verbatim. `core/profile.py resume_filename` and its port in `extension/attach.js` are
+now the one source of that name, checked against each other by `test_stream_parity.py`.
+
 ## Drafting (Tier 2)
 
 Essay answers are drafted by shelling out to the **Claude Code CLI** (`drafter.py`), so it

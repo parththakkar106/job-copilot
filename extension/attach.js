@@ -33,18 +33,41 @@ export function attachFile(inputEl, file) {
   return accepted;
 }
 
-// The visible filename an employer sees: drop the internal version suffix and collapse the
-// track word to a single letter — Parth_Resume_tech_v4.pdf -> Parth_Resume_t.pdf
-// (tech->t, ai->a, quant->q, ds->d).
-export function cleanResumeName(filename, tag) {
-  let name = String(filename).replace(/_v\d+/i, ""); // strip version suffix
-  if (tag) name = name.replace(new RegExp(`_${tag}(?=\\.[^.]+$)`, "i"), `_${tag[0].toLowerCase()}`);
-  return name;
+// The visible filename an employer sees: built from identity, never from the PDF's own
+// name. Port of profile.py `resume_filename` — keep the two in step.
+//
+// The source filename is whatever the file is called on disk, and after `sync-local` that
+// is the Finals-folder name, so deriving from it sent a different string per track. The
+// suffix is the tag's FIRST LETTER, and only when the profile defines more than one
+// track: the Workday adapter reads the attached track back off the filename
+// (`attachedNamePattern`), which needs those letters to stay distinct.
+export function resumeFilename(track, profile) {
+  const ident = (profile && profile.identity) || {};
+  const clean = (v) => (v && v !== "FILL_ME" ? String(v) : "")
+    .replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
+  let stem = [clean(ident.first_name), clean(ident.last_name)].filter(Boolean).join("_");
+  if (!stem) stem = clean(ident.full_name);
+  // No identity to build from: an oddly named CV beats one called FILL_ME.pdf, and an
+  // unfilled track carries that placeholder rather than omitting the key.
+  if (!stem) {
+    const src = track.current_file;
+    return src && src !== "FILL_ME" ? src : `${track.tag || "resume"}.pdf`;
+  }
+
+  const tracks = (profile && profile.resume_tracks) || [];
+  const tag = String(track.tag || "");
+  if (tracks.length > 1 && tag) stem += `_${tag[0].toLowerCase()}`;
+  const src = String(track.local_path || track.current_file || "x.pdf");
+  const ext = src.includes(".") ? src.slice(src.lastIndexOf(".")) : ".pdf";
+  return `${stem}${ext}`;
 }
 
-// Convenience: load by track then attach.
-export async function attachResume(inputEl, track) {
-  const file = await loadResumeFile(track.local_path, cleanResumeName(track.current_file, track.tag));
+// Convenience: load by track then attach. `track.send_as` is the name fill.js already
+// resolved for this run; `profile` covers the callers that have not resolved one.
+export async function attachResume(inputEl, track, profile) {
+  const name = track.send_as || resumeFilename(track, profile);
+  const file = await loadResumeFile(track.local_path, name);
   return attachFile(inputEl, file);
 }
 

@@ -85,9 +85,28 @@ def update_answers(dedup_key: str, body: AnswersUpdate):
     return _for_display(rec)
 
 
+def _resume_display(tag: str) -> str | None:
+    """`<outgoing filename> (<tag> track)` — the format the Telegram summary uses.
+
+    None for a tag the profile does not define: pending's override then leaves the old
+    line alone, and fill.js refuses the unknown tag and holds the job for review.
+    """
+    from core import profile as profile_mod
+
+    profile = profile_mod.load_profile() or {}
+    track = next((t for t in profile.get("resume_tracks", []) if t.get("tag") == tag), None)
+    if track is None:
+        return None
+    return f"{profile_mod.resume_filename(track, profile)} ({tag} track)"
+
+
 @router.put("/jobs/{dedup_key}/resume")
 def update_resume(dedup_key: str, body: ResumeOverride):
-    rec = pending_mod.set_resume_override(dedup_key, body.tag, body.display)
+    # Build the display string here when the caller sends none. The drawer sends only the
+    # tag, and without this the record kept the previously shown resume line while the
+    # extension attached the new track — the same name/file mismatch the Telegram path had.
+    display = body.display or _resume_display(body.tag)
+    rec = pending_mod.set_resume_override(dedup_key, body.tag, display)
     if rec is None:
         raise HTTPException(404, "no pending record for that job")
     return rec
