@@ -4,9 +4,10 @@
 # P1 collection pass needs, then hands off to the bridge to start it:
 #
 #   1. Refresh out/queue.json from origin (today's scrape) - non-destructive, guarded.
-#   2. Ensure the Telegram bridge is running (start it hidden if the port is dead).
-#   3. Ensure Chrome is running on Parth's real profile, with the CDP info-bar suppressed.
-#   4. Drop the sentinel file the bridge watches; its trigger_watcher fires runQueue once
+#   2. Sync THIS repo to origin/main, so the bridge runs today's code.
+#   3. Ensure the Telegram bridge is running, and restart it when the code moved.
+#   4. Ensure Chrome is running on Parth's real profile, with the CDP info-bar suppressed.
+#   5. Drop the sentinel file the bridge watches; its trigger_watcher fires runQueue once
 #      the extension has connected.
 #
 # This runs ONLY P1 collection. Nothing is submitted here - Parth still reviews on
@@ -17,6 +18,8 @@
 #     poke the WS to start the run (that would kill a live review). The sentinel file is
 #     the WS-free handoff - it works whether the bridge is cold-started here or was
 #     already running from earlier in the day.
+#   * Restarting the bridge is safe at any point. The review batch lives on disk in
+#     bridge/pending/*.json, so a restart drops no in-flight work. See pending.py.
 #   * --silent-debugger-extension-api only takes effect on a FRESH Chrome start. If Chrome
 #     is already open the flag is ignored and Greenhouse fills show a harmless "extension
 #     is debugging this browser" info bar - the run still works, so we never force-close
@@ -113,7 +116,73 @@ try {
     Pop-Location
 }
 
-# --- 2. Ensure the bridge is running ----------------------------------------------------
+# --- 2. Sync the code, so the bridge runs today's commit --------------------------------
+# Step 1 syncs the DATA repo. This repo - the bridge, core/, the extension - was never
+# synced here at all, so a long-lived bridge kept serving whatever commit it started from.
+# On 2026-09-08 that was a process from 2026-08-29 running code from 2026-08-27, behind
+# origin/main, with nothing anywhere reporting the gap.
+#
+# main is the branch the unattended run tracks. Working on a feature branch is fine, but
+# the daily collection must not run against one, so this returns the checkout to main each
+# morning. Both guards refuse rather than discard: uncommitted tracked changes or unpushed
+# commits stop the sync and leave the checkout untouched. Untracked files are ignored,
+# because a fast-forward checkout never overwrites them.
+function Short($sha) {
+    if ($sha) { return $sha.Substring(0, 7) }
+    return '(unknown)'
+}
+
+$codeBefore = (git -C $repo rev-parse HEAD 2>$null)
+try {
+    git -C $repo fetch --quiet origin 2>&1 | Out-Null
+
+    $branch = (git -C $repo rev-parse --abbrev-ref HEAD 2>$null)
+    $dirty  = (git -C $repo status --porcelain --untracked-files=no)
+
+    # Commits that exist here and on no origin ref. Measured against the branch's own
+    # upstream when it has one. A branch with no upstream is unpushed by definition, so
+    # origin/main is the comparison there.
+    $upstream = (git -C $repo rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $upstream) {
+        $unpushed = (git -C $repo rev-list --count "$upstream..HEAD" 2>$null)
+    } else {
+        $unpushed = (git -C $repo rev-list --count "origin/main..HEAD" 2>$null)
+    }
+
+    if ($dirty) {
+        Log "WARNING: code sync skipped - $repo has uncommitted changes to tracked files."
+        Log "         The bridge stays on '$branch' at $(Short $codeBefore)."
+    } elseif ($unpushed -and [int]$unpushed -gt 0) {
+        Log "WARNING: code sync skipped - '$branch' has $unpushed unpushed commit(s)."
+        Log "         Push or merge them, or the daily run never returns to main."
+    } else {
+        if ($branch -ne 'main') {
+            git -C $repo checkout --quiet main 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                # No local main yet, which happens on a clone that only ever checked out
+                # a feature branch.
+                git -C $repo checkout --quiet -b main --track origin/main 2>&1 | Out-Null
+            }
+        }
+        git -C $repo merge --ff-only --quiet origin/main 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Log "WARNING: main will not fast-forward to origin/main - this clone has diverged."
+            Log "         Fix it once with:  git -C `"$repo`" pull --rebase origin main"
+        }
+    }
+} catch {
+    Log "Code sync skipped ($($_.Exception.Message)); the bridge stays on its current commit."
+}
+
+$codeAfter   = (git -C $repo rev-parse HEAD 2>$null)
+$codeChanged = ($codeAfter -ne $codeBefore)
+if ($codeChanged) {
+    Log "Code updated: $(Short $codeBefore) -> $(Short $codeAfter) on $(git -C $repo rev-parse --abbrev-ref HEAD 2>$null)."
+} else {
+    Log "Code already current at $(Short $codeAfter)."
+}
+
+# --- 3. Ensure the bridge is running, on that commit -------------------------------------
 function Test-BridgeUp {
     try {
         $c = New-Object System.Net.Sockets.TcpClient
@@ -121,31 +190,79 @@ function Test-BridgeUp {
     } catch { return $false }
 }
 
-if (Test-BridgeUp) {
-    Log "Bridge already up on 8765."
-} else {
-    Log "Starting the bridge..."
-    # Hidden, detached, working dir = repo root. It inherits the User env vars
-    # (TELEGRAM_BOT_TOKEN / CHAT_ID) and also loads bridge/.env on its own.
+# The port's owner, which is the bridge. Reading the PID from the listener rather than
+# matching on a process name avoids killing an unrelated python.exe.
+function Get-BridgePid {
+    $conn = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($conn) { return $conn.OwningProcess }
+    return $null
+}
+
+# True when the running bridge started before HEAD was committed, so its loaded code is
+# older than the checkout. This catches the case a same-run comparison cannot see: the
+# sync landed on an earlier day and the bridge was never restarted for it.
+function Test-BridgeStale($sha) {
+    $bridgePid = Get-BridgePid
+    if (-not $bridgePid) { return $false }
+    $proc = Get-Process -Id $bridgePid -ErrorAction SilentlyContinue
+    if (-not $proc) { return $false }
+    $epoch = (git -C $repo show -s --format=%ct $sha 2>$null)
+    if (-not $epoch) { return $false }
+    $committed = [DateTimeOffset]::FromUnixTimeSeconds([int64]$epoch).LocalDateTime
+    return ($proc.StartTime -lt $committed)
+}
+
+# Hidden, detached, working dir = repo root. It inherits the User env vars
+# (TELEGRAM_BOT_TOKEN / CHAT_ID) and also loads bridge/.env on its own.
+function Start-Bridge {
     $py = (Get-Command python -ErrorAction SilentlyContinue).Source
     if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
-    if (-not $py) { Log "ERROR: python not found on PATH - cannot start the bridge."; exit 1 }
+    if (-not $py) { Log "ERROR: python not found on PATH - cannot start the bridge."; return $false }
     Start-Process -FilePath $py -ArgumentList 'bridge\bridge.py' `
         -WorkingDirectory $repo -WindowStyle Hidden | Out-Null
 
     $deadline = (Get-Date).AddSeconds(30)
     while (-not (Test-BridgeUp) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-    if (Test-BridgeUp) {
-        Log "Bridge is up."
-        # Let its trigger_watcher clear any stale sentinel from a prior crash BEFORE we
-        # drop ours, or the boot-clear would eat the fresh one and the run wouldn't fire.
-        Start-Sleep -Seconds 5
-    } else {
-        Log "ERROR: bridge did not come up within 30s."; exit 1
-    }
+    return (Test-BridgeUp)
 }
 
-# --- 3. Ensure Chrome is running on the real profile ------------------------------------
+# Give a fresh bridge time to clear a stale sentinel from a prior crash BEFORE we drop
+# ours, or the boot-clear eats the fresh one and the run never fires.
+$SETTLE_SECONDS = 5
+
+if (-not (Test-BridgeUp)) {
+    Log "Starting the bridge..."
+    if (-not (Start-Bridge)) { Log "ERROR: bridge did not come up within 30s."; exit 1 }
+    Log "Bridge is up on $(Short $codeAfter)."
+    Start-Sleep -Seconds $SETTLE_SECONDS
+} elseif ($codeChanged -or (Test-BridgeStale $codeAfter)) {
+    if ($codeChanged) {
+        Log "Restarting the bridge - the code moved to $(Short $codeAfter)."
+    } else {
+        Log "Restarting the bridge - it started before HEAD $(Short $codeAfter) was committed."
+    }
+    # Stop before starting. Two bridges cannot share port 8765: the new one dies on bind
+    # while the stale one keeps serving Telegram, which reads as a successful restart and
+    # is not one.
+    $bridgePid = Get-BridgePid
+    if ($bridgePid) {
+        Stop-Process -Id $bridgePid -Force -ErrorAction SilentlyContinue
+        $gone = (Get-Date).AddSeconds(15)
+        while ((Test-BridgeUp) -and (Get-Date) -lt $gone) { Start-Sleep -Milliseconds 500 }
+    }
+    if (Test-BridgeUp) {
+        Log "ERROR: port 8765 is still held 15s after the stop - not starting a second bridge."
+        exit 1
+    }
+    if (-not (Start-Bridge)) { Log "ERROR: bridge did not come back up within 30s."; exit 1 }
+    Log "Bridge restarted on $(Short $codeAfter)."
+    Start-Sleep -Seconds $SETTLE_SECONDS
+} else {
+    Log "Bridge already up on 8765, running $(Short $codeAfter)."
+}
+
+# --- 4. Ensure Chrome is running on the real profile ------------------------------------
 $chrome = @(
     "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
     "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
@@ -164,7 +281,7 @@ Start-Process -FilePath $chrome -ArgumentList `
     '--silent-debugger-extension-api', '--profile-directory=Default' | Out-Null
 Log "Chrome launched (or focused if already open)."
 
-# --- 4. Hand off to the bridge ----------------------------------------------------------
+# --- 5. Hand off to the bridge ----------------------------------------------------------
 # The trigger_watcher (polling every ~3s) removes this file and fires runQueue, waiting up
 # to 2 min for the extension to connect first. runQueue posts its own progress to Telegram.
 New-Item -ItemType File -Path (Join-Path $repo 'bridge\.run_trigger') -Force | Out-Null
