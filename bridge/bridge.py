@@ -47,6 +47,10 @@ Protocol over the WebSocket (JSON per message):
         # (clicked Submit, or tapped the panel's code button). `since` = that click, epoch
         # seconds, which binds the code to this submit. Reply answers = {ok, code, why}.
         # Never sent on the queue's own initiative — see handle_verify_code.
+    {type:"resume_bytes", reqId, tag}
+        # one track's resume, synced from the source folder first, so the attach never
+        # uses the extension's own bundled copy unless the bridge is unreachable.
+        # -> answers {ok, file, sha256, b64} | {ok:false, error}
     {type:"bank_touch", reqId, bank_id}
         # the panel reporting that Parth ACCEPTED a bank draft, so the row counts as used.
         # Only ever sent on accept — see handle_bank_touch. Reply answers = {ok}.
@@ -92,6 +96,7 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import socket
 import sys
 import time
@@ -985,6 +990,9 @@ async def fire_run_queue(source: str) -> None:
             "connected.\n<i>Open Chrome and send /run when you're ready.</i>")
         return
     _LAST_RUN_KICK = time.monotonic()
+    # Refresh before the run rather than during it: a run fills several forms back to back,
+    # and a resume that changes halfway through would send two different PDFs out.
+    await asyncio.to_thread(sync_resumes, f"run:{source}")
     touch_activity()  # a fresh run resets the idle clock; don't flush a stale pile mid-collect
     dlog(f"[run] firing runQueue ({source})")
     await push_run_queue()
@@ -1782,17 +1790,69 @@ def _resume_tracks() -> tuple[dict, list[dict]]:
 def _cached_resume(track: dict) -> pathlib.Path | None:
     """Where the track's PDF sits in the local cache, or None for a track without one.
 
-    The cache, not the Finals folder: the cache is what `sync-local` refreshes and what the
+    The cache, not the Finals folder: the cache is what a sync refreshes and what the
     extension attaches, so sending anything else could hand Parth a file no employer got.
     A track with no `local_path` returns None rather than the cache DIRECTORY, which exists
     and would be opened as if it were the PDF.
     """
-    name = pathlib.Path(track.get("local_path") or "").name
-    return paths_mod.RESUMES / name if name else None
+    if not (track.get("local_path") or "").strip():
+        return None
+    return resumes_mod.cached_path(track)
+
+
+def sync_resumes(why: str) -> list[str]:
+    """Refresh the resume cache from the local source folder. Returns the changed tags.
+
+    Called before anything reads a resume — bridge start, a queue run, an attach — because
+    the cache is a copy, and a copy nobody refreshes is a resume that quietly goes out a
+    month old. The hash comparison makes a no-op sync cost four file reads, so calling it
+    often is cheaper than reasoning about when it is needed.
+
+    Never fatal and never announced. A machine with no source folder configured is a
+    perfectly good setup (the Drive path, or a hand-installed cache), and it must not lose
+    the resume it already has to an error about a folder it does not use.
+    """
+    try:
+        changed = resumes_mod.sync_local()
+    except resumes_mod.SyncError as e:
+        dlog(f"[resumes] {why}: sync skipped ({e})")
+        return []
+    except Exception as e:
+        print(f"[resumes] {why}: sync failed: {redact(e)}", file=sys.stderr)
+        return []
+    if changed:
+        dlog(f"[resumes] {why}: updated {', '.join(changed)}")
+        _restage_extension(changed)
+    return changed
+
+
+def _restage_extension(changed: list[str]) -> None:
+    """Copy the refreshed PDFs into the extension bundle.
+
+    The extension asks the bridge for the bytes at attach time, so this is not what keeps
+    an application current. It keeps the FALLBACK current: with the bridge down the
+    extension reads its own bundled copy, and that copy is the one thing no sync would
+    otherwise reach.
+    """
+    dst = paths_mod.REPO_ROOT / "extension" / "resumes"
+    if not dst.is_dir():
+        return                      # extension never built here; nothing to keep in step
+    for tag in changed:
+        track = next((t for t in (profile_mod.load_profile() or {}).get("resume_tracks", [])
+                      if t.get("tag") == tag), None)
+        src = _cached_resume(track) if track else None
+        if src and src.is_file():
+            try:
+                shutil.copy2(src, dst / src.name)
+            except Exception as e:
+                print(f"[resumes] restage {tag} failed: {redact(e)}", file=sys.stderr)
 
 
 async def send_resume_file(tag: str) -> None:
+
+
     """Upload one track's cached PDF, named the way an employer sees it."""
+    await asyncio.to_thread(sync_resumes, "/myresume")
     profile, tracks = await asyncio.to_thread(_resume_tracks)
     track = next((t for t in tracks if t.get("tag") == tag), None)
     if track is None:
@@ -1824,6 +1884,7 @@ async def handle_myresume(text: str) -> None:
     if arg:
         await send_resume_file(arg)
         return
+    await asyncio.to_thread(sync_resumes, "/myresume list")
     profile, tracks = await asyncio.to_thread(_resume_tracks)
     if not tracks:
         await asyncio.to_thread(tg_send, "No resume tracks in your profile.")
@@ -2302,6 +2363,42 @@ async def handle_pending_answers(msg, ws):
     await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
 
 
+async def handle_resume_bytes(msg, ws):
+    """Hand the extension one track's resume, freshly synced, as base64.
+
+    This is what removes the second stale copy. The extension bundles its own PDFs at
+    build time, so a resume edited after that build kept going out until somebody
+    remembered to rebuild and reload the extension. Asking the bridge instead means the
+    bytes are whatever is in the source folder at the moment of the attach.
+
+    Answers `{ok, file, sha256, b64}`, or `{ok: false, error}` — the extension falls back
+    to its bundled copy on a failure, so an unreachable source folder degrades to the old
+    behaviour rather than attaching nothing.
+    """
+    req_id = msg.get("reqId")
+    tag = str(msg.get("tag") or "").strip()
+    out = {"ok": False, "error": "no tag"}
+    if tag:
+        try:
+            await asyncio.to_thread(sync_resumes, f"attach:{tag}")
+            profile, tracks = await asyncio.to_thread(_resume_tracks)
+            track = next((t for t in tracks if t.get("tag") == tag), None)
+            if track is None:
+                out = {"ok": False, "error": f"unknown track '{tag}'"}
+            else:
+                raw = await asyncio.to_thread(resumes_mod.read_cached, track)
+                out = {"ok": True,
+                       "file": profile_mod.resume_filename(track, profile),
+                       "sha256": resumes_mod.sha256(raw),
+                       "b64": base64.b64encode(raw).decode("ascii")}
+        except resumes_mod.SyncError as e:
+            out = {"ok": False, "error": str(e)}
+        except Exception as e:
+            print(f"[resumes] serving {tag!r} failed: {redact(e)}", file=sys.stderr)
+            out = {"ok": False, "error": "read failed"}
+    await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
+
+
 async def handle_hold_job(msg, ws):
     """Phase 3 filled this job but could NOT submit it unattended (the form differed from
     what Parth approved, a required field needs him, an email-verification gate, or a click
@@ -2661,6 +2758,7 @@ async def ws_handler(ws):
                 "hold_job": handle_hold_job, "pending_answers": handle_pending_answers,
                 "list_all": handle_list_all, "set_state": handle_set_state,
                 "workday_route": handle_workday_route,
+                "resume_bytes": handle_resume_bytes,
                 "verify_code": handle_verify_code}
     hb = asyncio.create_task(heartbeat(ws))
     try:
@@ -2734,6 +2832,8 @@ async def main():
     # Start the idle clock at boot, not at zero: if the bridge restarted while an
     # approved pile was still on disk, that pile must still go out.
     touch_activity()
+    # Catch up on anything edited while the bridge was down, before the first form.
+    await asyncio.to_thread(sync_resumes, "startup")
     offset = await drain_startup_backlog()
 
     async with websockets.serve(ws_handler, WS_HOST, WS_PORT):

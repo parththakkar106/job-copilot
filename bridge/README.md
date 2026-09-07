@@ -217,9 +217,22 @@ bridge uploads that PDF to the chat. **`/myresume ai`** skips the tap. It sends 
 from `resumes/` — the same bytes the extension attaches — under the same name an employer
 sees, so what lands on your phone is what went out on the application.
 
-The cache is refreshed on the laptop with `python -m core.resumes sync-local`. If a track
-has no cached file, `/myresume` says so and names that command rather than sending
-something stale.
+If a track has no cached file at all, `/myresume` says so and names the sync command
+rather than sending something stale.
+
+### Staying current
+
+Nothing needs running by hand. The bridge calls `core.resumes.sync_local()` at startup,
+before a queue run, before `/myresume`, and before it hands the extension a resume's
+bytes. The sync compares content hashes, so a no-op costs four file reads and an edited
+PDF is picked up with no rename, no version bump and no command.
+
+The extension used to read PDFs staged into its own folder by `build.py`, which meant a
+resume edited after that build kept going out until somebody rebuilt and reloaded the
+extension. It now asks the bridge for the bytes at attach time (`resume_bytes` in the
+protocol), and the bridge syncs before answering. The staged copy is the fallback for a
+bridge that is down, and it is restaged whenever a sync changes something, so even that
+path stays close to current. Each fill report records which of the two was used.
 
 ### The name on the file
 

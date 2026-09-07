@@ -63,12 +63,53 @@ export function resumeFilename(track, profile) {
   return `${stem}${ext}`;
 }
 
-// Convenience: load by track then attach. `track.send_as` is the name fill.js already
-// resolved for this run; `profile` covers the callers that have not resolved one.
-export async function attachResume(inputEl, track, profile) {
+// Decode a base64 PDF into a File. The bridge sends base64 because the socket carries
+// JSON, and a PDF is not text.
+function fileFromBase64(b64, filename) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new File([bytes], filename, { type: "application/pdf" });
+}
+
+// Ask the bridge for this track's bytes. Null on any failure, which is the signal to fall
+// back to the bundled copy.
+//
+// THE BUNDLED COPY IS A BUILD ARTEFACT. extension/resumes/*.pdf is written by build.py, so
+// it is stale from the first edit after that build, and nothing in the browser can detect
+// that. The bridge re-syncs from the source folder before answering, so bytes that arrive
+// here are current as of this attach.
+// A reachable but unresponsive bridge must not stall the fill. The worker's own ask
+// timeout is 30 minutes, which is right for a question waiting on a human and far too long
+// for a local file read, so cap this one separately and fall back when it expires.
+const BRIDGE_RESUME_TIMEOUT_MS = 15000;
+
+async function bridgeResume(track, rpc) {
+  if (!rpc || !track.tag) return null;
+  try {
+    const r = await Promise.race([
+      rpc({ type: "RESUME_BYTES", tag: track.tag }),
+      new Promise(res => setTimeout(() => res(null), BRIDGE_RESUME_TIMEOUT_MS)),
+    ]);
+    if (!r || !r.ok || !r.b64) return null;
+    return fileFromBase64(r.b64, r.file || track.send_as || `${track.tag}.pdf`);
+  } catch (_) {
+    return null;                  // bridge down, worker evicted, timeout: use the bundle
+  }
+}
+
+// Load by track then attach. `deps.rpc` reaches the bridge for fresh bytes; `deps.profile`
+// covers callers that have not resolved `track.send_as` themselves.
+//
+// Returns { attached, source } — `source` is "bridge" or "bundle", so the fill report can
+// say when an application used the build-time copy and may therefore be behind.
+export async function attachResume(inputEl, track, deps = {}) {
+  const { rpc, profile } = deps;
   const name = track.send_as || resumeFilename(track, profile);
-  const file = await loadResumeFile(track.local_path, name);
-  return attachFile(inputEl, file);
+  let file = await bridgeResume(track, rpc);
+  const source = file ? "bridge" : "bundle";
+  if (!file) file = await loadResumeFile(track.local_path, name);
+  return { attached: attachFile(inputEl, file), source };
 }
 
 export default attachResume;

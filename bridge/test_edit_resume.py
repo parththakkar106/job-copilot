@@ -6,6 +6,8 @@ Same harness as test_batch.py: point the modules at throwaway state, capture Tel
 sends and callback-answer toasts, and drive the handlers the way the poller does.
 """
 import asyncio
+import base64
+import json
 import tempfile
 from pathlib import Path
 
@@ -208,8 +210,14 @@ def stub_cache(tmp: Path):
     cache.mkdir(parents=True, exist_ok=True)
     for track in B.profile_mod.load_profile()["resume_tracks"]:
         (cache / Path(track["local_path"]).name).write_bytes(b"%PDF-1.4 fake")
+    # BOTH names. The bridge asks core.resumes where a track's PDF is, and that module
+    # holds its own CACHE constant — pointing only paths.RESUMES at the fixture leaves the
+    # lookup reading the real cache directory.
     B.paths_mod.RESUMES = cache
+    B.resumes_mod.CACHE = cache
     B.resumes_mod.load_manifest = lambda: {"ai": {"synced": "2026-09-01"}}
+    # No source folder in these tests: syncing is covered by test_resume_sync.py.
+    B.sync_resumes = lambda why: []
     return cache
 
 
@@ -311,6 +319,97 @@ async def test_myresume_uncached_track_says_how_to_sync():
     return n
 
 
+class FakeWS:
+    """Collects what a WS handler sends back, the way the extension would receive it."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, raw):
+        self.sent.append(json.loads(raw))
+
+    def answers(self):
+        return self.sent[-1]["answers"]
+
+
+async def test_resume_bytes_serves_the_synced_pdf():
+    """The handler that removes the second stale copy: fresh bytes over the socket."""
+    tmp = Path(tempfile.mkdtemp())
+    setup(tmp)
+    cache = stub_cache(tmp)
+    (cache / "ai.pdf").write_bytes(b"%PDF-1.4 the current one")
+    n = 0
+    synced = []
+    B.sync_resumes = lambda why: synced.append(why) or []
+    ws = FakeWS()
+    await B.handle_resume_bytes({"reqId": "r1", "tag": "ai"}, ws)
+    a = ws.answers()
+    assert a["ok"], a
+    n += 1
+    # Synced BEFORE reading. Serving first and syncing after would hand out the old bytes
+    # on every first request, which is the bug this whole path exists to remove.
+    assert synced, "the handler must sync before it reads"
+    n += 1
+    assert base64.b64decode(a["b64"]) == b"%PDF-1.4 the current one", a["b64"][:40]
+    n += 1
+    assert a["sha256"] == B.resumes_mod.sha256(b"%PDF-1.4 the current one"), a["sha256"]
+    n += 1
+    track = next(t for t in B.profile_mod.load_profile()["resume_tracks"] if t["tag"] == "ai")
+    assert a["file"] == B.profile_mod.resume_filename(track), a["file"]
+    n += 1
+    return n
+
+
+async def test_resume_bytes_reports_failure_instead_of_raising():
+    """The extension falls back to its bundled copy on ok:false, so a failure must be an
+    answer, not an exception that leaves the socket waiting."""
+    tmp = Path(tempfile.mkdtemp())
+    setup(tmp)
+    stub_cache(tmp)
+    B.sync_resumes = lambda why: []
+    n = 0
+    ws = FakeWS()
+    await B.handle_resume_bytes({"reqId": "r1", "tag": "nosuch"}, ws)
+    assert ws.answers()["ok"] is False, ws.answers()
+    n += 1
+    assert "nosuch" in ws.answers()["error"], ws.answers()
+    n += 1
+
+    ws = FakeWS()
+    await B.handle_resume_bytes({"reqId": "r2"}, ws)       # no tag at all
+    assert ws.answers()["ok"] is False, ws.answers()
+    n += 1
+
+    # An uncached track: read_cached raises SyncError, which must surface as ok:false.
+    B.paths_mod.RESUMES = tmp / "empty"
+    B.resumes_mod.CACHE = tmp / "empty"
+    ws = FakeWS()
+    await B.handle_resume_bytes({"reqId": "r3", "tag": "ai"}, ws)
+    assert ws.answers()["ok"] is False, ws.answers()
+    n += 1
+    return n
+
+
+async def test_sync_resumes_never_raises():
+    """An unconfigured source folder is a valid setup. It must not take the bridge down,
+    and it must not lose the cache that is already there."""
+    tmp = Path(tempfile.mkdtemp())
+    setup(tmp)
+    n = 0
+    real = B.resumes_mod.sync_local
+    B.resumes_mod.sync_local = lambda: (_ for _ in ()).throw(
+        B.resumes_mod.SyncError("no source folder"))
+    try:
+        assert B.sync_resumes("test") == [], "a SyncError must report nothing changed"
+        n += 1
+        B.resumes_mod.sync_local = lambda: (_ for _ in ()).throw(RuntimeError("disk on fire"))
+        assert B.sync_resumes("test") == [], "an unexpected error must not propagate"
+        n += 1
+    finally:
+        B.resumes_mod.sync_local = real
+    return n
+
+
 async def main():
     n = 0
     for t in (test_edit_lists_answers, test_edit_one_shot, test_edit_reopen_re_asks,
@@ -321,7 +420,10 @@ async def main():
               test_myresume_lists_tracks, test_myresume_arg_sends_the_named_track,
               test_myresume_button_sends_the_pdf, test_myresume_unknown_track_says_so,
               test_myresume_uncached_track_says_how_to_sync,
-              test_myresume_track_without_a_path_is_not_the_cache_dir):
+              test_myresume_track_without_a_path_is_not_the_cache_dir,
+              test_resume_bytes_serves_the_synced_pdf,
+              test_resume_bytes_reports_failure_instead_of_raising,
+              test_sync_resumes_never_raises):
         n += await t()
     print(f"edit/resume: {n}/{n} checks passed")
 

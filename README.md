@@ -266,9 +266,18 @@ Resolution order at apply-time: company-scoped (active) → common (active) → 
 via DataTransfer. Source of truth is currently the local Finals folder:
 
 ```bash
-python -m core.resumes sync-local        # refresh the cache
+python -m core.resumes sync-local        # refresh the cache by hand
 python -m core.resumes status            # show the configured source + what's cached
 ```
+
+**You do not have to run either.** The bridge syncs the cache itself: at startup, before a
+queue run, and before every attach. Syncing compares content hashes, so it copies only
+what changed and re-running it writes nothing. Edit a PDF in the source folder and the
+next application sends the new one.
+
+The extension goes further and asks the bridge for the bytes at attach time, so the copy
+staged inside `extension/` by `build.py` is only a fallback for when the bridge is down.
+The fill report records which of the two an application used.
 
 Whatever a PDF is called on disk, it is attached as `First_Last_<letter>.pdf` — built from
 `identity` in your profile, with the track tag's initial as the suffix, and no suffix at

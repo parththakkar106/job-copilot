@@ -1309,7 +1309,9 @@ async function fillMyExperience(ctx, report) {
   const input = document.querySelector(exp.resume.input);
   if (input && attachResume) {
     try {
-      const attached = await attachResume(input, track);
+      // attachResume reports { attached, source }; `source` says whether the bytes came
+      // from the bridge or the extension's build-time bundle.
+      const { attached, source } = await attachResume(input, track);
       await sleep(1500);
       // Workday renders "<name>|<size>|Successfully Uploaded!" — assert on that rather
       // than trusting the change event, which fires whether or not the upload took.
@@ -1319,7 +1321,7 @@ async function fillMyExperience(ctx, report) {
       // detail of how the uploader cleans up. Requiring both called a successful upload a
       // failure once already.
       const uploaded = box && exp.resume.successText.test(box.innerText || "");
-      report.push(["resume", uploaded ? `attached (${track && track.tag})`
+      report.push(["resume", uploaded ? `attached (${track && track.tag}, ${source})`
                                       : `FAILED ${attached ? "no success text" : "input rejected the file"} ` +
                                         JSON.stringify(describeFileInputs(exp))]);
     } catch (e) {

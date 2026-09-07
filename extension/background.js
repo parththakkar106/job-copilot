@@ -325,6 +325,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
   }
+  // The resume bytes for one track, straight from the bridge, which syncs its cache from
+  // the source folder before answering. The bundled copy under extension/resumes/ is only
+  // a fallback now: it is written at build time, so it is stale from the first edit after
+  // a build and nothing in the browser can tell. Failure resolves to { ok: false } rather
+  // than throwing — attach.js then uses the bundled copy, which is the old behaviour.
+  if (msg.type === "RESUME_BYTES") {
+    (async () => {
+      try { sendResponse(await requestBridge({ type: "resume_bytes", tag: msg.tag })); }
+      catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
+    })();
+    return true; // async sendResponse
+  }
   // One-off Telegram ping from the on-page panel (e.g. an email-verification gate that needs
   // Parth). Best-effort — the panel message is already on screen; this just reaches his phone.
   if (msg.type === "NOTIFY") {

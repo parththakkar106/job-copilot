@@ -1601,10 +1601,13 @@ async function runFill(autoSubmit = false, opts = {}) {
       // attach, the report and the Telegram summary all saying the same thing.
       const picked = pickResume(opts.field || report.company || "", opts.jd || "", profile);
       const track = { ...picked, send_as: resumeFilename(picked, profile) };
+      // Bind the bridge into the attach helper once. The Workday driver attaches from
+      // several places and must not have to know where the bytes come from.
+      const attachWithBridge = (el, t) => attachResume(el, t || track, { rpc, profile });
       const streamed = resolveStream(profile, track.tag);
 
       const wd = await runWorkday({
-        adapter, tax, classify, dig, render, attachResume, rpc, bringIntoView,
+        adapter, tax, classify, dig, render, attachResume: attachWithBridge, rpc, bringIntoView,
         // Read the flag through a function, not by value: this run started before Stop was
         // pressed, so anything captured up front is false forever.
         shouldStop: () => PANEL_STOP,
@@ -1706,9 +1709,13 @@ async function runFill(autoSubmit = false, opts = {}) {
         report.resumeChoice = { tag: track.tag, file: track.send_as,
                                 overridden: !!opts.resumeTag && track.tag === opts.resumeTag };
         try {
-          const ok = await attachResume(resumeInput, track);
+          const { attached, source } = await attachResume(resumeInput, track, { rpc, profile });
           handled.add(resumeInput);
-          (ok ? report.filled : report.skipped).push({ key: "resume", value: `${track.tag} (${track.send_as})` });
+          // Record where the bytes came from. "bundle" means the bridge was unreachable and
+          // the attach used the extension's build-time copy, which can be behind.
+          report.resumeChoice.source = source;
+          (attached ? report.filled : report.skipped).push(
+            { key: "resume", value: `${track.tag} (${track.send_as}, ${source})` });
         } catch (e) { report.errors.push(`resume attach: ${e.message}`); }
       }
     } else {
