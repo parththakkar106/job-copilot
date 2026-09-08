@@ -21,6 +21,12 @@ raw_*.json
 # local application-tracking state (grows over time, may hold personal data)
 applied.json
 
+# The local store. It holds everything applied.json and pending/ used to, so it is the
+# single most sensitive file in a checkout.
+store.db
+store.db-wal
+store.db-shm
+
 # per-run fill reports + pre-submit screenshots (audit log, holds personal form answers/PII)
 bridge/logs/
 

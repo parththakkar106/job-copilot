@@ -1,2 +1,6 @@
 requests>=2.31
 websockets>=12.0
+# The store. One SQLAlchemy implementation serves the local SQLite file and hosted
+# Postgres, and Alembic owns schema changes once a database holds a real job history.
+sqlalchemy>=2.0
+alembic>=1.13
