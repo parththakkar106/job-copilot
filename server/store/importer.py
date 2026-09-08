@@ -41,7 +41,8 @@ def import_profile(store: Store, path: Path | None = None) -> int:
     if data is None:
         return 0
     store.set_profile(data)
-    store.set_config_doc(PROFILE_DOC, p.read_text(encoding="utf-8"), rows_hash(data))
+    store.set_config_doc(PROFILE_DOC, p.read_text(encoding="utf-8"), rows_hash(data),
+                         source=p.name)
     return 1 + import_resumes(store, data)
 
 
@@ -75,7 +76,8 @@ def import_companies(store: Store, path: Path | None = None) -> int:
         return 0
     rows = doc.get("companies") or []
     store.set_companies(rows)
-    store.set_config_doc(COMPANIES_DOC, p.read_text(encoding="utf-8"), rows_hash(rows))
+    store.set_config_doc(COMPANIES_DOC, p.read_text(encoding="utf-8"), rows_hash(rows),
+                         source=p.name)
     return len(rows)
 
 
@@ -87,7 +89,8 @@ def import_answers(store: Store, path: Path | None = None) -> int:
         return 0
     rows = doc.get("answers") or []
     store.set_answers(rows)
-    store.set_config_doc(ANSWER_BANK_DOC, p.read_text(encoding="utf-8"), rows_hash(rows))
+    store.set_config_doc(ANSWER_BANK_DOC, p.read_text(encoding="utf-8"), rows_hash(rows),
+                         source=p.name)
     return len(rows)
 
 

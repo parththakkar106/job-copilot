@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from core import paths  # noqa: E402  — single source of truth for the data-layer layout
+from server.store import get_store  # noqa: E402
 
 EXT = ROOT / "extension"
 
@@ -36,7 +37,7 @@ def main() -> int:
     # profile.json verbatim, warning loudly about FILL_ME placeholders that will ship
     # (they escalate to Telegram per-form; better to know at build time). Non-fatal:
     # links.github is FILL_ME by deliberate choice.
-    profile = json.loads((paths.PROFILE).read_text(encoding="utf-8"))
+    profile = get_store().get_profile()
 
     def _fillme(node, prefix=""):
         holes = []
@@ -58,20 +59,27 @@ def main() -> int:
         json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
     print("profile.json -> extension/profile.json")
 
-    # resume byte cache
-    src_resumes = paths.RESUMES
+    # Resume bytes, from the store, falling back to the local cache for a sync that ran
+    # before the store existed. The extension needs real files on this machine: it attaches
+    # them by DataTransfer injection, which reads the bytes it was built with.
+    store = get_store()
     dst_resumes = EXT / "resumes"
     dst_resumes.mkdir(exist_ok=True)
     copied = 0
     for track in profile.get("resume_tracks", []):
         name = Path(track["local_path"]).name
-        src = src_resumes / name
-        if not src.exists():
-            print(f"  ! missing resume {src} — run `python -m core.resumes sync-local` first", file=sys.stderr)
-            continue
-        shutil.copy2(src, dst_resumes / name)
+        row = store.get_resume(str(track.get("tag") or ""))
+        raw = row.get("pdf") if row else None
+        if raw is None:
+            src = paths.RESUMES / name
+            if not src.exists():
+                print(f"  ! missing resume {name} — run `python -m core.resumes sync-local`"
+                      " first", file=sys.stderr)
+                continue
+            raw = src.read_bytes()
+        (dst_resumes / name).write_bytes(raw)
         copied += 1
-    print(f"resumes/ -> extension/resumes/ ({copied} files)")
+    print(f"resumes -> extension/resumes/ ({copied} files)")
 
     # Chrome refuses to load an unpacked extension if ANY top-level file/dir starts
     # with "_" (reserved). Python's __pycache__ landing here (from a stray import/test

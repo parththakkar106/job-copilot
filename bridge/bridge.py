@@ -120,6 +120,7 @@ from core import profile as profile_mod  # resume track tags + display names for
 from core import referral as referral_mod  # pasted-profile resolution + the outreach store
 from core import resumes as resumes_mod  # the cache /myresume sends from (sync dates)
 from core import scraper as scraper_mod  # dedup_key — the panel path must mint the same key
+from server.store import get_store        # every read and write goes through it
 
 
 # --- network setup: pin the family that actually works + reuse one connection --------
@@ -276,9 +277,8 @@ STOP_WORDS = {"/stop", "stop", "cancel", "/cancel", "halt"}
 
 # Fill reports and audit dumps quote real form values, so they are state, not scratch:
 # they follow JOBCOPILOT_HOME with everything else. Unset, this stays bridge/logs.
-LOG_PATH = paths_mod.FILL_REPORTS
-AUDIT_DIR = paths_mod.AUDIT_DIR
-AUDIT_INDEX_PATH = paths_mod.AUDIT_INDEX
+# Fill reports and audit dumps are rows now. They used to be a JSONL file and a folder of
+# PNGs, which a hosted machine cannot keep: its disk is replaced on every deploy.
 
 
 # --- timing/debug logging -----------------------------------------------------------
@@ -2051,7 +2051,7 @@ async def batch_callback(data: str, cb_id: str) -> None:
                 "dedup_key": key, "company": rec.get("company", ""),
                 "title": rec.get("title", ""), "location": rec.get("location", ""),
                 "url": rec.get("url", ""), "status": "rejected",
-            }, triage_mod.APPLIED_PATH)
+            })
             await asyncio.to_thread(pending_mod.delete, key)
             await asyncio.to_thread(tg_answer_callback, cb_id, "Rejected")
             await asyncio.to_thread(
@@ -2142,7 +2142,7 @@ def _approved_not_yet_applied() -> list[dict]:
     sloppy, it burns a real slot. Filtering here rather than in the extension keeps the
     check next to the file that answers it.
     """
-    done = triage_mod.applied_keys(triage_mod.APPLIED_PATH)
+    done = triage_mod.applied_keys()
     out, held = [], []
     for rec in pending_mod.all_jobs(pending_mod.APPROVED):
         key = rec.get("dedup_key")
@@ -2188,13 +2188,13 @@ async def handle_approved(msg, ws):
 def _queue_age_hours() -> float | None:
     """How stale out/queue.json is. Triage happily serves a week-old queue (closed
     postings, wasted fills) with no signal — surface the age so the batch-start
-    message can warn when Parth forgot to git pull after the daily Actions run."""
+    message can warn when the daily run has not landed."""
     try:
-        p = pathlib.Path(triage_mod.QUEUE_PATH)
-        if not p.exists():
+        ran = get_store().last_queue_run("queue")
+        if ran is None:
             return None
-        return round((time.time() - p.stat().st_mtime) / 3600, 1)
-    except OSError:
+        return round((datetime.now(timezone.utc) - ran).total_seconds() / 3600, 1)
+    except Exception:
         return None
 
 
@@ -2205,12 +2205,12 @@ async def handle_queue(msg, ws):
     req_id = msg.get("reqId")
     try:
         t0 = time.monotonic()
-        # Jobs already in bridge/pending/ are in flight (being answered on Telegram) —
+        # Jobs already pending are in flight (being answered on Telegram) —
         # re-collecting them is a no-op that still burns a daily slot and a tab visit.
         pend_keys = {r.get("dedup_key")
                      for r in await asyncio.to_thread(pending_mod.all_jobs)}
         res = await asyncio.to_thread(
-            triage_mod.triage, triage_mod.QUEUE_PATH, triage_mod.APPLIED_PATH,
+            triage_mod.triage, None,
             msg.get("max_per_day"), msg.get("max_per_company"), pend_keys)
         dlog(f"[queue] triage read {len(res['jobs'])} jobs in {time.monotonic() - t0:.2f}s")
         stats = dict(res["stats"])
@@ -2280,7 +2280,7 @@ def resolve_dedup_key(record: dict) -> str:
     if url:
         try:
             token = _url_token(url)
-            for job in triage_mod.load_queue(triage_mod.QUEUE_PATH):
+            for job in triage_mod.load_queue():
                 if token and _url_token(job.get("url")) == token:
                     return job.get("dedup_key") or ""
         except Exception as e:
@@ -2297,7 +2297,7 @@ async def handle_applied(msg, ws):
     record = msg.get("record") or {}
     try:
         record = {**record, "dedup_key": await asyncio.to_thread(resolve_dedup_key, record)}
-        added = await asyncio.to_thread(triage_mod.append_applied, record, triage_mod.APPLIED_PATH)
+        added = await asyncio.to_thread(triage_mod.append_applied, record)
         # The job is done: applied.json is the permanent dedup record. Retire the in-flight
         # pending file so it leaves the batch and /status stops counting it — but ARCHIVE
         # it (move to submitted/) rather than delete, so the answers Parth gave survive the
@@ -2540,10 +2540,7 @@ async def handle_notify(msg, ws):
 
 
 def _append_log(report: dict) -> None:
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **report}
-    with open(LOG_PATH, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+    get_store().append_fill_report({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **report})
 
 
 async def handle_log_report(msg, ws):
@@ -2567,32 +2564,31 @@ def _slug(text: str) -> str:
 
 
 def _save_audit(company: str, role: str, url: str, summary: list, screenshot: str) -> str:
-    AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+    """Store the pre-submit screenshot and its summary. Returns the name it was stored
+    under, or "" when no image came through."""
     ts = time.strftime("%Y%m%d-%H%M%S")
-    base = f"{ts}__{_slug(company)}__{_slug(role)}"
-    png_path = AUDIT_DIR / f"{base}.png"
-    # screenshot arrives as a data: URL ("data:image/png;base64,...."); strip the header.
+    name = f"{ts}__{_slug(company)}__{_slug(role)}"
+    # The screenshot arrives as a data: URL ("data:image/png;base64,...."); strip the header.
     _, _, b64 = str(screenshot or "").partition(",")
-    if b64:
-        png_path.write_bytes(base64.b64decode(b64))
+    png = base64.b64decode(b64) if b64 else None
     line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "company": company, "role": role,
-            "url": url, "summary": summary, "screenshot": png_path.name if b64 else None}
-    AUDIT_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(AUDIT_INDEX_PATH, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(line, ensure_ascii=False) + "\n")
-    return str(png_path) if b64 else ""
+            "url": url, "summary": summary, "screenshot": f"{name}.png" if png else None}
+    get_store().add_audit(name, png, line)
+    return name if png else ""
 
 
 async def handle_audit_dump(msg, ws):
-    """Save the pre-submit screenshot + field-value summary to bridge/logs/audit/.
+    """Store the pre-submit screenshot and its field-value summary.
     Best-effort: a save failure is logged to stderr, never surfaced as an error to the
     extension (the submit itself is not gated on this)."""
     req_id = msg.get("reqId")
     try:
-        path = await asyncio.to_thread(
+        # The name it was stored under, not a path: the dump is a row now, and a hosted
+        # bridge has no directory to name. The extension ignores this field either way.
+        name = await asyncio.to_thread(
             _save_audit, msg.get("company"), msg.get("role"), msg.get("url"),
             msg.get("summary") or [], msg.get("screenshot"))
-        answers = {"ok": True, "path": path}
+        answers = {"ok": True, "name": name}
     except Exception as e:
         print(f"[audit_dump] save failed: {e}", file=sys.stderr)
         answers = {"ok": False, "error": str(e)}
@@ -2638,7 +2634,7 @@ def _dashboard_rows(since_days: int = 60) -> list[dict]:
     in full; the applied/blocked pile (which only grows) is windowed to since_days."""
     rows = [_pending_row(r) for r in pending_mod.all_jobs()]
     cutoff = (date.today() - timedelta(days=since_days)).isoformat() if since_days else None
-    for r in triage_mod.load_applied(triage_mod.APPLIED_PATH):
+    for r in triage_mod.load_applied():
         when = (r.get("applied") or "")[:10]
         if cutoff and when and when < cutoff:
             continue
@@ -2674,14 +2670,14 @@ def _apply_transition(key: str, target: str, reason: str | None, meta: dict) -> 
     if not key:
         return {"ok": False, "error": "no dedup_key"}
     pend = pending_mod.load(key)
-    in_applied = key in triage_mod.applied_keys(triage_mod.APPLIED_PATH)
+    in_applied = key in triage_mod.applied_keys()
 
     if target in ("submitted", "blocked"):
         # Prefer the pending record's fields; fall back to what the dashboard row carried,
         # so an applied-only row (no pending file) still writes a complete record.
         rec = {**(meta or {}), **(pend or {}),
                "dedup_key": key, "status": "applied" if target == "submitted" else "rejected"}
-        triage_mod.append_applied(rec, triage_mod.APPLIED_PATH)
+        triage_mod.append_applied(rec)
         if pend:
             pending_mod.archive(key)  # keep the answers, just retire it from the batch
         return {"ok": True}
@@ -2695,7 +2691,7 @@ def _apply_transition(key: str, target: str, reason: str | None, meta: dict) -> 
     if target == "in_queue":
         moved = False
         if in_applied:
-            moved = triage_mod.remove_applied(key, triage_mod.APPLIED_PATH) or moved  # un-submit / un-block
+            moved = triage_mod.remove_applied(key) or moved  # un-submit / un-block
         if pend:
             moved = bool(pending_mod.reopen(key)) or moved
         if not moved:

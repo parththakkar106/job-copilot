@@ -16,7 +16,7 @@ have to be handed through the same globals that phase 2 exists to delete.
 from __future__ import annotations
 
 import hashlib
-import os
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,6 +66,24 @@ class Store:
         d = Path(directory)
         d.mkdir(parents=True, exist_ok=True)
         return cls.from_url(engine_mod.sqlite_url(d / engine_mod.DB_FILENAME), user_id)
+
+    def adopt_files(self) -> dict | None:
+        """Ingest the file layout, once, if this store is empty and files are there.
+
+        Returns the import counts, or None when there was nothing to adopt. Importing is a
+        replace per table, so a second call on a populated store would overwrite newer rows
+        with stale files. The emptiness check is what stops that.
+        """
+        if self.has_profile() or self.get_applied() or self.all_pending():
+            return None
+        from . import importer  # imported here: importer reads this module
+        from core import paths
+        if not (paths.PROFILE.exists() or paths.APPLIED.exists()):
+            return None
+        counts = importer.import_all(self)
+        print(f"[store] adopted the file layout under {paths.STATE}: "
+              + ", ".join(f"{k} {v}" for k, v in counts.items() if v), file=sys.stderr)
+        return counts
 
     def ensure_user(self) -> None:
         with self._sm() as s:
@@ -274,6 +292,22 @@ class Store:
                             .order_by(QueueRun.ran_at.desc(), QueueRun.id.desc())).first()
             return list(row.jobs) if row and row.jobs else []
 
+    def last_queue_run(self, kind: str = "queue") -> datetime | None:
+        """When this kind was last scraped, or None before the first run.
+
+        Replaces reading queue.json's mtime. A stale queue means stale postings and wasted
+        fills, so the batch-start message warns on the age.
+        """
+        with self._sm() as s:
+            row = s.scalars(select(QueueRun).where(QueueRun.user_id == self.user_id,
+                                                   QueueRun.kind == kind)
+                            .order_by(QueueRun.ran_at.desc(), QueueRun.id.desc())).first()
+            if row is None or row.ran_at is None:
+                return None
+            # SQLite hands back a naive datetime, so re-attach UTC: the caller subtracts it
+            # from an aware "now" and a naive one raises rather than returning an age.
+            return row.ran_at if row.ran_at.tzinfo else row.ran_at.replace(tzinfo=timezone.utc)
+
     def set_queue(self, kind: str, jobs: list) -> None:
         with self._sm() as s:
             s.add(QueueRun(user_id=self.user_id, kind=kind, jobs=jobs, ran_at=_utcnow()))
@@ -452,9 +486,11 @@ class Store:
         with self._sm() as s:
             r = s.scalars(select(ConfigDoc).where(ConfigDoc.user_id == self.user_id,
                                                   ConfigDoc.name == name)).first()
-            return {"name": r.name, "raw_text": r.raw_text, "rows_hash": r.rows_hash} if r else None
+            return ({"name": r.name, "raw_text": r.raw_text, "rows_hash": r.rows_hash,
+                     "source": r.source} if r else None)
 
-    def set_config_doc(self, name: str, raw_text: str, rows_hash: str) -> None:
+    def set_config_doc(self, name: str, raw_text: str, rows_hash: str,
+                       source: str | None = None) -> None:
         with self._sm() as s:
             r = s.scalars(select(ConfigDoc).where(ConfigDoc.user_id == self.user_id,
                                                   ConfigDoc.name == name)).first()
@@ -463,8 +499,21 @@ class Store:
                 s.add(r)
             r.raw_text = raw_text
             r.rows_hash = rows_hash
+            if source is not None:
+                r.source = source
             r.imported_at = _utcnow()
             s.commit()
+
+    def is_own(self, name: str) -> bool:
+        """True when this config came from the user's own file, not a shipped template.
+
+        The console's setup checklist asks it. A fresh clone reads `profile.example.json`,
+        so rows exist and are still nobody's answers; reporting that install as configured
+        would tell the user they are done before they have entered anything.
+        """
+        doc = self.get_config_doc(name)
+        return bool(doc and doc["source"] and not doc["source"].endswith(".example.json")
+                    and not doc["source"].endswith(".example.yaml"))
 
 
 def rows_hash(rows) -> str:
@@ -480,11 +529,19 @@ _default_lock = threading.Lock()
 
 
 def get_store() -> Store:
-    """The process-wide store. Built once, from `DATABASE_URL` or the local SQLite file."""
+    """The process-wide store. Built once, from `DATABASE_URL` or the local SQLite file.
+
+    An existing install has files and no database, so the first call ingests the files
+    rather than handing back an empty store. Without this the store lands as a working
+    change that empties somebody's console until they read the release notes.
+    """
     global _default
     with _default_lock:
         if _default is None:
+            fresh = not Path(engine_mod.local_db_path()).exists()
             _default = Store.from_url(engine_mod.default_url())
+            if fresh:
+                _default.adopt_files()
         return _default
 
 

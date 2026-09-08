@@ -15,6 +15,8 @@ from pathlib import Path
 import bridge as B
 import pending as P
 
+from server.store import use_temp_store
+
 QS = [
     {"id": "ask_0", "label": "Why us?", "required": True},
     {"id": "ask_1", "label": "Portfolio", "required": False},
@@ -42,7 +44,7 @@ def run():
     B.tg_answer_callback = lambda cb_id, text="": answered.append(text)
 
     d = Path(tempfile.mkdtemp())
-    P.PENDING_DIR = d                  # every pending_mod call in bridge lands here
+    use_temp_store(d)                  # every pending_mod call in bridge lands here
 
     _put(d, "k_ramp", "Ramp", "2026-08-24T10:00:00+00:00")
     _put(d, "k_notion", "Notion", "2026-08-25T10:00:00+00:00")

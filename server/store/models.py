@@ -328,6 +328,10 @@ class ConfigDoc(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(255))
+    #: The file the text came from. On a fresh clone that is a shipped `.example`
+    #: template, and the console's setup checklist has to tell the two apart: a template
+    #: means the user has not filled anything in yet, however complete the rows look.
+    source: Mapped[str] = mapped_column(String(255), default="")
     raw_text: Mapped[str] = mapped_column(Text, default="")
     rows_hash: Mapped[str] = mapped_column(String(64), default="")
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -80,8 +80,8 @@ def _load_identity() -> tuple[str, str]:
         root = pathlib.Path(__file__).resolve().parent.parent
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
-        from core import paths
-        p = json.loads(paths.PROFILE.read_text(encoding="utf-8"))
+        from server.store import get_store
+        p = get_store().get_profile()
     except Exception:
         return ("the applicant", "")
 
@@ -144,8 +144,8 @@ def _load_facts() -> list[str]:
         root = pathlib.Path(__file__).resolve().parent.parent
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
-        from core import paths
-        p = json.loads(paths.PROFILE.read_text(encoding="utf-8"))
+        from server.store import get_store
+        p = get_store().get_profile()
     except Exception:
         return []
 

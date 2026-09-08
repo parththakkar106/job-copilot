@@ -1,14 +1,14 @@
 """create the store schema
 
-Revision ID: ed22e6842332
+Revision ID: 2cfa800a00a3
 Revises: 
-Create Date: 2026-09-08 21:35:01.510090
+Create Date: 2026-09-08 21:42:10.371865
 """
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = 'ed22e6842332'
+revision = '2cfa800a00a3'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -99,6 +99,7 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('name', sa.String(length=255), nullable=False),
+    sa.Column('source', sa.String(length=255), nullable=False),
     sa.Column('raw_text', sa.Text(), nullable=False),
     sa.Column('rows_hash', sa.String(length=64), nullable=False),
     sa.Column('imported_at', sa.DateTime(timezone=True), nullable=False),

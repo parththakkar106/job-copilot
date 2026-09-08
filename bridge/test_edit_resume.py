@@ -15,14 +15,20 @@ import bridge as B
 import pending as P
 import triage as T
 
+from server.store import use_temp_store
+from server.store import get_store
+from server.store.importer import import_profile
+
 SENT: list = []
 TOASTS: list = []
 DOCS: list = []
 
 
 def setup(tmp: Path):
-    P.PENDING_DIR = tmp / "pending"
-    T.APPLIED_PATH = tmp / "applied.json"
+    store = use_temp_store(tmp)
+    # The resume tests read the profile's tracks, so bring the real profile in. Everything
+    # else in this store stays empty and throwaway.
+    import_profile(store)
     B.LOCK = asyncio.Lock()
     B.INBOX = asyncio.Queue()
     SENT.clear()
@@ -200,16 +206,23 @@ async def test_resume_override_stale_button_no_crash():
     return n
 
 
-def stub_cache(tmp: Path):
-    """A cache directory holding one PDF per track, and B pointed at it.
+def put_bytes(track: dict, cache: Path, raw: bytes) -> None:
+    """Install `raw` as this track's PDF, the way core.resumes._write_cache does."""
+    (cache / Path(track["local_path"]).name).write_bytes(raw)
+    get_store().put_resume(track["tag"], raw, filename=Path(track["local_path"]).name)
 
-    /myresume sends the CACHE, so a test that wrote the PDFs anywhere else would pass
-    while the real command sent nothing.
+
+def stub_cache(tmp: Path):
+    """One PDF per track, in the store and in a cache directory B is pointed at.
+
+    Both, because the sync writes both and the readers disagree about which they prefer:
+    /myresume reads the stored bytes, and the extension build stages the files. A fixture
+    that seeded only one of them would pass while the real command sent nothing.
     """
     cache = tmp / "resumes"
     cache.mkdir(parents=True, exist_ok=True)
     for track in B.profile_mod.load_profile()["resume_tracks"]:
-        (cache / Path(track["local_path"]).name).write_bytes(b"%PDF-1.4 fake")
+        put_bytes(track, cache, b"%PDF-1.4 fake")
     # BOTH names. The bridge asks core.resumes where a track's PDF is, and that module
     # holds its own CACHE constant — pointing only paths.RESUMES at the fixture leaves the
     # lookup reading the real cache directory.
@@ -337,7 +350,8 @@ async def test_resume_bytes_serves_the_synced_pdf():
     tmp = Path(tempfile.mkdtemp())
     setup(tmp)
     cache = stub_cache(tmp)
-    (cache / "ai.pdf").write_bytes(b"%PDF-1.4 the current one")
+    put_bytes({"tag": "ai", "local_path": "resumes/ai.pdf"}, cache,
+              b"%PDF-1.4 the current one")
     n = 0
     synced = []
     B.sync_resumes = lambda why: synced.append(why) or []
@@ -380,7 +394,10 @@ async def test_resume_bytes_reports_failure_instead_of_raising():
     assert ws.answers()["ok"] is False, ws.answers()
     n += 1
 
-    # An uncached track: read_cached raises SyncError, which must surface as ok:false.
+    # A track that was never synced: read_cached raises SyncError, which must surface as
+    # ok:false. Never-synced means no stored bytes, not merely an empty cache directory —
+    # the store is the durable copy, and a hosted bridge has no cache directory at all.
+    get_store().delete_resume("ai")
     B.paths_mod.RESUMES = tmp / "empty"
     B.resumes_mod.CACHE = tmp / "empty"
     ws = FakeWS()

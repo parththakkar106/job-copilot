@@ -61,6 +61,7 @@ from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta, timezone
 
 from core import paths
+from server.store import get_store
 from core.contacts import (
     _norm,
     country_from_location,
@@ -403,7 +404,7 @@ def field_order() -> list[str]:
     shareable repo and wrong for anybody else.
     """
     try:
-        prof = json.loads(paths.PROFILE.read_text(encoding="utf-8"))
+        prof = get_store().get_profile()
     except (OSError, json.JSONDecodeError):
         return []
     tags = [str(t.get("tag") or "") for t in (prof.get("resume_tracks") or []) if t.get("tag")]
@@ -553,7 +554,7 @@ def resume_for(field: str) -> dict:
     has not configured.
     """
     try:
-        prof = json.loads(paths.PROFILE.read_text(encoding="utf-8"))
+        prof = get_store().get_profile()
     except (OSError, json.JSONDecodeError):
         return {}
     tracks = [t for t in (prof.get("resume_tracks") or []) if isinstance(t, dict)]
@@ -683,22 +684,15 @@ def resolve_company(person: Person, live: bool = False, puller=pull_company) -> 
 def load_store() -> dict:
     """The whole outreach store, keyed by normalised profile URL. {} when absent.
 
-    Shared with `core/contacts.py` — same file, same key rule — so a person found by the
+    Shared with `core/contacts.py` — same rows, same key rule — so a person found by the
     phase-1 search and the same person pasted in here are one row, not two. That is the
     entire point of keying on the profile URL.
     """
-    try:
-        doc = json.loads(paths.OUTREACH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return doc if isinstance(doc, dict) else {}
+    return get_store().get_outreach()
 
 
 def save_store(store: dict) -> None:
-    paths.OUTREACH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = paths.OUTREACH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, paths.OUTREACH)     # atomic: a crash must not truncate the store
+    get_store().set_outreach(store)
 
 
 def _now() -> str:

@@ -1,39 +1,32 @@
 """prefs.py — a tiny shared preference store for runtime toggles Parth flips by hand.
 
 Unlike env vars (read once at boot) these are flags he changes while things are running:
-right now just `drafts_enabled` (the Tier-2 Claude drafting on/off switch). It lives in a
-single JSON file under bridge/ so the two processes that share the on-disk state — the
-bridge and the web console (which puts bridge/ on sys.path) — both import THIS module and
-see the same file. A toggle in the web UI is therefore picked up by the running bridge on
-its next read, with no restart.
+right now just `drafts_enabled` (the Tier-2 Claude drafting on/off switch). Values live in
+the store, so the two processes that share this state — the bridge and the web console —
+both read the same rows. A toggle in the web UI is picked up by the running bridge on its
+next read, with no restart.
 
-Deliberately dumb and defensive: a missing/corrupt file reads as {} (callers supply their
-own defaults), and writes go through a temp file + os.replace so the other process can
-never observe a half-written file. Never raises.
+Reads never raise: an unreadable store gives {} and callers supply their own defaults.
 """
 from __future__ import annotations
 
-import json
-import os
 import pathlib
 import sys
-import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-from core import paths  # noqa: E402
+from server.store import get_store  # noqa: E402
 
-# One file, resolved through core.paths so the bridge and the web console — separate
-# processes that share this state — always agree on where it is.
-PREFS_PATH = paths.PREFS
+# One store, so the bridge and the web console — separate processes that share this state
+# — always agree on where it is. The atomic temp-file write this replaced existed to stop a
+# concurrent reader seeing a torn file; a row write is atomic already.
 
 
 def _read() -> dict:
     try:
-        return json.loads(PREFS_PATH.read_text(encoding="utf-8")) or {}
-    except FileNotFoundError:
-        return {}
+        return get_store().get_prefs()
     except Exception:
-        # Corrupt/torn file: fall back to empty rather than crashing a fill or a push.
+        # A store that cannot be read must not crash a fill or a push, which is the same
+        # rule the corrupt-file fallback followed.
         return {}
 
 
@@ -44,21 +37,8 @@ def get(key: str, default=None):
 
 
 def set(key: str, value) -> None:
-    """Persist one preference. Atomic (temp file + os.replace) so a concurrent reader in
-    the other process never sees a partial write."""
-    data = _read()
-    data[key] = value
-    fd, tmp = tempfile.mkstemp(dir=str(PREFS_PATH.parent), prefix=".prefs.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, PREFS_PATH)  # atomic on Windows + POSIX
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    """Persist one preference."""
+    get_store().set_pref(key, value)
 
 
 def all() -> dict:

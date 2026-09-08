@@ -22,10 +22,15 @@ from .models import Base  # noqa: E402
 DB_FILENAME = "store.db"
 
 
+def local_db_path() -> Path:
+    """Where the local SQLite file lives: beside the resumes and logs it replaces."""
+    return paths.STATE / DB_FILENAME
+
+
 def default_url() -> str:
     """The database this machine uses: `DATABASE_URL` if set, else the local SQLite file."""
     url = os.environ.get("DATABASE_URL", "").strip()
-    return url or sqlite_url(paths.STATE / DB_FILENAME)
+    return url or sqlite_url(local_db_path())
 
 
 def sqlite_url(path: Path | str) -> str:

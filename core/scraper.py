@@ -761,7 +761,17 @@ def run(args):
 
     applied_path = Path(args.applied)
     applied = set()
-    if applied_path.exists():
+    # The store first, the file second. In GitHub Actions there is no database, and the
+    # ledger arrives as applied.json in the checkout; locally the store is the ledger and
+    # the file may be stale. Reading whichever has rows keeps one scraper serving both.
+    try:
+        from server.store import get_store
+        applied = {r.get("dedup_key") for r in get_store().get_applied() if r.get("dedup_key")}
+    except Exception:
+        applied = set()
+    if applied:
+        pass
+    elif applied_path.exists():
         applied = {e if isinstance(e, str) else e.get("dedup_key")
                    for e in json.loads(applied_path.read_text(encoding="utf-8"))}
     else:
@@ -895,6 +905,17 @@ def run(args):
         json.dumps([asdict(j) for j in all_jobs], indent=2), encoding="utf-8")
     (out / "digest.md").write_text(render_digest(pipeline, dream, manual), encoding="utf-8")
     (out / "digest.html").write_text(render_digest_html(pipeline, dream, manual), encoding="utf-8")
+    # Also into the store, which is what the bridge and console read. The files above stay:
+    # the daily GitHub Action commits them and mails the digest from them, and that
+    # hand-off is phase 8's to change, not this one's. A run in Actions has no database, so
+    # a failure here is reported and does not fail the scrape.
+    try:
+        from server.store import get_store
+        store = get_store()
+        for kind, rows in (("queue", pipeline), ("dream", dream), ("manual", manual)):
+            store.set_queue(kind, [asdict(j) for j in rows])
+    except Exception as e:
+        print(f"[scraper] results not stored ({e}); {out} still holds them", file=sys.stderr)
     print(f"\n{len(pipeline)} pipeline + {len(dream)} dream + {len(manual)} manual "
           f"roles -> {out}/queue.json")
 

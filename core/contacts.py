@@ -46,6 +46,7 @@ except ImportError:            # allow --selftest without network deps
     requests = None
 
 from core import paths
+from server.store import get_store
 
 UA = "job-copilot/2.0 (personal job search)"
 
@@ -699,15 +700,11 @@ def fetch_description(job: dict) -> str:
 def load_outreach() -> dict:
     """The whole outreach store, keyed by normalised profile URL. {} when absent.
 
-    Lives under HOME (`paths.OUTREACH`) because it holds OTHER PEOPLE's names and profile
-    links — the only data in this project that is not the user's own, and therefore the one
-    file it would be worst to leave in a checkout.
+    Held in the store rather than a file because it holds OTHER PEOPLE's names and profile
+    links. That is the only data in this project which is not the user's own, and therefore
+    the data it would be worst to leave in a checkout.
     """
-    try:
-        doc = json.loads(paths.OUTREACH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return doc if isinstance(doc, dict) else {}
+    return get_store().get_outreach()
 
 
 def known_keys() -> set[str]:
@@ -741,10 +738,7 @@ def save_contacts(job: dict, found: list[Contact]) -> int:
             added += 1
         elif key and key not in (row.get("jobs") or []):
             row.setdefault("jobs", []).append(key)
-    paths.OUTREACH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = paths.OUTREACH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, paths.OUTREACH)      # atomic, so a crash cannot truncate the store
+    get_store().set_outreach(store)
     return added
 
 
@@ -761,7 +755,7 @@ def default_affinities() -> tuple[str, str]:
     simply run the two discovery queries that do not need them.
     """
     try:
-        prof = json.loads(paths.PROFILE.read_text(encoding="utf-8"))
+        prof = get_store().get_profile()
     except (OSError, json.JSONDecodeError):
         return "", ""
     school = str((prof.get("education") or {}).get("school") or "").strip()

@@ -21,25 +21,26 @@ from pathlib import Path
 import yaml
 
 from core import paths
+from server.store import get_store
 
-BANK = paths.ANSWER_BANK              # read: may be the shipped template on a fresh install
-BANK_WRITE = paths.ANSWER_BANK_WRITE  # write: always the real, gitignored filename
 TODAY = date.today().isoformat()
 
 
 def load() -> list[dict]:
-    if not BANK.exists():
-        return []
-    return (yaml.safe_load(BANK.read_text(encoding="utf-8")) or {}).get("answers", []) or []
+    return get_store().get_answers()
 
 
 def save(rows: list[dict]):
-    # Deliberately NOT BANK — that can point at answer_bank.example.yaml before the user
-    # has their own file, and answers are personal prose that must not land in a tracked
-    # template. The first save promotes the template into the user's own file.
-    BANK_WRITE.parent.mkdir(parents=True, exist_ok=True)
-    BANK_WRITE.write_text(yaml.safe_dump({"answers": rows}, sort_keys=False, allow_unicode=True, width=100),
-                          encoding="utf-8")
+    # The store, not a file. The read/write split this replaced existed because a save
+    # through the read path would have written personal prose into the tracked template;
+    # rows carry no such risk, so the two paths become one call.
+    get_store().set_answers(rows)
+
+
+def export_yaml() -> str:
+    """The bank as the YAML file people hand-edit. `python -m server.store export --answers`
+    is the supported round trip; this is here so the CLI below can print it too."""
+    return yaml.safe_dump({"answers": load()}, sort_keys=False, allow_unicode=True, width=100)
 
 
 def slug(*parts) -> str:
