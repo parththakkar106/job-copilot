@@ -16,27 +16,26 @@ exactly what the scraper produces — mark it with the same company/title/locati
 scraper showed you (or use --from-queue to copy them straight from the queue).
 """
 from __future__ import annotations
-import argparse, json, re, sys
+import argparse, re, sys
 from datetime import date
 from pathlib import Path
 
 from core import paths
 from core.scraper import dedup_key  # reuse the exact same normalization
+from server.store import get_store
 
 APPLIED = paths.APPLIED
 QUEUE = paths.QUEUE
 
 
 def load() -> list[dict]:
-    if not APPLIED.exists():
-        return []
-    data = json.loads(APPLIED.read_text(encoding="utf-8"))
-    # tolerate a legacy bare list of dedup_key strings
-    return [e if isinstance(e, dict) else {"dedup_key": e} for e in data]
+    # A legacy log could hold bare dedup_key strings, so keep tolerating them: the store
+    # holds whatever the import found, and the import does not rewrite old rows.
+    return [e if isinstance(e, dict) else {"dedup_key": e} for e in get_store().get_applied()]
 
 
 def save(rows: list[dict]):
-    APPLIED.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    get_store().set_applied(rows)
 
 
 # --------------------------------------------------------- Workday tenants
@@ -105,7 +104,7 @@ def cmd_add(a, rows):
     if a.from_queue is not None:
         if not QUEUE.exists():
             sys.exit(f"no queue at {QUEUE} — run the scraper first")
-        q = json.loads(QUEUE.read_text(encoding="utf-8"))
+        q = get_store().get_queue("queue")
         if a.from_queue < 0:  # negative would silently index from the end — wrong entry logged
             sys.exit(f"queue index must be >= 0 (0..{len(q)-1})")
         try:

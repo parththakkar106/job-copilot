@@ -4,10 +4,11 @@
 Why this exists: Parth answers questions whenever he has 5-10 minutes free, then walks
 away for an hour. The original ask flow held a WebSocket open, took a lock, and blocked
 on an in-memory queue with a 30-minute timeout — none of which survives an hour-long
-gap, a bridge restart, or an extension reload. So the batch lives on disk instead, and
-Telegram becomes a stateless view over these files. Nothing blocks; nothing times out.
+gap, a bridge restart, or an extension reload. So the batch is stored instead, and
+Telegram becomes a stateless view over it. Nothing blocks; nothing times out.
 
-  bridge/pending/<dedup_key>.json     (gitignored — job data + Parth's answers)
+Records live in the store's `pending` table, one row per dedup_key. Pass `base` to work
+against a different store; tests pass a temp directory and get a SQLite file in it.
 
 Status flow:
   awaiting   phase 1 wrote it; some questions may still need answers
@@ -17,14 +18,14 @@ Status flow:
              answers, but out of flush + re-scrape until it's picked again
   (deleted)  submitted / rejected / (Telegram summary ✋) skipped — see below
 
-Terminal states delete the file, because applied.json is the permanent record and a
-pending file is only ever work-in-flight:
-  submitted -> caller appends to applied.json (status "applied"), then delete()
-  rejected  -> caller appends to applied.json (status "rejected"), then delete()
+Terminal states delete the record, because the applied log is the permanent one and a
+pending record is only ever work-in-flight:
+  submitted -> caller appends to the applied log (status "applied"), then delete()
+  rejected  -> caller appends to the applied log (status "rejected"), then delete()
   skipped   -> delete() and write nothing, so tomorrow's queue serves it again
 
-Writing the applied.json record is deliberately the CALLER's job, not ours: this module
-stays pure file I/O so it can be tested without touching the real applied log.
+Writing the applied record is deliberately the CALLER's job, not ours: this module stays
+pure storage so it can be tested without touching the real applied log.
 
 `answer` is tri-state and the distinction matters:
   None  not yet resolved — still needs Parth
@@ -33,20 +34,13 @@ stays pure file I/O so it can be tested without touching the real applied log.
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from core import paths  # noqa: E402
-
-# These files hold typed answers and drafts, so they follow JOBCOPILOT_HOME when it is set
-# rather than living beside the code. Unset, this is bridge/pending as before.
-PENDING_DIR = paths.PENDING
+from server.store import resolve  # noqa: E402
 
 AWAITING = "awaiting"
 APPROVED = "approved"
@@ -69,113 +63,61 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _path(dedup_key: str, base: Path | str | None = None) -> Path:
-    # dedup_key is scraper.dedup_key() -> 16 hex chars, so it's always a safe filename.
-    return Path(base or PENDING_DIR) / f"{dedup_key}.json"
+def save(rec: dict, base=None) -> dict:
+    """Write one pending record. Returns the record as stored.
 
-
-def save(rec: dict, base: Path | str | None = None) -> Path:
-    """Write one pending record atomically. A half-written JSON here would strand a job
-    with no way to notice, so write to a temp file in the same directory and rename —
-    os.replace is atomic on Windows too."""
-    d = Path(base or PENDING_DIR)
-    d.mkdir(parents=True, exist_ok=True)
+    The atomic temp-file-and-rename this replaced existed because a half-written JSON file
+    would strand a job with no way to notice. A row write is atomic already.
+    """
     rec["updated"] = _now()
-    p = _path(rec["dedup_key"], d)
-    fd, tmp = tempfile.mkstemp(dir=str(d), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(rec, fh, indent=2, ensure_ascii=False)
-        os.replace(tmp, p)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-    return p
+    resolve(base).put_pending(rec)
+    return rec
 
 
-def load(dedup_key: str, base: Path | str | None = None) -> dict | None:
-    p = _path(dedup_key, base)
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        # A corrupt file shouldn't take the whole batch down — treat it as absent.
-        return None
+def load(dedup_key: str, base=None) -> dict | None:
+    return resolve(base).get_pending(dedup_key)
 
 
-def all_jobs(status: str | None = None, base: Path | str | None = None) -> list[dict]:
+def all_jobs(status: str | None = None, base=None) -> list[dict]:
     """Every pending record, oldest first. Oldest-first preserves the queue's
     freshest-first ordering: phase 1 writes them in the order triage served them."""
-    d = Path(base or PENDING_DIR)
-    if not d.exists():
-        return []
-    out = []
-    for p in d.glob("*.json"):
-        try:
-            rec = json.loads(p.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if status is None or rec.get("status") == status:
-            out.append(rec)
-    return sorted(out, key=lambda r: r.get("created") or "")
+    return resolve(base).all_pending(status)
 
 
-def delete(dedup_key: str, base: Path | str | None = None) -> bool:
-    p = _path(dedup_key, base)
-    if not p.exists():
-        return False
-    p.unlink()
-    return True
+def delete(dedup_key: str, base=None) -> bool:
+    return resolve(base).delete_pending(dedup_key)
 
 
-# Submitted records are moved here instead of being deleted, so the answers Parth gave
-# survive the submit. all_jobs() globs "*.json" in the top dir only, so a subdir keeps
-# them out of the active batch (and out of /status counts) without losing them.
-ARCHIVE_SUBDIR = "submitted"
+def archive(dedup_key: str, base=None) -> bool:
+    """Retire a submitted job's record but KEEP it.
+
+    The full record — every answer given, the resume pick, the approved summary — stays
+    stored for later reuse and the future answer-bank sync, out of the active batch and out
+    of the /status counts. Returns True if a record was retired.
+    """
+    return resolve(base).archive_pending(dedup_key)
 
 
-def archive(dedup_key: str, base: Path | str | None = None) -> bool:
-    """Retire a submitted job's record but KEEP it: move the file into the submitted/
-    subdir rather than deleting it. The full record — every answer given, the resume
-    pick, the approved summary — stays on disk for later reuse and the future answer-bank
-    sync. The active batch no longer sees it. Returns True if a record was moved."""
-    src = _path(dedup_key, base)
-    if not src.exists():
-        return False
-    dst_dir = Path(base or PENDING_DIR) / ARCHIVE_SUBDIR
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    os.replace(src, dst_dir / f"{dedup_key}.json")  # atomic; overwrites any prior archive
-    return True
+def restore(dedup_key: str, base=None) -> dict | None:
+    """Return an archived record to the active batch, awaiting review again.
 
-
-def restore(dedup_key: str, base: Path | str | None = None) -> dict | None:
-    """Move an archived record back into the active batch, awaiting review again.
-
-    The inverse of archive(). Backs the dashboard's un-submit / un-block: without it, the
-    role's answers stayed in submitted/ while the active batch had nothing, so the console
-    showed no row at all until the next discovery run rediscovered the job from scratch.
-    Returns the restored record, or None if there was nothing archived under that key."""
-    src = Path(base or PENDING_DIR) / ARCHIVE_SUBDIR / f"{dedup_key}.json"
-    if not src.exists():
+    The inverse of archive(). Backs the dashboard's un-submit and un-block: without it the
+    role's answers stayed archived while the active batch had nothing, so the console showed
+    no row at all until the next discovery run rediscovered the job from scratch. Returns
+    the restored record, or None if nothing was archived under that key.
+    """
+    if not resolve(base).restore_pending(dedup_key):
         return None
-    os.replace(src, _path(dedup_key, base))
     return reopen(dedup_key, base)
 
 
-def load_archived(dedup_key: str, base: Path | str | None = None) -> dict | None:
+def load_archived(dedup_key: str, base=None) -> dict | None:
     """Read back a submitted job's kept record (answers included), or None if absent."""
-    p = Path(base or PENDING_DIR) / ARCHIVE_SUBDIR / f"{dedup_key}.json"
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    return resolve(base).get_pending(dedup_key, archived=True)
 
 
 def put(job: dict, questions: list[dict], filled: list[dict],
-        base: Path | str | None = None, warnings: list | None = None) -> dict | None:
+        base=None, warnings: list | None = None) -> dict | None:
     """Record what phase 1 found for one job. Returns the new record, or None if this
     job is already pending — never clobbers a record Parth has partly answered, which
     is what a re-run of phase 1 would otherwise do.
@@ -212,7 +154,7 @@ def put(job: dict, questions: list[dict], filled: list[dict],
 
 
 def set_answer(dedup_key: str, qid: str, value: str | None,
-               base: Path | str | None = None) -> dict | None:
+               base=None) -> dict | None:
     """Store one answer. Returns the updated record, or None if the job or question
     is unknown (e.g. a stale Telegram button tapped after the job was skipped).
 
@@ -230,7 +172,7 @@ def set_answer(dedup_key: str, qid: str, value: str | None,
 
 
 def set_resume_override(dedup_key: str, tag: str, display: str | None = None,
-                        base: Path | str | None = None) -> dict | None:
+                        base=None) -> dict | None:
     """Pin a specific resume track for this one job, overriding fill.js's best-of-4 pick.
 
     `tag` is the track id (quant/ds/tech/ai) fill.js will attach; `display` is the
@@ -406,7 +348,7 @@ def is_complete(rec: dict) -> bool:
     return not unanswered(rec)
 
 
-def approve(dedup_key: str, base: Path | str | None = None) -> dict | None:
+def approve(dedup_key: str, base=None) -> dict | None:
     """Mark a job ready for phase 3. Refuses while questions are outstanding, so a
     stale ✅ tap can't send a half-answered form to a real employer."""
     rec = load(dedup_key, base)
@@ -418,7 +360,7 @@ def approve(dedup_key: str, base: Path | str | None = None) -> dict | None:
     return rec
 
 
-def hold(dedup_key: str, base: Path | str | None = None,
+def hold(dedup_key: str, base=None,
          reason: str | None = None) -> dict | None:
     """Park an approved job that phase 3 filled but couldn't submit — a form that came out
     different from what Parth approved, a required field only he can fill, an email
@@ -437,7 +379,7 @@ def hold(dedup_key: str, base: Path | str | None = None,
     return rec
 
 
-def unhold_all(base: Path | str | None = None) -> list[dict]:
+def unhold_all(base=None) -> list[dict]:
     """Re-queue every held job: back to APPROVED, attempt counter reset. Drives /retry.
     Returns the list of jobs that were re-queued."""
     out = []
@@ -450,7 +392,7 @@ def unhold_all(base: Path | str | None = None) -> list[dict]:
     return out
 
 
-def skip(dedup_key: str, base: Path | str | None = None) -> dict | None:
+def skip(dedup_key: str, base=None) -> dict | None:
     """Defer a job from the dashboard: keep the record (and any answers) on disk but out of
     the auto-flush pile and out of re-scrape serving, while staying visible in the 'in queue'
     bucket. Returns the updated record, or None if the job is gone."""
@@ -464,7 +406,7 @@ def skip(dedup_key: str, base: Path | str | None = None) -> dict | None:
     return rec
 
 
-def reopen(dedup_key: str, base: Path | str | None = None) -> dict | None:
+def reopen(dedup_key: str, base=None) -> dict | None:
     """Send a job (skipped/approved/held) back to the awaiting pile so it shows up for
     review again — its answers are kept. Clears the flush-attempt counter and hold reason.
     Returns the updated record, or None if the job is gone."""
@@ -478,7 +420,7 @@ def reopen(dedup_key: str, base: Path | str | None = None) -> dict | None:
     return rec
 
 
-def clear_focus(base: Path | str | None = None) -> None:
+def clear_focus(base=None) -> None:
     """Drop the /jobs pin from every record. Only one job is ever pinned: the pin means
     "serve THIS one next", and two of those is a contradiction."""
     for rec in all_jobs(None, base):
@@ -486,7 +428,7 @@ def clear_focus(base: Path | str | None = None) -> None:
             save(rec, base)
 
 
-def focus(dedup_key: str, base: Path | str | None = None) -> dict | None:
+def focus(dedup_key: str, base=None) -> dict | None:
     """Pin one job to the front of the /next queue — what tapping a row in /jobs does.
 
     The batch has deliberately no cursor: "the current job" is derived from disk every
@@ -545,7 +487,7 @@ def next_tier(rec: dict) -> int:
     return TIER_FRESH
 
 
-def serving_order(base: Path | str | None = None) -> list[dict]:
+def serving_order(base=None) -> list[dict]:
     """Every awaiting job in the order /next should hand them over.
 
     Was: oldest `created` first, full stop. That was written when the batch was one
@@ -591,7 +533,7 @@ def serving_order(base: Path | str | None = None) -> list[dict]:
     return pinned + tiers[TIER_IN_PROGRESS] + tiers[TIER_READY] + fresh
 
 
-def next_job(base: Path | str | None = None) -> dict | None:
+def next_job(base=None) -> dict | None:
     """The next job wanting Parth's attention — see serving_order for the ordering.
     A zero-question job still counts: it's complete but unapproved, so it needs his ✅."""
     order = serving_order(base)
@@ -603,7 +545,7 @@ def next_question(rec: dict) -> dict | None:
     return qs[0] if qs else None
 
 
-def counts(base: Path | str | None = None) -> dict:
+def counts(base=None) -> dict:
     """Batch state for /status."""
     jobs = all_jobs(None, base)
     awaiting = [r for r in jobs if r.get("status") == AWAITING]

@@ -9,25 +9,16 @@ which are the same modules the live pipeline uses.
 """
 from __future__ import annotations
 
-import json
 import re
 import socket
 import time
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 
-import yaml
+from server.store import get_store, rows_hash
+from server.store.importer import COMPANIES_DOC, PROFILE_DOC
 
 from .paths import (
-    ANSWER_BANK_PATH,
-    COMPANIES_PATH,
-    COMPANIES_WRITE,
-    DREAM_PATH,
     FLUSH_TRIGGER,
-    MANUAL_PATH,
-    PROFILE_PATH,
-    PROFILE_WRITE,
-    QUEUE_PATH,
     RUN_TRIGGER,
     bank_mod,
     pending_mod,
@@ -37,19 +28,9 @@ from .paths import (
 # ── Companies (dream vs pipeline) ────────────────────────────────────────────────────
 
 def load_companies() -> list[dict]:
-    """Every company from companies.yaml with its tier (pipeline | dream)."""
-    if not COMPANIES_PATH.exists():
-        return []
-    data = yaml.safe_load(COMPANIES_PATH.read_text(encoding="utf-8")) or {}
-    out = []
-    for c in data.get("companies", []) or []:
-        out.append({
-            "name": c.get("name", ""),
-            "ats": c.get("ats", ""),
-            "slug": c.get("slug", ""),
-            "tier": c.get("tier", "pipeline"),
-        })
-    return out
+    """Every company with its tier (pipeline | dream)."""
+    return [{"name": c.get("name", ""), "ats": c.get("ats", ""), "slug": c.get("slug", ""),
+             "tier": c.get("tier", "pipeline")} for c in get_store().get_companies()]
 
 
 def _tier_map() -> dict[str, str]:
@@ -58,35 +39,50 @@ def _tier_map() -> dict[str, str]:
 
 
 def set_company_tier(name: str, tier: str) -> bool:
-    """Flip one company's tier by editing its line in place, so the file's comments and the
-    commented-out off-ATS block at the bottom survive (yaml.safe_dump would wipe both).
+    """Flip one company's tier, in the rows and in the file text the store kept.
 
-    companies.yaml stores each company as an inline flow map on its own line, e.g.
+    The stored source text is edited line by line rather than re-rendered, because the file
+    carries 82 off-board targets as comments and a render drops every one of them. Editing
+    both keeps them in step, so `python -m server.store export --companies` still writes the
+    user's own file back byte for byte.
+
+    Each company is an inline flow map on its own line, e.g.
       - {name: Abridge, ats: ashby, slug: abridge, tier: pipeline}
-    We find the line whose name matches and swap only its `tier:` value.
+    so the line whose name matches has only its `tier:` value swapped.
     """
     if tier not in ("pipeline", "dream"):
         raise ValueError("tier must be 'pipeline' or 'dream'")
-    if not COMPANIES_PATH.exists():
-        return False
-    lines = COMPANIES_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
-    name_pat = re.compile(r"name:\s*" + re.escape(name) + r"\s*[,}]")
-    tier_pat = re.compile(r"(tier:\s*)(pipeline|dream)")
+    store = get_store()
+    rows = store.get_companies()
     changed = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith("#"):
-            continue  # never touch the commented-out off-ATS targets
-        if name_pat.search(line) and tier_pat.search(line):
-            lines[i] = tier_pat.sub(lambda m: m.group(1) + tier, line, count=1)
+    for row in rows:
+        if row.get("name") == name and row.get("tier") in ("pipeline", "dream"):
+            row["tier"] = tier
             changed = True
             break
-    if changed:
-        # Read may have come from companies.example.yaml on a fresh install; the write
-        # always lands on the real, gitignored filename. First tier toggle therefore
-        # promotes the template into the user's own file rather than editing the template.
-        COMPANIES_WRITE.write_text("".join(lines), encoding="utf-8")
-    return changed
+    if not changed:
+        return False
+    store.set_companies(rows)
+    _retier_source(store, name, tier)
+    return True
+
+
+def _retier_source(store, name: str, tier: str) -> None:
+    """Apply the same tier swap to the stored companies.yaml text, and re-hash it."""
+    doc = store.get_config_doc(COMPANIES_DOC)
+    if not doc or not doc.get("raw_text"):
+        return
+    name_pat = re.compile(r"name:\s*" + re.escape(name) + r"\s*[,}]")
+    tier_pat = re.compile(r"(tier:\s*)(pipeline|dream)")
+    lines = doc["raw_text"].splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("#"):
+            continue  # never touch the commented-out off-board targets
+        if name_pat.search(line) and tier_pat.search(line):
+            lines[i] = tier_pat.sub(lambda m: m.group(1) + tier, line, count=1)
+            store.set_config_doc(COMPANIES_DOC, "".join(lines),
+                                 rows_hash(store.get_companies()))
+            return
 
 
 # ── Dashboard (merged pile view) ─────────────────────────────────────────────────────
@@ -215,7 +211,7 @@ def dashboard_rows(since_days: int | None = 60) -> list[dict]:
     tiers = _tier_map()
     rows = [_pending_row(r, tiers) for r in pending_mod.all_jobs()]
     cutoff = (date.today() - timedelta(days=since_days)).isoformat() if since_days else None
-    for r in triage_mod.load_applied(triage_mod.APPLIED_PATH):
+    for r in triage_mod.load_applied():
         when = (r.get("applied") or "")[:10]
         if cutoff and when and when < cutoff:
             continue
@@ -284,14 +280,14 @@ def apply_transition(key: str, target: str, reason: str | None = None,
     if not key:
         return {"ok": False, "error": "no dedup_key"}
     pend = pending_mod.load(key)
-    in_applied = key in triage_mod.applied_keys(triage_mod.APPLIED_PATH)
+    in_applied = key in triage_mod.applied_keys()
 
     def revive() -> dict | None:
         """Undo a prior submitted/blocked decision so a queue-side target can take effect:
         drop the applied-log row and pull the archived record back into the active batch."""
         nonlocal pend
         if in_applied:
-            triage_mod.remove_applied(key, triage_mod.APPLIED_PATH)
+            triage_mod.remove_applied(key)
         if pend is None:
             pend = pending_mod.restore(key)
         return pend
@@ -302,10 +298,10 @@ def apply_transition(key: str, target: str, reason: str | None = None,
             # Already decided — this is a CORRECTION (Submitted <-> Blocked), so edit the
             # row in place. append_applied would no-op here and report success, which is
             # exactly the "the move did nothing but said it worked" bug.
-            triage_mod.set_applied_status(key, status, triage_mod.APPLIED_PATH)
+            triage_mod.set_applied_status(key, status)
         else:
             rec = {**meta, **(pend or {}), "dedup_key": key, "status": status}
-            triage_mod.append_applied(rec, triage_mod.APPLIED_PATH)
+            triage_mod.append_applied(rec)
         if pend:
             # archive, not delete: the record holds every answer Parth typed, and these
             # moves are one keypress away in the console. Deleting made Block a permanent
@@ -385,19 +381,21 @@ def bridge_alive(timeout: float = 0.4) -> bool:
 # ── Profile ──────────────────────────────────────────────────────────────────────────
 
 def load_profile() -> dict:
-    if not PROFILE_PATH.exists():
-        return {}
-    return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    return get_store().get_profile()
 
 
 def save_profile(obj: dict) -> None:
-    """Write profile.json back, pretty-printed to match the hand-edited file. Caller has
-    already validated it's a JSON object."""
-    # PROFILE_WRITE, never PROFILE: on a fresh install the read path is the shipped
-    # template, and saving through it would put real personal details into a tracked file.
-    PROFILE_WRITE.parent.mkdir(parents=True, exist_ok=True)
-    PROFILE_WRITE.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + "\n",
-                             encoding="utf-8")
+    """Store the profile back. Caller has already validated it is a JSON object.
+
+    The saved document is now the source of truth, so the exported profile.json is rendered
+    from it rather than replayed from the imported text. That is why the write also clears
+    the kept text's hash: an export must show what the console saved, not what was imported.
+    """
+    store = get_store()
+    store.set_profile(obj)
+    doc = store.get_config_doc(PROFILE_DOC)
+    if doc:
+        store.set_config_doc(PROFILE_DOC, doc["raw_text"], "")
 
 
 # ── Answer bank ──────────────────────────────────────────────────────────────────────
@@ -460,34 +458,31 @@ def bank_delete(_id: str) -> bool:
 
 # ── Scraped queue ────────────────────────────────────────────────────────────────────
 
-def _load_roles(path: Path) -> list[dict]:
-    """One of the scraper's role files, or [] if it isn't there / isn't readable yet.
+def _load_roles(kind: str) -> list[dict]:
+    """One of the scraper's role sets, or [] before the first scrape.
 
-    Absent is the NORMAL state for these, not an error: out/ is gitignored, so a fresh
-    checkout has none of them until the first scrape runs.
+    Empty is the NORMAL state here, not an error: a fresh install has run no scrape yet.
     """
-    if not path.exists():
-        return []
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        return get_store().get_queue(kind)
+    except Exception:
         return []
 
 
 def load_queue() -> list[dict]:
-    return _load_roles(QUEUE_PATH)
+    return _load_roles("queue")
 
 
 def load_dream() -> list[dict]:
-    """Discovered dream roles (out/dream.json). Same shape as queue.json; the extension
-    never touches these — the console surfaces them as a manual-only pile."""
-    return _load_roles(DREAM_PATH)
+    """Discovered dream roles. Same shape as the queue; the extension never touches these
+    — the console surfaces them as a manual-only pile."""
+    return _load_roles("dream")
 
 
 def load_manual() -> list[dict]:
-    """Roles on a board with no adapter (out/manual.json). Same shape and same manual-only
-    handling as dream, but for a different reason — see core/scraper.py."""
-    return _load_roles(MANUAL_PATH)
+    """Roles on a board with no adapter. Same shape and same manual-only handling as dream,
+    but for a different reason — see core/scraper.py."""
+    return _load_roles("manual")
 
 
 # ── First-run setup ──────────────────────────────────────────────────────────────────
@@ -548,16 +543,15 @@ def setup_status() -> dict:
 
     steps: list[dict] = []
 
-    # Read through the MODULE-level names, not core_paths directly: test_api rebinds these
-    # onto a temp directory, and reaching past them made this function report on the real
-    # install regardless of isolation - so it passed on a configured machine and failed on
-    # a fresh clone, which is exactly backwards for a first-run check.
-    configured = PROFILE_WRITE.exists()
+    # "Configured" means the user's OWN details, not the shipped template. A fresh clone
+    # imports profile.example.json, so rows exist and are still nobody's answers; without
+    # the distinction the checklist reports a first-run install as finished.
+    store = get_store()
+    configured = store.is_own(PROFILE_DOC)
     holes: list[str] = []
     if configured:
         try:
-            holes = profile_mod.find_fillme(
-                json.loads(PROFILE_WRITE.read_text(encoding="utf-8")))
+            holes = profile_mod.find_fillme(store.get_profile())
         except Exception:
             holes = []
     steps.append({
@@ -592,7 +586,7 @@ def setup_status() -> dict:
 
     # 3. Companies: usable immediately thanks to the shipped example, so "done" means the
     # user has their OWN list rather than merely having something to scrape.
-    own_companies = COMPANIES_WRITE.exists()
+    own_companies = store.is_own(COMPANIES_DOC)
     try:
         n_companies = len(load_companies())
     except Exception:
@@ -607,12 +601,12 @@ def setup_status() -> dict:
 
     # 4. Resumes: only the apply half needs them, and the count is what the extension
     # will actually be able to attach.
-    n_resumes = len(list(core_paths.RESUMES.glob("*.pdf"))) if core_paths.RESUMES.exists() else 0
+    n_resumes = sum(1 for r in store.all_resumes() if r["size"])
     steps.append({
         "id": "resumes", "title": "Resume PDFs",
         "done": n_resumes > 0, "blocking": False, "manual": False, "optional": False,
-        "detail": (f"{n_resumes} cached." if n_resumes else
-                   "None cached. Set _local_resume_source.base_dir in your profile, then "
+        "detail": (f"{n_resumes} stored." if n_resumes else
+                   "None stored. Set _local_resume_source.base_dir in your profile, then "
                    "run: python -m core.resumes sync-local"),
         "link": "/profile",
     })

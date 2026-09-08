@@ -6,10 +6,10 @@ bridge supersedes on every new WebSocket connection, so a web client that opened
 would kill Parth's live extension review. Instead the web app shares the exact same
 on-disk state and reuses the pipeline's already-tested modules by importing them here.
 
-`pending.py` / `triage.py` anchor their file paths to their own location
-(`Path(__file__).resolve().parent`), so importing them automatically points at THIS
-checkout's pending/, applied.json and queue.json — no path juggling. The data-layer paths
-below are re-exported straight from `core.paths`, the single source of truth for layout.
+`pending.py` and `triage.py` read the store, so importing them here is enough: both
+processes open the same database and see the same rows. What remains below is the layout
+this process still needs on disk — the repo root, the scraper entry point, and the two
+trigger files one local process uses to poke the other.
 """
 from __future__ import annotations
 
@@ -25,25 +25,6 @@ for _p in (str(REPO_ROOT), str(BRIDGE_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from core import paths as core_paths  # noqa: E402
-
-# Shared data files (all read/written by the running pipeline too). Defined once in
-# core/paths.py; aliased here under the names the routers already use.
-PROFILE_PATH = core_paths.PROFILE
-ANSWER_BANK_PATH = core_paths.ANSWER_BANK
-COMPANIES_PATH = core_paths.COMPANIES
-# Save targets. On a fresh install the three READ paths above resolve to the shipped
-# .example templates, so writing through them would overwrite a tracked template with the
-# user's real details — see the note in core/paths.py. Persist through these instead.
-PROFILE_WRITE = core_paths.PROFILE_WRITE
-ANSWER_BANK_WRITE = core_paths.ANSWER_BANK_WRITE
-COMPANIES_WRITE = core_paths.COMPANIES_WRITE
-QUEUE_PATH = core_paths.QUEUE
-DREAM_PATH = core_paths.OUT / "dream.json"
-# Roles on a board with no adapter (see core/scraper.py). Same shape as queue.json, same
-# "the extension never reads this" contract as dream.json, different reason.
-MANUAL_PATH = core_paths.OUT / "manual.json"
-APPLIED_PATH = core_paths.APPLIED
 SCRAPER_MODULE = "core.scraper"   # invoked as `python -m core.scraper` from REPO_ROOT
 EXTENSION_BUILD = REPO_ROOT / "extension" / "build.py"
 
@@ -59,9 +40,7 @@ import drafter as drafter_mod        # noqa: E402  (bridge/drafter.py — Tier-2
 from core import bank as bank_mod    # noqa: E402  (core/bank.py)
 
 __all__ = [
-    "REPO_ROOT", "BRIDGE_DIR", "PROFILE_PATH", "ANSWER_BANK_PATH", "COMPANIES_PATH",
-    "PROFILE_WRITE", "ANSWER_BANK_WRITE", "COMPANIES_WRITE",
-    "QUEUE_PATH", "DREAM_PATH", "APPLIED_PATH", "SCRAPER_MODULE", "EXTENSION_BUILD",
+    "REPO_ROOT", "BRIDGE_DIR", "SCRAPER_MODULE", "EXTENSION_BUILD",
     "RUN_TRIGGER", "FLUSH_TRIGGER",
     "pending_mod", "triage_mod", "bank_mod", "drafter_mod",
 ]

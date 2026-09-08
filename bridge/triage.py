@@ -22,7 +22,6 @@ Design notes baked in from the plan + Fable's review:
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import threading
@@ -31,13 +30,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core import paths  # noqa: E402
+from server.store import resolve  # noqa: E402
 
 # Imported, never re-derived. This module used to compute its own repo root and its own
 # applied.json path; core/paths.py holds the same two, so pointing one at a temp directory
 # left the other aimed at the real file, and a test wrote live records through it.
 REPO_ROOT = paths.REPO_ROOT
-QUEUE_PATH = paths.QUEUE
-APPLIED_PATH = paths.APPLIED
 
 
 def _int_env(name: str, default: int) -> int:
@@ -52,35 +50,29 @@ MAX_PER_DAY = _int_env("APPLY_MAX_PER_DAY", 15)
 MAX_PER_COMPANY = _int_env("APPLY_MAX_PER_COMPANY", 2)
 
 
-def load_applied(applied_path: Path | str = APPLIED_PATH) -> list[dict]:
+def load_applied(store=None) -> list[dict]:
     """Applied records, tolerating a legacy bare list of dedup_key strings (matches
     apply_log.load exactly)."""
-    p = Path(applied_path)
-    if not p.exists():
-        return []
-    data = json.loads(p.read_text(encoding="utf-8"))
-    return [e if isinstance(e, dict) else {"dedup_key": e} for e in data]
+    return [e if isinstance(e, dict) else {"dedup_key": e}
+            for e in resolve(store).get_applied()]
 
 
-def applied_keys(applied_path: Path | str = APPLIED_PATH) -> set[str]:
-    return {r.get("dedup_key") for r in load_applied(applied_path) if r.get("dedup_key")}
+def applied_keys(store=None) -> set[str]:
+    return {r.get("dedup_key") for r in load_applied(store) if r.get("dedup_key")}
 
 
-def load_queue(queue_path: Path | str = QUEUE_PATH) -> list[dict]:
+def load_queue(store=None) -> list[dict]:
     """Today's scraped roles, or [] before the first run of the day."""
-    p = Path(queue_path)
-    if not p.exists():
-        return []
-    return json.loads(p.read_text(encoding="utf-8"))
+    return resolve(store).get_queue("queue")
 
 
 # Serialize the read-modify-write: two near-simultaneous confirms (flush + a panel log)
 # both run via asyncio.to_thread and could interleave, losing a row. In-process only —
-# a concurrently-run apply_log.py CLI is still unguarded (rare, manual, accepted).
+# a concurrently-run apply_log CLI is still unguarded (rare, manual, accepted).
 _APPLIED_WRITE_LOCK = threading.Lock()
 
 
-def append_applied(record: dict, applied_path: Path | str = APPLIED_PATH) -> bool:
+def append_applied(record: dict, store=None) -> bool:
     """Append one decided role. Idempotent on dedup_key. Returns True if it was
     newly added (False if already present). Record shape matches apply_log.py so the two
     paths stay interchangeable.
@@ -90,8 +82,8 @@ def append_applied(record: dict, applied_path: Path | str = APPLIED_PATH) -> boo
     applied_keys() keys on dedup_key alone — the field only exists so a later count of
     "how many did I actually apply to" doesn't quietly include the rejects."""
     with _APPLIED_WRITE_LOCK:
-        p = Path(applied_path)
-        rows = load_applied(p)
+        st = resolve(store)
+        rows = load_applied(st)
         key = record.get("dedup_key")
         if key and any(r.get("dedup_key") == key for r in rows):
             return False
@@ -112,13 +104,11 @@ def append_applied(record: dict, applied_path: Path | str = APPLIED_PATH) -> boo
         # to every future clone of this application.
         if record.get("resume_track"):
             row["resume_track"] = record["resume_track"]
-        rows.append(row)
-        p.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        st.add_applied(row)
         return True
 
 
-def set_applied_status(dedup_key: str, status: str,
-                       applied_path: Path | str = APPLIED_PATH) -> bool:
+def set_applied_status(dedup_key: str, status: str, store=None) -> bool:
     """Flip an ALREADY-decided role between "applied" and "rejected" in place.
 
     append_applied is idempotent on dedup_key: if the role is already logged it returns
@@ -130,35 +120,33 @@ def set_applied_status(dedup_key: str, status: str,
 
     Returns True if a row was found and its status actually changed."""
     with _APPLIED_WRITE_LOCK:
-        p = Path(applied_path)
-        rows = load_applied(p)
-        for r in rows:
+        st = resolve(store)
+        for r in load_applied(st):
             if r.get("dedup_key") == dedup_key:
                 if (r.get("status") or "applied") == status:
                     return False
                 r["status"] = status
-                p.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+                st.add_applied(r)
                 return True
         return False
 
 
-def remove_applied(dedup_key: str, applied_path: Path | str = APPLIED_PATH) -> bool:
+def remove_applied(dedup_key: str, store=None) -> bool:
     """Drop a decided role from applied.json so it re-enters the scrape pool. Backs the
     dashboard's un-submit / un-block — the only way to correct a mis-marked role, since
     applied_keys() otherwise hides it from every future queue forever. Returns True if a
     row was removed. Same in-process lock as append_applied so the two can't interleave."""
     with _APPLIED_WRITE_LOCK:
-        p = Path(applied_path)
-        rows = load_applied(p)
+        st = resolve(store)
+        rows = load_applied(st)
         kept = [r for r in rows if r.get("dedup_key") != dedup_key]
         if len(kept) == len(rows):
             return False
-        p.write_text(json.dumps(kept, indent=2), encoding="utf-8")
+        st.set_applied(kept)
         return True
 
 
-def triage(queue_path: Path | str = QUEUE_PATH,
-           applied_path: Path | str = APPLIED_PATH,
+def triage(store=None,
            max_per_day: int | None = None,
            max_per_company: int | None = None,
            exclude_keys: set[str] | None = None) -> dict:
@@ -168,7 +156,7 @@ def triage(queue_path: Path | str = QUEUE_PATH,
     walk it in order, skipping already-applied and anything over a cap. Order-preserving:
     the first N eligible roles win, so the freshest roles are worked first.
 
-    exclude_keys = jobs already in flight (bridge/pending/): they're being answered on
+    exclude_keys = jobs already in flight (the pending table): they're being answered on
     Telegram, and re-collecting them is a no-op (pending.put never clobbers) that still
     burned a daily slot and a tab visit — every day, until answered. Skip them here.
     """
@@ -176,8 +164,9 @@ def triage(queue_path: Path | str = QUEUE_PATH,
     per_co = MAX_PER_COMPANY if max_per_company is None else max_per_company
     exclude = set(exclude_keys or ())
 
-    queue = load_queue(queue_path)
-    done = applied_keys(applied_path)
+    st = resolve(store)
+    queue = load_queue(st)
+    done = applied_keys(st)
 
     jobs: list[dict] = []
     counts: dict[str, int] = {}

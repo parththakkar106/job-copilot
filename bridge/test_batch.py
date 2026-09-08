@@ -13,14 +13,14 @@ from pathlib import Path
 import bridge as B
 import pending as P
 import triage as T
+from server.store import use_temp_store
 
 SENT: list = []
 
 
 def setup(tmp: Path):
     """Point every module at throwaway state and capture Telegram sends."""
-    P.PENDING_DIR = tmp / "pending"
-    T.APPLIED_PATH = tmp / "applied.json"
+    use_temp_store(tmp)
     B.LOCK = asyncio.Lock()
     B.INBOX = asyncio.Queue()
     SENT.clear()
@@ -108,10 +108,8 @@ async def test_walk_away_and_return():
     assert "Paused" in SENT[-1][0], SENT[-1][0]
     n += 1
 
-    # simulate a restart: nothing in memory survives, only the files
-    setup2 = P.PENDING_DIR
+    # simulate a restart: nothing in memory survives, only the stored records
     B.LOCK, B.INBOX = asyncio.Lock(), asyncio.Queue()
-    P.PENDING_DIR = setup2
 
     await B.serve_next()
     assert "Pronouns" in SENT[-1][0], "must resume at the exact question he left on"
@@ -131,7 +129,7 @@ async def test_skip_vs_reject():
     await B.batch_callback(f"{B.CB}:j:aaa:skip", "cb")
     assert P.load("aaa") is None
     n += 1
-    assert T.applied_keys(T.APPLIED_PATH) == set(), "skip must leave no permanent trace"
+    assert T.applied_keys() == set(), "skip must leave no permanent trace"
     n += 1
     assert "come back in tomorrow" in SENT[-2][0], SENT[-2][0]
     n += 1
@@ -140,7 +138,7 @@ async def test_skip_vs_reject():
     await B.batch_callback(f"{B.CB}:j:bbb:reject", "cb")
     assert P.load("bbb") is None
     n += 1
-    rows = json.loads(Path(T.APPLIED_PATH).read_text(encoding="utf-8"))
+    rows = T.load_applied()
     assert rows[0]["dedup_key"] == "bbb" and rows[0]["status"] == "rejected", rows
     n += 1
     assert "won't see this role again" in SENT[-2][0], SENT[-2][0]
@@ -333,8 +331,7 @@ async def test_no_double_apply():
     P.approve("bbb")
 
     # he applied to Ramp manually since approving it
-    T.append_applied({"dedup_key": "aaa", "company": "Ramp", "title": "Software Engineer"},
-                     T.APPLIED_PATH)
+    T.append_applied({"dedup_key": "aaa", "company": "Ramp", "title": "Software Engineer"})
 
     jobs, held = B._approved_not_yet_applied()
     assert [r["dedup_key"] for r in jobs] == ["bbb"], jobs
@@ -365,7 +362,7 @@ async def test_applied_retires_pending():
     n += 1
     assert P.load("aaa") is None, "pending record should be retired once applied"
     n += 1
-    assert "aaa" in T.applied_keys(T.APPLIED_PATH)
+    assert "aaa" in T.applied_keys()
     n += 1
     return n
 

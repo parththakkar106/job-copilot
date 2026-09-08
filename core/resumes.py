@@ -32,7 +32,8 @@ from datetime import date
 from pathlib import Path
 
 from core import paths
-from core import profile as P  # reuse profile.json loader + pick_resume
+from core import profile as P  # reuse the profile loader + pick_resume
+from server.store import get_store
 
 CACHE = paths.RESUMES
 MANIFEST = CACHE / "manifest.json"
@@ -92,11 +93,15 @@ def cached_hash(track: dict) -> str | None:
 
 
 def _write_cache(track: dict, raw: bytes, source_file: str | None) -> bool:
-    """Install `raw` as this track's cached PDF. True if the bytes changed.
+    """Install `raw` as this track's PDF. True if the bytes changed.
 
-    Identical bytes are not rewritten. Every application reads this cache, so a sync that
+    Identical bytes are not rewritten. Every application reads these bytes, so a sync that
     copied unconditionally would move `synced` forward on files nobody touched and make
     the date useless as an answer to "is this current".
+
+    The bytes go to the store and to the local cache file. The store is what a hosted
+    bridge and the console read; the file stays because the extension build stages the PDFs
+    into the unpacked extension directory, which is a path on this machine either way.
     """
     if raw[:5] != b"%PDF-":
         raise SyncError(f"refusing to install: not a PDF (header {raw[:5]!r})")
@@ -106,6 +111,8 @@ def _write_cache(track: dict, raw: bytes, source_file: str | None) -> bool:
     dest = cached_path(track)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(raw)
+    get_store().put_resume(track["tag"], raw, label=track.get("title_prefix", ""),
+                           filename=dest.name, meta=track)
     m = load_manifest()
     m[track["tag"]] = {
         "drive_id": track.get("drive_id", ""),
@@ -163,7 +170,14 @@ def sync_local(tag: str | None = None, profile: dict | None = None) -> list[str]
 
 
 def read_cached(track: dict) -> bytes:
-    """The cached PDF's bytes. Raises SyncError if the track was never cached."""
+    """This track's PDF bytes. Raises SyncError if the track was never synced.
+
+    The store is asked first, because it is the copy a hosted bridge has. The local file is
+    the fallback for a cache synced before the store existed.
+    """
+    row = get_store().get_resume(str(track.get("tag") or ""))
+    if row and row.get("pdf"):
+        return row["pdf"]
     dest = cached_path(track)
     if not dest.is_file():
         raise SyncError(f"'{track.get('tag')}' is not cached — run sync-local")

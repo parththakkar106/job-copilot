@@ -15,6 +15,8 @@ import bridge as B
 import drafter as drafter_mod
 
 from core import referral as R
+from server.store import get_store, use_temp_store
+from server.store.importer import import_profile
 
 SENT: list = []
 PLAIN: list = []
@@ -22,11 +24,9 @@ PLAIN: list = []
 
 def setup(tmp: Path):
     """Point the store at throwaway state and capture every Telegram send."""
-    R.paths.OUTREACH = tmp / "outreach.json"
-    R.paths.QUEUE = tmp / "queue.json"
-    R.paths.DREAM = tmp / "dream.json"
-    R.paths.APPLIED = tmp / "applied.json"
-    R.paths.COMPANIES = tmp / "companies.yaml"
+    store = use_temp_store(tmp)
+    # The pack names a resume file, so the profile's tracks have to be there.
+    import_profile(store)
     SENT.clear()
     PLAIN.clear()
     B.REFER_WAITING = False
@@ -61,7 +61,7 @@ async def test_paste_to_card():
     tmp = Path(tempfile.mkdtemp())
     setup(tmp)
     n = 0
-    R.paths.QUEUE.write_text(json.dumps([QUEUE_ROW]), encoding="utf-8")
+    get_store().set_queue("queue", [QUEUE_ROW])
 
     await B.handle_refer("/refer " + PASTE)
     text, bs = SENT[-1]
@@ -118,9 +118,8 @@ async def test_tiers_and_the_live_offer():
     tmp = Path(tempfile.mkdtemp())
     setup(tmp)
     n = 0
-    R.paths.COMPANIES.write_text(
-        "companies:\n  - {name: Northwind, ats: greenhouse, slug: northwind, tier: pipeline}\n",
-        encoding="utf-8")
+    get_store().set_companies([{"name": "Northwind", "ats": "greenhouse",
+                                "slug": "northwind", "tier": "pipeline"}])
     await B.resolve_referral(PASTE)
     text, bs = SENT[-1]
     assert "tier 3" in text, text
@@ -157,7 +156,7 @@ async def test_drafting_and_copying():
     tmp = Path(tempfile.mkdtemp())
     setup(tmp)
     n = 0
-    R.paths.QUEUE.write_text(json.dumps([QUEUE_ROW]), encoding="utf-8")
+    get_store().set_queue("queue", [QUEUE_ROW])
     await B.resolve_referral(PASTE)
     ref = R.short_id(list(R.load_store())[0])
 

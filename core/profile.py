@@ -22,14 +22,17 @@ import yaml
 
 # Living under core/ also stops this module shadowing the stdlib `profile`.
 from core import paths
+from server.store import get_store
 
-PROFILE = paths.PROFILE
+# taxonomy.yaml stays a file. It is tuning, not identity: keyword rules that ship with the
+# code as working defaults, which is what lets a fresh clone run before anything is
+# imported. Only the personal half moves into the store.
 TAXONOMY = paths.TAXONOMY
 FILL_ME = "FILL_ME"
 
 
 def load_profile() -> dict:
-    return json.loads(PROFILE.read_text(encoding="utf-8"))
+    return get_store().get_profile()
 
 
 def load_taxonomy() -> dict:

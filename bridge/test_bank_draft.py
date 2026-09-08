@@ -20,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core import bank as bank_mod
 import bridge as B
 
+from server.store import set_store, use_temp_store
+
 
 class FakeWS:
     def __init__(self):
@@ -40,16 +42,25 @@ ROWS = [
 
 
 def use_temp_bank(rows):
-    """Point bank.py at a throwaway file seeded with `rows`. Returns its Path."""
-    tmp = Path(tempfile.mkdtemp()) / "answer_bank.yaml"
-    tmp.write_text(yaml.safe_dump({"answers": rows}, sort_keys=False), encoding="utf-8")
-    # BOTH, always. bank.py reads BANK and writes BANK_WRITE (they differ on a fresh
-    # install, where the read falls back to the shipped template). Rebinding only the read
-    # sent bank.save() -- which the use-counter calls on every hit -- straight at the real
-    # data/answer_bank.yaml and clobbered it with these fixtures.
-    bank_mod.BANK = tmp
-    bank_mod.BANK_WRITE = tmp
-    return tmp
+    """Point the store at a throwaway database seeded with `rows`. Returns the store.
+
+    One store covers both directions. The read/write split this replaced had to be rebound
+    on both sides, and rebinding only the read sent bank.save() -- which the use-counter
+    calls on every hit -- at the real answer bank and clobbered it with these fixtures.
+    """
+    store = use_temp_store(Path(tempfile.mkdtemp()))
+    store.set_answers(rows)
+    return store
+
+
+class _UnreadableStore:
+    """A store whose reads fail, standing in for the corrupt YAML file this once used."""
+
+    def get_answers(self):
+        raise OSError("store unavailable")
+
+    def __getattr__(self, name):
+        raise OSError("store unavailable")
 
 
 def test_resolution():
@@ -89,10 +100,7 @@ def test_resolution():
     checks += 1
 
     # a broken bank degrades to asking cold rather than taking the fill down with it
-    bad = Path(tempfile.mkdtemp()) / "answer_bank.yaml"
-    bad.write_text("{{{ not yaml", encoding="utf-8")
-    bank_mod.BANK = bad
-    bank_mod.BANK_WRITE = bad
+    set_store(_UnreadableStore())
     assert B.bank_draft({"answer_key": "why_company"}, "Ramp") == (None, None)
     checks += 1
 
@@ -110,7 +118,7 @@ async def scenario():
     B.tg_answer_callback = lambda *a, **k: None
 
     # --- accepting the draft ---
-    path = use_temp_bank([dict(r) for r in ROWS])
+    store = use_temp_bank([dict(r) for r in ROWS])
     ws = FakeWS()
     t = asyncio.create_task(B.handle_ask(
         {"reqId": "r1", "context": {"company": "Ramp"},
@@ -132,7 +140,7 @@ async def scenario():
     assert ws.sent[0]["answers"] == {"q1": "Ramp-specific answer."}, ws.sent
     checks += 1
 
-    rows = yaml.safe_load(path.read_text(encoding="utf-8"))["answers"]
+    rows = store.get_answers()
     used = next(r for r in rows if r["id"] == "why_company_ramp")
     assert used["uses"] == 1 and used["last_used"], used
     checks += 1
@@ -141,7 +149,7 @@ async def scenario():
     checks += 1
 
     # --- typing over the draft ---
-    path = use_temp_bank([dict(r) for r in ROWS])
+    store = use_temp_bank([dict(r) for r in ROWS])
     ws = FakeWS()
     t = asyncio.create_task(B.handle_ask(
         {"reqId": "r2", "context": {"company": "Ramp"},
@@ -152,7 +160,7 @@ async def scenario():
     assert ws.sent[0]["answers"] == {"q1": "my own words"}, ws.sent
     checks += 1
 
-    rows = yaml.safe_load(path.read_text(encoding="utf-8"))["answers"]
+    rows = store.get_answers()
     rejected = next(r for r in rows if r["id"] == "why_company_ramp")
     assert rejected["uses"] == 0 and rejected["last_used"] is None, (
         "a draft Parth overrode is not a 'use' — it should go stale so he rewrites it")
@@ -168,7 +176,7 @@ async def scenario_panel():
     sent = []
     B.tg_send = lambda text, buttons=None: sent.append((text, buttons)) or 1
 
-    path = use_temp_bank([dict(r) for r in ROWS])
+    store = use_temp_bank([dict(r) for r in ROWS])
     ws = FakeWS()
     await B.handle_drafts({"reqId": "d1", "context": {"company": "Ramp"}, "items": [
         {"id": "q1", "answer_key": "why_company"},   # bank hit -> draft + id to touch
@@ -184,7 +192,7 @@ async def scenario_panel():
     checks += 1
 
     # Offering a draft is not using it: nothing is touched until he accepts.
-    rows = yaml.safe_load(path.read_text(encoding="utf-8"))["answers"]
+    rows = store.get_answers()
     assert next(r for r in rows if r["id"] == "why_company_ramp")["uses"] == 0, rows
     checks += 1
 
@@ -193,7 +201,7 @@ async def scenario_panel():
     await B.handle_bank_touch({"reqId": "t1", "bank_id": "why_company_ramp"}, ws)
     assert ws.sent[0]["answers"] == {"ok": True}, ws.sent
     checks += 1
-    rows = yaml.safe_load(path.read_text(encoding="utf-8"))["answers"]
+    rows = store.get_answers()
     used = next(r for r in rows if r["id"] == "why_company_ramp")
     assert used["uses"] == 1 and used["last_used"], used
     checks += 1
@@ -237,10 +245,7 @@ async def scenario_panel():
         B.drafter_mod.CLAUDE_BIN = orig_bin
 
     # A broken bank degrades to "no drafts" rather than taking the panel down.
-    bad = Path(tempfile.mkdtemp()) / "answer_bank.yaml"
-    bad.write_text("{{{ not yaml", encoding="utf-8")
-    bank_mod.BANK = bad
-    bank_mod.BANK_WRITE = bad
+    set_store(_UnreadableStore())
     ws = FakeWS()
     await B.handle_drafts({"reqId": "d2", "context": {"company": "Ramp"},
                            "items": [{"id": "q1", "answer_key": "why_company"}]}, ws)

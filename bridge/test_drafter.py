@@ -8,6 +8,8 @@ from pathlib import Path
 import drafter
 import prefs
 
+from server.store import get_store, set_store, use_temp_store
+
 
 def check(name, cond):
     print(("PASS" if cond else "FAIL"), name)
@@ -99,21 +101,22 @@ def main():
         drafter._run_claude, drafter._ENABLED = orig_run, orig_enabled
         drafter.CLAUDE_BIN = orig_bin
 
-    # --- the on/off flag persists through prefs (temp file, real applied.json untouched) ---
-    orig_pref_path, orig_override = prefs.PREFS_PATH, drafter._ENABLED
+    # --- the on/off flag persists through prefs (temp store, real data untouched) ---
+    orig_store, orig_override = get_store(), drafter._ENABLED
     with tempfile.TemporaryDirectory() as tmp:
-        prefs.PREFS_PATH = Path(tmp) / "prefs.json"
+        use_temp_store(tmp)
         try:
             drafter._ENABLED = None  # defer to prefs (production path)
             drafter.set_enabled(True)
             ok &= check("set_enabled(True) -> is_enabled True", drafter.is_enabled() is True)
-            ok &= check("flag persisted to prefs file", prefs.get("drafts_enabled") is True)
+            ok &= check("flag persisted to prefs", prefs.get("drafts_enabled") is True)
             drafter.set_enabled(False)
             ok &= check("set_enabled(False) -> is_enabled False", drafter.is_enabled() is False)
             ok &= check("in-memory override still wins over prefs",
                         (setattr(drafter, "_ENABLED", True) or drafter.is_enabled()) is True)
         finally:
-            prefs.PREFS_PATH, drafter._ENABLED = orig_pref_path, orig_override
+            set_store(orig_store)
+            drafter._ENABLED = orig_override
 
     # --- model pinning: _run_claude passes --model, unless DRAFT_MODEL is default ---
     orig_model, orig_bin2, orig_subrun = drafter.DRAFT_MODEL, drafter.CLAUDE_BIN, drafter.subprocess.run
