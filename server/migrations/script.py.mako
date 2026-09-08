@@ -6,6 +6,10 @@ Create Date: ${create_date}
 """
 from alembic import op
 import sqlalchemy as sa
+
+# Autogenerate renders custom column types by their full path (server.store.models.JSONDoc),
+# so the module has to be importable by that name inside the revision.
+import server.store.models
 ${imports if imports else ""}
 
 revision = ${repr(up_revision)}

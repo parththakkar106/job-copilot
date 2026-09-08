@@ -18,9 +18,6 @@ from __future__ import annotations
 import argparse, re, sys
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
-import yaml
-
-from core import paths
 from server.store import get_store
 
 TODAY = date.today().isoformat()
@@ -36,11 +33,6 @@ def save(rows: list[dict]):
     # rows carry no such risk, so the two paths become one call.
     get_store().set_answers(rows)
 
-
-def export_yaml() -> str:
-    """The bank as the YAML file people hand-edit. `python -m server.store export --answers`
-    is the supported round trip; this is here so the CLI below can print it too."""
-    return yaml.safe_dump({"answers": load()}, sort_keys=False, allow_unicode=True, width=100)
 
 
 def slug(*parts) -> str:

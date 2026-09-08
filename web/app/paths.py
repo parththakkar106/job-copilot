@@ -25,8 +25,6 @@ for _p in (str(REPO_ROOT), str(BRIDGE_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from core import paths as core_paths  # noqa: E402
-
 SCRAPER_MODULE = "core.scraper"   # invoked as `python -m core.scraper` from REPO_ROOT
 EXTENSION_BUILD = REPO_ROOT / "extension" / "build.py"
 

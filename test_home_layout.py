@@ -148,32 +148,36 @@ def main() -> int:
         assert under(both["PENDING"], Path(a)), both["PENDING"]
         checks += 3
 
-    # --- the bridge modules must agree with core.paths, never re-derive ------------------
-    # triage.py used to compute its own repo root and applied.json; a test that redirected
-    # one left the other pointing at the real file.
+    # --- every module must reach ONE store, and it must sit under HOME ------------------
+    # triage.py used to compute its own repo root and applied.json, so a test that
+    # redirected one left the other pointing at the real file. There is now a single store
+    # instead of a path per module, and this is the check that it stays single: two stores
+    # in one process is the same failure wearing different clothes.
     with tempfile.TemporaryDirectory() as tmp:
         env = {**os.environ, "PYTHONPATH": str(REPO), "JOBCOPILOT_HOME": tmp,
-               "JOBCOPILOT_DATA": ""}
+               "JOBCOPILOT_DATA": "", "DATABASE_URL": ""}
         src = (
             "import json,sys\n"
             "sys.path.insert(0, 'bridge')\n"
             "from core import paths\n"
+            "from server.store import get_store\n"
+            "from server.store.engine import local_db_path\n"
             "import triage, pending, prefs\n"
-            "print('@@'+json.dumps({\n"
-            "  'applied': [str(triage.APPLIED_PATH), str(paths.APPLIED)],\n"
-            "  'queue':   [str(triage.QUEUE_PATH),   str(paths.QUEUE)],\n"
-            "  'pending': [str(pending.PENDING_DIR), str(paths.PENDING)],\n"
-            "  'prefs':   [str(prefs.PREFS_PATH),    str(paths.PREFS)],\n"
-            "}))\n"
+            "ids = {m.__name__: id(m.get_store() if hasattr(m, 'get_store')\n"
+            "                     else m.resolve(None)) for m in (triage, pending)}\n"
+            "ids['prefs'] = id(prefs.get_store())\n"
+            "print('@@'+json.dumps({'ids': sorted(set(ids.values())),\n"
+            "                       'db': str(local_db_path()),\n"
+            "                       'mine': id(get_store())}))\n"
         )
         r = subprocess.run([sys.executable, "-c", src], cwd=REPO, env=env,
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
-        pairs = json.loads(next(l for l in r.stdout.splitlines() if l.startswith("@@"))[2:])
-        for key, (theirs, ours) in pairs.items():
-            assert theirs == ours, f"bridge {key} disagrees with core.paths: {theirs} != {ours}"
-            assert under(Path(theirs), Path(tmp)), f"bridge {key} ignored HOME: {theirs}"
-            checks += 2
+        got = json.loads(next(l for l in r.stdout.splitlines() if l.startswith("@@"))[2:])
+        assert got["ids"] == [got["mine"]], f"more than one store in one process: {got}"
+        checks += 1
+        assert under(Path(got["db"]), Path(tmp)), f"the store ignored HOME: {got['db']}"
+        checks += 1
 
     print(f"home layout: {checks}/{checks} checks passed")
     return 0

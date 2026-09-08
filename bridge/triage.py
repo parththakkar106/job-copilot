@@ -22,7 +22,6 @@ Design notes baked in from the plan + Fable's review:
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import threading

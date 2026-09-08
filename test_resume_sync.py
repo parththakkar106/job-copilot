@@ -87,12 +87,15 @@ def main() -> int:
     # --- reading back -----------------------------------------------------------------
     check("read_cached returns the cached bytes",
           R.read_cached(prof["resume_tracks"][0]) == PDF_B)
+    # Never synced means no stored bytes AND no cached file: the store is the durable copy
+    # and a hosted bridge has no cache directory to empty.
     R.cached_path(prof["resume_tracks"][0]).unlink()
+    R.get_store().delete_resume(prof["resume_tracks"][0]["tag"])
     try:
         R.read_cached(prof["resume_tracks"][0])
-        check("read_cached raises for a missing file", False)
+        check("read_cached raises for a track that was never synced", False)
     except R.SyncError:
-        check("read_cached raises for a missing file", True)
+        check("read_cached raises for a track that was never synced", True)
 
     # --- failures are exceptions, not sys.exit ----------------------------------------
     # The bridge calls these on a live connection, where exiting kills the control plane.

@@ -104,15 +104,39 @@ JOBCOPILOT_HOME=~/private/jobcopilot python start.py
 
 ```
 ~/private/jobcopilot/
-  profile.json  companies.yaml  answer_bank.yaml   your config
-  applied.json  prefs.json                         history and settings
-  resumes/  pending/  logs/  out/                  PDFs, in-flight answers, reports
+  store.db                                         everything personal
+  resumes/                                         the PDF cache the extension stages from
+  out/                                             what the daily scrape wrote
 ```
 
 One variable, so that directory is a single portable thing: copy it and you have moved the
 whole job search, with nothing personal left behind in the checkout. `filters.yaml` and
 `taxonomy.yaml` are tuning rather than identity, so the ones shipped here are used by
 default — drop your own copies in `JOBCOPILOT_HOME` to override them.
+
+### Your data is a database, and the files are the round trip
+
+Your details, companies, answer bank, application history, in-flight answers and settings
+live in `store.db`. An install that predates it imports its own files the first time
+anything runs, so there is nothing to do.
+
+Editing `companies.yaml` in a text editor still works. Take the file out, edit it, put it
+back:
+
+```bash
+python -m server.store export --companies > companies.yaml
+$EDITOR companies.yaml
+python -m server.store import
+```
+
+An export you have not edited comes back byte-identical, comments included. That matters:
+the off-board targets in `companies.yaml` live in comments, and a plain re-render would
+delete them.
+
+Other commands: `python -m server.store status` (row counts), `export <dir>` (the whole
+layout, which is also how you take a backup), and `migrate` (schema, run automatically).
+
+Set `DATABASE_URL` to point at Postgres instead. Same schema, same code.
 
 (`JOBCOPILOT_DATA` is the older, narrower variable: config directory only, state stays in
 the checkout. It still works, and it still wins over `JOBCOPILOT_HOME` for config, which is

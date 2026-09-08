@@ -7,6 +7,9 @@ Create Date: 2026-09-08 21:42:10.371865
 from alembic import op
 import sqlalchemy as sa
 
+# JSONDoc columns are rendered below by their full path, so the module has to be imported.
+import server.store.models
+
 
 revision = '2cfa800a00a3'
 down_revision = None

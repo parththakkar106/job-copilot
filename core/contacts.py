@@ -35,7 +35,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pathlib
 import re
 import sys
 from dataclasses import dataclass, field, asdict
@@ -45,8 +44,7 @@ try:
 except ImportError:            # allow --selftest without network deps
     requests = None
 
-from core import paths
-from server.store import get_store
+from server.store import get_store, set_store, use_temp_store
 
 UA = "job-copilot/2.0 (personal job search)"
 
@@ -1013,9 +1011,9 @@ def selftest():
     # --- the store: append-only, never resets state -----------------------------
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        real = paths.OUTREACH
+        real = get_store()
         try:
-            paths.OUTREACH = pathlib.Path(td) / "outreach.json"
+            use_temp_store(td)
             assert load_outreach() == {} and known_keys() == set(); checks += 1
             j1 = {"company": "Northwind", "dedup_key": "k1"}
             c1 = Contact("Dana Whitfield", "Head of Data at Northwind",
@@ -1027,13 +1025,13 @@ def selftest():
             # a state set by a later phase must survive the next scrape
             store = load_outreach()
             store["linkedin.com/in/example-dana-whitfield"]["state"] = "invited"
-            paths.OUTREACH.write_text(json.dumps(store), encoding="utf-8")
+            get_store().set_outreach(store)
             save_contacts({"company": "Northwind", "dedup_key": "k2"}, [c1])
             row = load_outreach()["linkedin.com/in/example-dana-whitfield"]
             assert row["state"] == "invited", row["state"]; checks += 1
             assert row["jobs"] == ["k1", "k2"], row["jobs"]; checks += 1
         finally:
-            paths.OUTREACH = real
+            set_store(real)
 
     # --- fetch_description: every failure path returns "" rather than raising ----
     assert fetch_description({}) == ""; checks += 1

@@ -25,7 +25,7 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
 
 from . import engine as engine_mod
-from .models import (Applied, AnswerBankEntry, AuditDump, Base, Company, ConfigDoc, Contact,
+from .models import (Applied, AnswerBankEntry, AuditDump, Company, ConfigDoc, Contact,
                      Device, FillReport, Pending, Pref, Profile, QueueRun, ResumeTrack, User)
 
 # Local mode has one user and no signup flow, so the id is fixed rather than looked up by

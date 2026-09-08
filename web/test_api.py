@@ -26,13 +26,19 @@ from web.app.paths import bank_mod, drafter_mod, pending_mod, triage_mod  # noqa
 
 import prefs  # noqa: E402  (bridge/prefs.py)
 
+from server.store import use_temp_store  # noqa: E402
+from server.store import importer  # noqa: E402
+
 
 def _isolate(tmp: Path) -> None:
-    """Point every module + service path at tmp, seeded from the real files.
+    """Seed a throwaway store from files written into tmp, and point the process at it.
 
-    Seeded via core.paths rather than by recomputing REPO_ROOT/"data"/... — that shortcut
-    is the habit paths.py exists to kill, and it broke a fresh clone, where the real
-    config files are gitignored and only the .example templates are present.
+    The config is copied via core.paths rather than by recomputing REPO_ROOT/"data"/... —
+    that shortcut is the habit paths.py exists to kill, and it broke a fresh clone, where
+    the real config files are gitignored and only the .example templates are present.
+
+    The fixtures stay files and go in through the importer, so this exercises the same path
+    a real install crosses over on.
     """
     from core import paths as core_paths
     (tmp / "pending").mkdir()
@@ -60,21 +66,13 @@ def _isolate(tmp: Path) -> None:
          "posted": "2026-07-23", "tier": "pipeline", "ats": "other"},
     ]), encoding="utf-8")
 
-    prefs.PREFS_PATH = tmp / "prefs.json"        # keep the real prefs.json untouched
     drafter_mod._ENABLED = None                  # production path: read from prefs
-    pending_mod.PENDING_DIR = tmp / "pending"
-    triage_mod.APPLIED_PATH = tmp / "applied.json"
-    triage_mod.QUEUE_PATH = tmp / "out" / "queue.json"
-    bank_mod.BANK = tmp / "answer_bank.yaml"
-    bank_mod.BANK_WRITE = tmp / "answer_bank.yaml"
-    svc.COMPANIES_PATH = tmp / "companies.yaml"
-    svc.COMPANIES_WRITE = tmp / "companies.yaml"
-    svc.ANSWER_BANK_PATH = tmp / "answer_bank.yaml"
-    svc.PROFILE_PATH = tmp / "profile.json"
-    svc.PROFILE_WRITE = tmp / "profile.json"
-    svc.QUEUE_PATH = tmp / "out" / "queue.json"
-    svc.DREAM_PATH = tmp / "out" / "dream.json"
-    svc.MANUAL_PATH = tmp / "out" / "manual.json"
+    store = use_temp_store(tmp / "db")
+    importer.import_profile(store, tmp / "profile.json")
+    importer.import_companies(store, tmp / "companies.yaml")
+    importer.import_answers(store, tmp / "answer_bank.yaml")
+    importer.import_applied(store, tmp / "applied.json")
+    importer.import_queues(store, tmp / "out")
 
 
 def _seed_pending() -> None:

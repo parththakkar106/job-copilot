@@ -16,7 +16,7 @@ exactly what the scraper produces — mark it with the same company/title/locati
 scraper showed you (or use --from-queue to copy them straight from the queue).
 """
 from __future__ import annotations
-import argparse, json, re, sys
+import argparse, re, sys
 from datetime import date
 from pathlib import Path
 

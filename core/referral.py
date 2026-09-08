@@ -40,7 +40,7 @@ without the log there is no way to know.
 PII
 ---
 Everything in this module is SOMEBODY ELSE'S personal data — the only such category in the
-project. The store lives at `paths.OUTREACH` under JOBCOPILOT_HOME, never in the checkout,
+project. The contacts live in the store, never in the checkout,
 and every fixture below is invented (`example-` profile slugs, per the reservation
 `scripts/pii_guard.py` documents). A first draft of `core/contacts.py`'s selftest was
 written with real people lifted from live search results; that is precisely the leak this
@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -61,7 +60,7 @@ from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta, timezone
 
 from core import paths
-from server.store import get_store
+from server.store import get_store, set_store, use_temp_store
 from core.contacts import (
     _norm,
     country_from_location,
@@ -323,55 +322,40 @@ def parse_pasted_profile(text: str, source: str = "paste") -> Person | None:
 
 
 # ------------------------------------------------------- local job sources ---
-def _rows(path) -> list[dict]:
-    """A JSON array of dicts from disk; [] for anything missing or malformed.
+def _row_dicts(rows) -> list[dict]:
+    """The dict rows out of a stored list; [] for anything malformed.
 
     Every caller here is answering "what do I know locally about this company", and the
-    honest answer when a file is absent is "nothing" — the tier ladder then falls through to
-    the offer to pull or to add the company, which is a working outcome. Raising instead
+    honest answer when nothing is stored is "nothing" — the tier ladder then falls through
+    to the offer to pull or to add the company, which is a working outcome. Raising instead
     would turn a missed overnight scrape into a dead paste.
     """
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
 
 
 def open_reqs() -> list[dict]:
     """Every open role from the overnight scrape: the auto-apply queue AND the dream pile.
 
-    dream.json is included on purpose, and it is most of the point. `core/scraper.py` writes
+    The dream pile is included on purpose, and it is most of the point. `core/scraper.py` writes
     "the auto-apply loop skips these — apply by hand (referral first)" into the digest and
     then abandons those roles at exactly the moment a referral is the thing that matters. A
     dream row is the single best thing to put in front of an alum.
     """
-    return _rows(paths.QUEUE) + _rows(paths.DREAM)
+    st = get_store()
+    return _row_dicts(st.get_queue("queue")) + _row_dicts(st.get_queue("dream"))
 
 
 def applied_rows() -> list[dict]:
-    return _rows(paths.APPLIED)
+    return _row_dicts(get_store().get_applied())
 
 
 def tracked_companies() -> list[dict]:
-    """companies.yaml entries: {name, ats, slug, tier}. [] if PyYAML or the file is absent.
-
-    Imported lazily because yaml is a scraper dependency, and this module has to import (and
-    selftest) inside the bridge, which does not install it.
-    """
+    """The tracked company rows: {name, ats, slug, tier}. [] when nothing is stored."""
     try:
-        import yaml
-    except ImportError:
+        return _row_dicts(get_store().get_companies())
+    except Exception as e:                       # an unreadable store is "nothing tracked"
+        print(f"[referral] could not read the companies: {e}", file=sys.stderr)
         return []
-    try:
-        doc = yaml.safe_load(paths.COMPANIES.read_text(encoding="utf-8"))
-    except OSError:
-        return []
-    except Exception as e:                       # a malformed yaml is "nothing tracked"
-        print(f"[referral] could not read {paths.COMPANIES.name}: {e}", file=sys.stderr)
-        return []
-    rows = (doc or {}).get("companies") if isinstance(doc, dict) else None
-    return [r for r in (rows or []) if isinstance(r, dict)]
 
 
 def company_matches(employer: str, rows: list[dict], key: str = "company") -> list[dict]:
@@ -1085,22 +1069,16 @@ def selftest():
     cold = Person(name="C", headline="SWE at Northwind")
     assert infer_tie(cold, school="Kestrel Institute", employer="Ardent Capital") == "cold"; checks += 1
 
-    # --- the four tiers, against a temp HOME so no real store is touched --------
-    orig = (paths.OUTREACH, paths.QUEUE, paths.DREAM, paths.APPLIED, paths.COMPANIES,
-            paths.PROFILE)
+    # --- the four tiers, against a temp store so no real data is touched --------
+    orig_store = get_store()
     with tempfile.TemporaryDirectory() as tmp:
         import pathlib
         d = pathlib.Path(tmp)
         try:
-            paths.OUTREACH = d / "outreach.json"
-            paths.QUEUE = d / "queue.json"
-            paths.DREAM = d / "dream.json"
-            paths.APPLIED = d / "applied.json"
-            paths.COMPANIES = d / "companies.yaml"
-            paths.PROFILE = d / "profile.json"
-            paths.PROFILE.write_text(json.dumps({
+            st = use_temp_store(d)
+            st.set_profile({
                 "resume_tracks": [{"tag": "quant"}, {"tag": "ds"}, {"tag": "tech"}],
-                "default_resume_tag": "ds"}), encoding="utf-8")
+                "default_resume_tag": "ds"})
             # field_order puts the default tag first and keeps the rest in file order.
             assert field_order() == ["ds", "quant", "tech"], field_order(); checks += 1
             # resume_for: the req's own field decides the PDF, not the contact.
@@ -1109,16 +1087,15 @@ def selftest():
             # core/profile.py:pick_resume does, rather than naming a track nobody has.
             assert resume_for("")["tag"] == "ds" and resume_for("nope")["tag"] == "ds"; checks += 1
 
-            # Every file absent: a paste still resolves, as tier 4, rather than raising.
+            # Nothing stored at all: a paste still resolves, as tier 4, rather than raising.
             rec = resolve_paste(PAGE_PASTE, notes="met at a meetup", store=False)
             assert rec and rec["tier"] == TIER_UNKNOWN, rec; checks += 1
             assert rec["notes"] == "met at a meetup"; checks += 1
             assert rec["reqs"] == [] and rec["applied"] == []; checks += 1
 
-            # Tier 3: tracked in companies.yaml, nothing open.
-            paths.COMPANIES.write_text(
-                "companies:\n  - {name: Northwind, ats: greenhouse, slug: northwind, "
-                "tier: pipeline}\n", encoding="utf-8")
+            # Tier 3: a tracked company, nothing open.
+            st.set_companies([{"name": "Northwind", "ats": "greenhouse",
+                               "slug": "northwind", "tier": "pipeline"}])
             rec = resolve_paste(PAGE_PASTE, store=False)
             assert rec["tier"] == TIER_TRACKED, rec["tier"]; checks += 1
             assert rec["ats"] == "greenhouse" and rec["slug"] == "northwind", rec; checks += 1
@@ -1139,29 +1116,27 @@ def selftest():
             assert rec["reqs"][0]["ats_job_id"] == "999"; checks += 1
 
             # Tier 2: applied, nothing open.
-            paths.APPLIED.write_text(json.dumps([
+            st.set_applied([
                 {"dedup_key": "abc", "company": "Northwind", "title": "Data Scientist",
                  "url": "https://job-boards.greenhouse.io/northwind/jobs/4567890",
-                 "applied": "2026-08-01"}]), encoding="utf-8")
+                 "applied": "2026-08-01"}])
             rec = resolve_paste(PAGE_PASTE, today=T, store=False)
             assert rec["tier"] == TIER_APPLIED, rec["tier"]; checks += 1
-            # The req id is recovered from the URL, because applied.json has no ats_job_id.
+            # The req id is recovered from the URL, because an applied row has no ats_job_id.
             assert rec["applied"][0]["ats_job_id"] == "4567890", rec["applied"]; checks += 1
 
             # Tier 1 wins over tier 2 when both are true, and the earlier application is
             # still carried so the draft can acknowledge it rather than pretend otherwise.
-            paths.QUEUE.write_text(json.dumps([
+            st.set_queue("queue", [
                 {"company": "Northwind", "title": "Data Scientist, Payments", "field": "ds",
                  "ats": "greenhouse", "ats_job_id": "111", "dedup_key": "k1",
                  "url": "https://job-boards.greenhouse.io/northwind/jobs/111",
-                 "posted": "2026-08-19T00:00:00Z", "location": "New York, NY"}]),
-                encoding="utf-8")
-            paths.DREAM.write_text(json.dumps([
+                 "posted": "2026-08-19T00:00:00Z", "location": "New York, NY"}])
+            st.set_queue("dream", [
                 {"company": "Northwind", "title": "Quant Researcher", "field": "quant",
                  "ats": "workday", "ats_job_id": "R-222", "dedup_key": "k2",
                  "url": "https://northwind.wd5.myworkdayjobs.com/x/job/NY/Q_R-222",
-                 "posted": "2026-08-19T00:00:00Z", "location": "New York, NY"}]),
-                encoding="utf-8")
+                 "posted": "2026-08-19T00:00:00Z", "location": "New York, NY"}])
             rec = resolve_paste(PAGE_PASTE, today=T, store=False)
             assert rec["tier"] == TIER_QUEUE, rec["tier"]; checks += 1
             assert len(rec["applied"]) == 1, "the past application must survive tier 1"; checks += 1
@@ -1198,8 +1173,7 @@ def selftest():
                                   today=T)
             assert nourl and nourl["id"] == "" and len(load_store()) == 1; checks += 1
         finally:
-            (paths.OUTREACH, paths.QUEUE, paths.DREAM, paths.APPLIED, paths.COMPANIES,
-             paths.PROFILE) = orig
+            set_store(orig_store)
 
     # --- short_id + find_by_short: a button field is 64 BYTES ------------------
     K = "linkedin.com/in/example-dagny-halloran-77"

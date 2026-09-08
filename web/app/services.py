@@ -9,17 +9,13 @@ which are the same modules the live pipeline uses.
 """
 from __future__ import annotations
 
-import json
 import re
 import socket
 import time
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
-
-import yaml
 
 from server.store import get_store, rows_hash
-from server.store.importer import ANSWER_BANK_DOC, COMPANIES_DOC, PROFILE_DOC
+from server.store.importer import COMPANIES_DOC, PROFILE_DOC
 
 from .paths import (
     FLUSH_TRIGGER,

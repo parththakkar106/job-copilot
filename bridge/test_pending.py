@@ -46,9 +46,11 @@ def test_roundtrip():
     assert P.load("nope", base=d) is None
     n += 1
 
-    # written as real utf-8 JSON (Windows defaults to cp1252 and would mangle this)
-    raw = (d / f"{JOB['dedup_key']}.json").read_text(encoding="utf-8")
-    assert json.loads(raw)["company"] == "Ramp"
+    # Non-ASCII survives storage. The file this replaced had to be written as real utf-8,
+    # because Windows defaults to cp1252 and mangled it; the store carries text natively,
+    # and this is the check that nothing on the way in re-encodes it.
+    P.save({**back, "company": "Ramp — Zürich 東京"}, base=d)
+    assert P.load(JOB["dedup_key"], base=d)["company"] == "Ramp — Zürich 東京"
     n += 1
     return n
 
@@ -186,11 +188,15 @@ def test_restore_from_archive():
     return n
 
 
-def test_corrupt_file_is_survivable():
-    """A corrupt record must not take the whole batch down with it."""
+def test_unknown_key_is_survivable():
+    """A key with no record must read as absent, not raise.
+
+    This replaces a corrupt-file check: a half-written JSON file could strand a job, and a
+    row cannot be half-written. What still has to hold is that asking for a record nobody
+    stored leaves the rest of the batch listable.
+    """
     d, n = tmp(), 0
     P.put(JOB, QS, FILLED, base=d)
-    (d / "garbage.json").write_text("{{{ not json", encoding="utf-8")
 
     assert len(P.all_jobs(base=d)) == 1, "the good record still lists"
     n += 1
@@ -433,7 +439,7 @@ def test_serving_order():
 if __name__ == "__main__":
     n = (test_roundtrip() + test_no_clobber() + test_answers_and_completion()
          + test_approve_gate() + test_listing_and_counts() + test_restore_from_archive()
-         + test_corrupt_file_is_survivable() + test_open_warnings()
+         + test_unknown_key_is_survivable() + test_open_warnings()
          + test_readable_label()
          + test_draft_from_form()
          + test_serving_order())
