@@ -2346,6 +2346,13 @@ function submitVerificationText(baseline) {
 // old behaviour, which is to tell Parth and leave the tab open.
 const CODE_ATTR = /\b(code|otp|verification|verify|confirm)\b/i;
 
+// A field whose name contains "code" is usually NOT the verification box. Greenhouse asks
+// for a zip code on the same form, and "Zip Code" matches CODE_ATTR, so the emailed code
+// was typed into the address block. Anything matching this is dropped from the candidate
+// pool before either the name test or the shape fallback runs, because a 5-character zip
+// field also passes the short-maxlength test.
+const NOT_CODE_ATTR = /\b(zip|zipcode|postal|postcode|post ?code|area ?code|country ?code|dial ?code|phone|state|province|county|city|address|promo|coupon|discount|referral|requisition|req ?id)\b/i;
+
 function findVerifyInput() {
   const inputs = [...document.querySelectorAll(
     'input[type="text"], input[type="tel"], input[type="number"], input:not([type])')]
@@ -2353,18 +2360,32 @@ function findVerifyInput() {
   if (!inputs.length) return null;
   const attrs = el => [el.id, el.name, el.placeholder, el.getAttribute("aria-label"),
                        el.getAttribute("autocomplete"), labelFor(el)].filter(Boolean).join(" ");
-  // A code-ish name beats everything: this is the one signal that says "this field, not
+  // Drop the address and phone fields first. Every test below, the name test and the shape
+  // fallback alike, then runs over candidates that cannot be a zip code.
+  const pool = inputs.filter(el => !NOT_CODE_ATTR.test(attrs(el)));
+  if (!pool.length) return null;
+  // The form's own answer, when it gives one. `autocomplete="one-time-code"` is the only
+  // unambiguous signal on the page, so it outranks the heuristics.
+  const declared = pool.find(el => /one-time-code/i.test(el.getAttribute("autocomplete") || ""));
+  if (declared) return declared;
+  // A code-ish name beats the shape tests: this is the signal that says "this field, not
   // the email field two rows up that is also a visible text input".
-  const named = inputs.find(el => CODE_ATTR.test(attrs(el)));
-  if (named) return named;
+  const named = pool.filter(el => CODE_ATTR.test(attrs(el)));
+  if (named.length === 1) return named[0];
+  // Several code-ish names is either one group of single-character boxes, where the first
+  // box is the right answer, or a genuine ambiguity. Guessing between separate fields is
+  // how a live code landed in the zip box, so anything else fails closed.
+  if (named.length > 1) {
+    return named.every(el => el.getAttribute("maxlength") === "1") ? named[0] : null;
+  }
   // A run of single-character boxes IS a code field, whatever it is called — no ordinary
   // application question is four or more inputs of maxlength 1 in a row. Checked before
   // the width heuristic because it is the shape actually seen on a live gate.
-  const singles = inputs.filter(el => el.getAttribute("maxlength") === "1");
+  const singles = pool.filter(el => el.getAttribute("maxlength") === "1");
   if (singles.length >= 4) return singles[0];
   // Otherwise fall back to shape — the gate says "8-character code", and a maxlength that
   // short is not something an ordinary application field carries.
-  const short = inputs.filter(el => {
+  const short = pool.filter(el => {
     const n = parseInt(el.getAttribute("maxlength") || "0", 10);
     return n >= 4 && n <= 10;
   });

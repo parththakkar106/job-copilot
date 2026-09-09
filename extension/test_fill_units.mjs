@@ -901,7 +901,7 @@ const labelOf = (el) => (el && el._label) || "";
     try { return fn(); } finally { delete globalThis.document; }
   };
   const codeAttrAt = src.indexOf("const CODE_ATTR = ");
-  const codeAttrSrc = src.slice(codeAttrAt, src.indexOf("\n", codeAttrAt));
+  const codeAttrSrc = src.slice(codeAttrAt, src.indexOf("function findVerifyInput", codeAttrAt));
   const find = els => withDom(els, () => new Function("labelFor", "document",
     codeAttrSrc + ";" + extract("findVerifyInput") + "; return findVerifyInput();")(
       el => el.__label || "", globalThis.document));
@@ -922,6 +922,23 @@ const labelOf = (el) => (el && el._label) || "";
      "TWO short fields is ambiguous -> null, because a code in the wrong box is worse than asking");
   ok(find([email]) === null, "an ordinary long field is never mistaken for the code box");
   ok(find([]) === null, "no inputs -> null");
+
+  // THE ZIP BUG, reported from a live Greenhouse run: the emailed code was typed into the
+  // address block. "Zip Code" matches CODE_ATTR on the word "code", and a zip field is also
+  // short enough to pass the maxlength fallback, so both heuristics picked it.
+  const zip = mk({ id: "zip", label: "Zip Code", autocomplete: "postal-code", maxlength: 10 });
+  ok(find([email, zip, code]) === code, "the code goes in the code box, not the zip box");
+  ok(find([email, zip]) === null, "a zip field alone is never treated as the code box");
+  ok(find([mk({ label: "Postal Code", maxlength: 8 })]) === null, "postal code is not a code box");
+  ok(find([mk({ label: "Country code", maxlength: 4 })]) === null, "a phone country code is not either");
+
+  // The form's own declaration outranks every heuristic.
+  const declared = mk({ id: "x1", autocomplete: "one-time-code" });
+  ok(find([email, zip, declared]) === declared, "autocomplete=one-time-code wins outright");
+
+  // Two code-ish names is the ambiguity that let the zip field through. Fail closed.
+  ok(find([mk({ id: "code_a", maxlength: 8 }), mk({ id: "code_b", maxlength: 8 })]) === null,
+     "TWO code-named fields -> null rather than a guess");
 
   // A code must never be typed into something the user cannot see or edit.
   ok(find([{ ...mk({ id: "code" }), offsetParent: null }]) === null, "a hidden field is ignored");
@@ -1106,7 +1123,7 @@ const labelOf = (el) => (el && el._label) || "";
     const codeAttrAt = src.indexOf("const CODE_ATTR = ");
     try {
       return new Function("document", "labelFor",
-        src.slice(codeAttrAt, src.indexOf("\n", codeAttrAt)) + ";"
+        src.slice(codeAttrAt, src.indexOf("function findVerifyInput", codeAttrAt)) + ";"
         + extract("findVerifyInput") + ";" + extract("codeBoxGroup") + ";"
         + extract("verifyCodeStillShown") + "; return verifyCodeStillShown;")(
           globalThis.document, () => "")(code);
