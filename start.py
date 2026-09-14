@@ -5,6 +5,8 @@
     python start.py --dev           # same, but Vite on :5173 with frontend hot-reload
     python start.py --no-bridge     # console only (no Telegram / extension control)
     python start.py --inline        # stream all output into THIS terminal instead
+    python start.py --stop          # stop the running services
+    python start.py --status        # show what is running
 
 DEFAULT (prod) mode runs ONE web server: the SPA is built once into web/frontend/dist and
 FastAPI serves both the API and the UI on :8000. No Node process is left running. The
@@ -15,10 +17,15 @@ start costs nothing; touch a source file (or pass --build) and it rebuilds first
 (proxying /api to :8000). Open :5173 in that mode. Slower to start, but edits to the
 frontend appear instantly - use it when working ON the console, not when using it.
 
-On Windows each service gets its OWN console window (titled, and kept open on a crash so
-the error stays readable). This launcher window then just parks - Ctrl+C here (or closing
-it) stops all of them. --inline streams everything into one terminal instead, prefixed by
-service, which is the default off Windows.
+Every start first stops any copy of these services that is already running: the owners
+of their ports, processes with the same command line, and launchers from earlier runs.
+A second bridge cannot bind :8765, so without this step it exits while the old bridge
+keeps serving old code.
+
+On Windows the services run hidden, with no console windows, and this launcher exits
+once they are listening. Their output goes to `<logs>/bridge.log` and
+`<logs>/console.log`, and the previous run's log is kept as `*.prev.log`. --inline streams
+everything into one terminal instead, prefixed by service, and is the default off Windows.
 
 The bridge is OPTIONAL: it needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (from the
 environment or bridge/.env). Without them it is skipped with a note - the console still
@@ -27,16 +34,20 @@ is only ever done by the extension.
 """
 from __future__ import annotations
 
+import json
 import os
-import shutil
+import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_ROOT))
+from core import paths  # noqa: E402
+
+LOGS = paths.LOGS
 WEB = REPO_ROOT / "web"
 FRONTEND = WEB / "frontend"
 DIST = FRONTEND / "dist"
@@ -45,7 +56,8 @@ BRIDGE_ENV = REPO_ROOT / "bridge" / ".env"
 
 IS_WIN = os.name == "nt"
 NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+BREAKAWAY = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
 PY = sys.executable
 
 
@@ -113,21 +125,138 @@ def _services(dev: bool, want_bridge: bool) -> list[dict]:
     api = [PY, "-m", "uvicorn", "web.app.main:app", "--host", "127.0.0.1", "--port", "8000"]
     svc: list[dict] = []
     if dev:
-        svc.append({"tag": "api", "title": "Job Pipeline - API (:8000)", "core": True,
+        svc.append({"tag": "api", "log": "console", "port": 8000, "core": True,
                     "cwd": REPO_ROOT, "args": api + ["--reload"], "shell": None,
                     "url": "http://127.0.0.1:8000", "open": False})
-        svc.append({"tag": "ui", "title": "Job Pipeline - Frontend (:5173)", "core": True,
+        svc.append({"tag": "ui", "log": "frontend", "port": 5173, "core": True,
                     "cwd": FRONTEND, "args": None, "shell": "npm run dev",
                     "url": "http://127.0.0.1:5173", "open": True})
     else:
-        svc.append({"tag": "web", "title": "Job Pipeline - Console (:8000)", "core": True,
+        svc.append({"tag": "web", "log": "console", "port": 8000, "core": True,
                     "cwd": REPO_ROOT, "args": api, "shell": None,
                     "url": "http://127.0.0.1:8000", "open": True})
     if want_bridge and _bridge_creds_present():
-        svc.append({"tag": "brg", "title": "Job Pipeline - Bridge (:8765)", "core": False,
+        svc.append({"tag": "brg", "log": "bridge", "port": 8765, "core": False,
                     "cwd": REPO_ROOT, "args": [PY, str(BRIDGE)], "shell": None,
                     "url": "ws://127.0.0.1:8765", "open": False})
     return svc
+
+
+# ------------------------------------------------------- stop what already runs ---
+
+# Every port start.py can serve on. The stop step clears all of them regardless of mode,
+# so switching between --dev and prod does not leave the other mode's server behind.
+PORTS = (8000, 5173, 8765)
+
+
+def _port_open(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _win_processes() -> tuple[list[dict], dict[int, int]]:
+    """Every process with its command line, and the owner PID of each of PORTS.
+
+    One PowerShell call answers both, so a start pays the ~1s PowerShell startup once."""
+    ports = ",".join(str(p) for p in PORTS)
+    script = (
+        "$p = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine);"
+        f"$l = @(Get-NetTCPConnection -State Listen -LocalPort {ports} -ErrorAction SilentlyContinue |"
+        " Select-Object LocalPort,OwningProcess);"
+        "@{procs=$p; listen=$l} | ConvertTo-Json -Depth 3 -Compress"
+    )
+    out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                         capture_output=True, text=True, creationflags=NO_WINDOW).stdout
+    try:
+        data = json.loads(out or "{}")
+    except json.JSONDecodeError:
+        return [], {}
+    procs = data.get("procs") or []
+    listen = data.get("listen") or []
+    if isinstance(listen, dict):
+        listen = [listen]
+    return procs, {int(c["LocalPort"]): int(c["OwningProcess"]) for c in listen}
+
+
+def _is_ours(proc: dict) -> str | None:
+    """Name the service a process belongs to, or None if it is not one of ours.
+
+    Matching is on this repo's own command lines, so an unrelated python.exe or node.exe is
+    never touched."""
+    cmd = (proc.get("CommandLine") or "").replace("/", "\\").casefold()
+    name = (proc.get("Name") or "").casefold()
+    root = str(REPO_ROOT).casefold()
+    if str(BRIDGE).casefold() in cmd:
+        return "bridge"
+    if "web.app.main:app" in cmd and "--port 8000" in cmd:
+        return "console"
+    if name.startswith("python") and "start.py" in cmd and root in cmd:
+        return "launcher"
+    if name == "node.exe" and root in cmd:
+        return "frontend"
+    # The .cmd wrappers the old window-per-service launcher wrote to %TEMP%\jobpipe-*.
+    if name == "cmd.exe" and "\\jobpipe-" in cmd:
+        return "old window"
+    return None
+
+
+def _running() -> list[tuple[int, str]]:
+    """(pid, what) for every process start.py should treat as a running copy.
+
+    A port owner counts only when it or one of its ancestors is ours. Another project
+    serving on :8000 is reported and left alone, and the start then fails on the busy port."""
+    if not IS_WIN:
+        return []
+    procs, owners = _win_processes()
+    by_pid = {int(p.get("ProcessId") or 0): p for p in procs}
+    me = {os.getpid(), os.getppid()}
+
+    def ours_or_ancestor(pid: int) -> str | None:
+        seen = set()
+        while pid in by_pid and pid not in seen:
+            seen.add(pid)
+            what = _is_ours(by_pid[pid])
+            if what:
+                return what
+            pid = int(by_pid[pid].get("ParentProcessId") or 0)
+        return None
+
+    found: dict[int, str] = {}
+    for port, pid in owners.items():
+        if pid in me:
+            continue
+        if ours_or_ancestor(pid):
+            found[pid] = f"listening on :{port}"
+        else:
+            proc_name = (by_pid.get(pid) or {}).get("Name") or "?"
+            print(f"[start] :{port} is held by pid {pid} ({proc_name}), which is not part of "
+                  "this project. Leaving it running.", file=sys.stderr)
+    for pid, p in by_pid.items():
+        what = _is_ours(p)
+        if what and pid not in me:
+            found.setdefault(pid, what)
+    return sorted(found.items())
+
+
+def _stop_running(quiet: bool = False) -> bool:
+    """Kill every running copy, then wait for the ports to free. True when they are free."""
+    running = _running()
+    for pid, what in running:
+        if not quiet:
+            print(f"[start] stopping pid {pid} ({what})")
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not IS_WIN:
+        return True
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        busy = [p for p in PORTS if _port_open(p)]
+        if not busy:
+            return True
+        time.sleep(0.5)
+    print(f"[start] ports still in use after the stop: {busy}", file=sys.stderr)
+    return False
 
 
 def _banner(svc: list[dict], mode: str, dev: bool, want_bridge: bool) -> None:
@@ -140,8 +269,9 @@ def _banner(svc: list[dict], mode: str, dev: bool, want_bridge: bool) -> None:
               "set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (env or bridge/.env)"
         print(f"  brg  skipped - {why}")
     print(line)
-    if mode == "windows":
-        print(f"  {len(svc)} window(s) opened. Keep THIS window - Ctrl+C here stops them all.")
+    if mode == "hidden":
+        print(f"  Running hidden. Logs: {LOGS}")
+        print("  Stop with: python start.py --stop")
     else:
         print("  Ctrl+C stops everything.")
     print(f"{line}\n")
@@ -161,51 +291,69 @@ def _kill(proc) -> None:
         pass
 
 
-# ------------------------------------------------- separate-console launcher (Win) ---
+# ------------------------------------------------------- hidden launcher (Win) ---
 
-def _write_launch_script(s: dict, scripts: Path) -> Path:
-    """One .cmd per service: set the window title, run it, and pause on exit so a crash's
-    error text stays on screen instead of the window vanishing."""
-    if s["shell"]:
-        command = s["shell"]
-        if s["shell"].startswith("npm"):
-            command = "call " + s["shell"]   # npm is npm.cmd; call returns control to us
-    else:
-        command = subprocess.list2cmdline(s["args"])
-    script = scripts / f"{s['tag']}.cmd"
-    script.write_text(
-        "@echo off\r\n"
-        f"title {s['title']}\r\n"
-        f'cd /d "{s["cwd"]}"\r\n'
-        f"{command}\r\n"
-        "echo.\r\n"
-        f"echo [start] {s['tag']} exited with code %errorlevel%. "
-        "Window kept open so you can read any error - close it when done.\r\n"
-        "pause >nul\r\n",
-        encoding="ascii", errors="replace",
-    )
-    return script
-
-
-def _run_windows(svc: list[dict], dev: bool, want_bridge: bool) -> int:
-    scripts = Path(tempfile.mkdtemp(prefix="jobpipe-"))
-    procs = []
+def _open_log(name: str):
+    """Open `<logs>/<name>.log` for a fresh run, keeping the last run's as `.prev.log`."""
+    LOGS.mkdir(parents=True, exist_ok=True)
+    log, prev = LOGS / f"{name}.log", LOGS / f"{name}.prev.log"
     try:
-        for s in svc:
-            script = _write_launch_script(s, scripts)
-            procs.append(subprocess.Popen(["cmd", "/c", str(script)],
-                                          creationflags=NEW_CONSOLE))
-        _banner(svc, "windows", dev, want_bridge)
-        try:
-            while True:
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            pass
+        if log.exists():
+            os.replace(log, prev)
+    except OSError:
+        pass          # a log another process still holds open is appended to instead
+    return open(log, "a", encoding="utf-8", errors="replace")
+
+
+def _spawn_hidden(s: dict) -> subprocess.Popen:
+    """Start one service with no window, detached from this launcher.
+
+    CREATE_NO_WINDOW gives the service a hidden console of its own, which child console
+    programs (npm, node) inherit instead of opening visible windows. Breakaway lets the
+    service outlive a Task Scheduler job that ends when run_daily.ps1 exits. Not every
+    job allows breakaway, so a refused breakaway retries without it."""
+    log = _open_log(s["log"])
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}    # otherwise the log stays empty
+    kwargs = dict(cwd=str(s["cwd"]), shell=bool(s["shell"]), env=env,
+                  stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        return subprocess.Popen(s["shell"] or s["args"],
+                                creationflags=NO_WINDOW | NEW_GROUP | BREAKAWAY, **kwargs)
+    except OSError:
+        return subprocess.Popen(s["shell"] or s["args"],
+                                creationflags=NO_WINDOW | NEW_GROUP, **kwargs)
     finally:
-        for p in procs:
-            _kill(p)
-        shutil.rmtree(scripts, ignore_errors=True)
-        print("\n[start] stopped all windows.")
+        log.close()       # the child holds its own handle
+
+
+def _run_hidden(svc: list[dict], dev: bool, want_bridge: bool) -> int:
+    procs = [(s, _spawn_hidden(s)) for s in svc]
+    deadline = time.time() + 45
+    pending = {s["tag"] for s in svc}
+    while pending and time.time() < deadline:
+        for s, p in procs:
+            if s["tag"] not in pending:
+                continue
+            if _port_open(s["port"]):
+                pending.discard(s["tag"])
+            elif p.poll() is not None:
+                print(f"[start] {s['tag']} exited ({p.returncode}) during startup. "
+                      f"See {LOGS / (s['log'] + '.log')}", file=sys.stderr)
+                pending.discard(s["tag"])
+        time.sleep(0.5)
+    down = [s for s, _ in procs if not _port_open(s["port"])]
+    _banner(svc, "hidden", dev, want_bridge)
+    for s in down:
+        print(f"[start] {s['tag']} is NOT listening on :{s['port']}. "
+              f"See {LOGS / (s['log'] + '.log')}", file=sys.stderr)
+    return 1 if any(s["core"] or s["tag"] == "brg" for s in down) else 0
+
+
+def _status() -> int:
+    for port, name in ((8765, "bridge"), (8000, "console"), (5173, "frontend (dev)")):
+        print(f"  {name:<15} :{port}  {'up' if _port_open(port) else 'down'}")
+    for pid, what in _running():
+        print(f"  pid {pid:<8} {what}")
     return 0
 
 
@@ -254,12 +402,17 @@ def _run_inline(svc: list[dict], dev: bool, want_bridge: bool) -> int:
 def main() -> int:
     argv = sys.argv[1:]
     for a in argv:
-        if a not in ("--dev", "--no-bridge", "--inline", "--build", "-h", "--help"):
+        if a not in ("--dev", "--no-bridge", "--inline", "--build", "--stop", "--status",
+                     "-h", "--help"):
             print(f"unknown option {a}\n\n{__doc__}", file=sys.stderr)
             return 2
     if "-h" in argv or "--help" in argv:
         print(__doc__)
         return 0
+    if "--status" in argv:
+        return _status()
+    if "--stop" in argv:
+        return 0 if _stop_running() else 1
 
     dev = "--dev" in argv
     want_bridge = "--no-bridge" not in argv
@@ -270,9 +423,13 @@ def main() -> int:
     if not _ensure_frontend(need_build=not dev, force_build="--build" in argv):
         return 1
 
+    # Stop after the build, so the old console keeps serving while npm runs.
+    if not _stop_running():
+        return 1
+
     svc = _services(dev, want_bridge)
     return _run_inline(svc, dev, want_bridge) if inline \
-        else _run_windows(svc, dev, want_bridge)
+        else _run_hidden(svc, dev, want_bridge)
 
 
 if __name__ == "__main__":

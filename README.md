@@ -133,10 +133,13 @@ python start.py --dev        # frontend hot-reload via Vite on :5173 (open that 
 python start.py --no-bridge  # console only, no Telegram / extension control
 python start.py --inline     # stream all output into this terminal (default off Windows)
 python start.py --build      # force a UI rebuild even if it looks fresh
+python start.py --stop       # stop the running services
+python start.py --status     # show what is running
 ```
 
-On Windows each service gets its own titled console window; keep the launcher window and
-Ctrl+C there to stop everything. The bridge is skipped with a note unless
+Every start stops the copy that is already running first, so running `start.py` again is
+a restart. On Windows the services run hidden and the launcher exits. Their output goes
+to `logs/bridge.log` and `logs/console.log`. The bridge is skipped with a note unless
 `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` are set (environment or `bridge/.env`).
 
 First run needs deps:

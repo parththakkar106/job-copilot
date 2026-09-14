@@ -5,7 +5,7 @@
 #
 #   1. Refresh out/queue.json from origin (today's scrape) - non-destructive, guarded.
 #   2. Sync THIS repo to origin/main, so the bridge runs today's code.
-#   3. Ensure the Telegram bridge is running, and restart it when the code moved.
+#   3. Restart the Telegram bridge and the web console through start.py.
 #   4. Ensure Chrome is running on Parth's real profile, with the CDP info-bar suppressed.
 #   5. Drop the sentinel file the bridge watches; its trigger_watcher fires runQueue once
 #      the extension has connected.
@@ -19,7 +19,7 @@
 #     the WS-free handoff - it works whether the bridge is cold-started here or was
 #     already running from earlier in the day.
 #   * Restarting the bridge is safe at any point. The review batch lives on disk in
-#     bridge/pending/*.json, so a restart drops no in-flight work. See pending.py.
+#     pending/*.json, so a restart drops no in-flight work. See pending.py.
 #   * --silent-debugger-extension-api only takes effect on a FRESH Chrome start. If Chrome
 #     is already open the flag is ignored and Greenhouse fills show a harmless "extension
 #     is debugging this browser" info bar - the run still works, so we never force-close
@@ -182,85 +182,24 @@ if ($codeChanged) {
     Log "Code already current at $(Short $codeAfter)."
 }
 
-# --- 3. Ensure the bridge is running, on that commit -------------------------------------
-function Test-BridgeUp {
-    try {
-        $c = New-Object System.Net.Sockets.TcpClient
-        $c.Connect('127.0.0.1', 8765); $c.Close(); return $true
-    } catch { return $false }
-}
+# --- 3. Restart the bridge and the console on that commit -------------------------------
+# start.py stops any running copy first, then starts both hidden and waits for their
+# ports. Restarting every morning means the services always run the checkout's code, with
+# no staleness check to get wrong. It is safe mid-review, because the batch lives on disk.
+#
+# Prefer the repo's .venv: that is the interpreter start.py is normally run with, and the
+# PATH python may lack the console's dependencies.
+$py = Join-Path $repo '.venv\Scripts\python.exe'
+if (-not (Test-Path $py)) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }
+if (-not $py) { Log "ERROR: python not found - cannot start the bridge."; exit 1 }
 
-# The port's owner, which is the bridge. Reading the PID from the listener rather than
-# matching on a process name avoids killing an unrelated python.exe.
-function Get-BridgePid {
-    $conn = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($conn) { return $conn.OwningProcess }
-    return $null
-}
+Log "Restarting the bridge and console on $(Short $codeAfter)..."
+& $py (Join-Path $repo 'start.py') 2>&1 | ForEach-Object { Log "$_" }
+if ($LASTEXITCODE -ne 0) { Log "ERROR: start.py failed (exit $LASTEXITCODE)."; exit 1 }
 
-# True when the running bridge started before HEAD was committed, so its loaded code is
-# older than the checkout. This catches the case a same-run comparison cannot see: the
-# sync landed on an earlier day and the bridge was never restarted for it.
-function Test-BridgeStale($sha) {
-    $bridgePid = Get-BridgePid
-    if (-not $bridgePid) { return $false }
-    $proc = Get-Process -Id $bridgePid -ErrorAction SilentlyContinue
-    if (-not $proc) { return $false }
-    $epoch = (git -C $repo show -s --format=%ct $sha 2>$null)
-    if (-not $epoch) { return $false }
-    $committed = [DateTimeOffset]::FromUnixTimeSeconds([int64]$epoch).LocalDateTime
-    return ($proc.StartTime -lt $committed)
-}
-
-# Hidden, detached, working dir = repo root. It inherits the User env vars
-# (TELEGRAM_BOT_TOKEN / CHAT_ID) and also loads bridge/.env on its own.
-function Start-Bridge {
-    $py = (Get-Command python -ErrorAction SilentlyContinue).Source
-    if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
-    if (-not $py) { Log "ERROR: python not found on PATH - cannot start the bridge."; return $false }
-    Start-Process -FilePath $py -ArgumentList 'bridge\bridge.py' `
-        -WorkingDirectory $repo -WindowStyle Hidden | Out-Null
-
-    $deadline = (Get-Date).AddSeconds(30)
-    while (-not (Test-BridgeUp) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-    return (Test-BridgeUp)
-}
-
-# Give a fresh bridge time to clear a stale sentinel from a prior crash BEFORE we drop
+# Give the fresh bridge time to clear a stale sentinel from a prior crash BEFORE we drop
 # ours, or the boot-clear eats the fresh one and the run never fires.
-$SETTLE_SECONDS = 5
-
-if (-not (Test-BridgeUp)) {
-    Log "Starting the bridge..."
-    if (-not (Start-Bridge)) { Log "ERROR: bridge did not come up within 30s."; exit 1 }
-    Log "Bridge is up on $(Short $codeAfter)."
-    Start-Sleep -Seconds $SETTLE_SECONDS
-} elseif ($codeChanged -or (Test-BridgeStale $codeAfter)) {
-    if ($codeChanged) {
-        Log "Restarting the bridge - the code moved to $(Short $codeAfter)."
-    } else {
-        Log "Restarting the bridge - it started before HEAD $(Short $codeAfter) was committed."
-    }
-    # Stop before starting. Two bridges cannot share port 8765: the new one dies on bind
-    # while the stale one keeps serving Telegram, which reads as a successful restart and
-    # is not one.
-    $bridgePid = Get-BridgePid
-    if ($bridgePid) {
-        Stop-Process -Id $bridgePid -Force -ErrorAction SilentlyContinue
-        $gone = (Get-Date).AddSeconds(15)
-        while ((Test-BridgeUp) -and (Get-Date) -lt $gone) { Start-Sleep -Milliseconds 500 }
-    }
-    if (Test-BridgeUp) {
-        Log "ERROR: port 8765 is still held 15s after the stop - not starting a second bridge."
-        exit 1
-    }
-    if (-not (Start-Bridge)) { Log "ERROR: bridge did not come back up within 30s."; exit 1 }
-    Log "Bridge restarted on $(Short $codeAfter)."
-    Start-Sleep -Seconds $SETTLE_SECONDS
-} else {
-    Log "Bridge already up on 8765, running $(Short $codeAfter)."
-}
+Start-Sleep -Seconds 5
 
 # --- 4. Ensure Chrome is running on the real profile ------------------------------------
 $chrome = @(
