@@ -902,11 +902,16 @@ def send_summary(rec: dict) -> None:
 
 # --- idle debounce: Parth goes quiet -> send out what he already approved ------------
 #
-# NOT a deadline. The 5 minutes only ever releases jobs he has explicitly ✅'d; a
+# NOT a deadline. The 10 minutes only ever releases jobs he has explicitly ✅'d; a
 # half-answered form isn't approved, so it can't be caught by this. Nothing he hasn't
 # seen is ever submitted.
+#
+# Every approval and edit counts as activity, including the ones made in the web console
+# (see activity_watcher). Approving on the dashboard therefore restarts the countdown
+# instead of releasing the pile: a review session sends nothing until he taps "Send
+# approved" or walks away for the full window.
 
-IDLE_FLUSH_SECS = int(os.environ.get("APPLY_IDLE_FLUSH_SECS", "300") or 300)
+IDLE_FLUSH_SECS = int(os.environ.get("APPLY_IDLE_FLUSH_SECS", "600") or 600)
 IDLE_POLL_SECS = 15    # how often to check; tests shrink this
 # How many times phase 3 may try to submit one approved job before giving up and
 # HOLDing it. Without a cap, a job that never confirms (swallowed submit, verification
@@ -931,6 +936,9 @@ TRIGGER_FILE = paths_mod.RUN_TRIGGER
 # opening a WebSocket (which would supersede Parth's live extension session). Same
 # file-handoff pattern as .run_trigger; watched by flush_trigger_watcher below.
 FLUSH_TRIGGER_FILE = paths_mod.FLUSH_TRIGGER
+# The web console drops this on every approval and answer edit. It carries no instruction:
+# it only says Parth is at the keyboard, so the idle-watcher restarts its countdown.
+ACTIVITY_PING_FILE = paths_mod.ACTIVITY_PING
 TRIGGER_POLL_SECS = 3            # how often to look for the sentinel; tests shrink this
 RUN_CLIENT_WAIT_SECS = 120       # how long to wait for the extension to connect before giving up
 _LAST_RUN_KICK = 0.0             # cooldown so a double-drop / fat-fingered /run can't double-fire
@@ -1061,6 +1069,28 @@ async def flush_trigger_watcher() -> None:
                 await fire_flush("web")
         except Exception as e:
             print(f"[flush] trigger watcher error: {redact(e)}", file=sys.stderr)
+
+
+async def activity_watcher() -> None:
+    """Watch for the web console's activity ping and restart the idle countdown.
+
+    The console runs in its own process, so its edits are invisible to LAST_ACTIVITY.
+    Without this, a dashboard approval made after a quiet spell was flushed within one
+    idle poll, which read as "approving submits immediately". Polling every
+    TRIGGER_POLL_SECS keeps the reset well inside the idle-watcher's own poll interval."""
+    try:
+        ACTIVITY_PING_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+    while True:
+        await asyncio.sleep(TRIGGER_POLL_SECS)
+        try:
+            if ACTIVITY_PING_FILE.exists():
+                ACTIVITY_PING_FILE.unlink(missing_ok=True)
+                touch_activity()
+                dlog("[idle] web activity - idle countdown restarted")
+        except Exception as e:
+            print(f"[idle] activity watcher error: {redact(e)}", file=sys.stderr)
 
 
 async def idle_watcher() -> None:
@@ -2865,6 +2895,7 @@ async def main():
         idle = asyncio.create_task(idle_watcher())
         trigger = asyncio.create_task(trigger_watcher())
         flush_trigger = asyncio.create_task(flush_trigger_watcher())
+        activity = asyncio.create_task(activity_watcher())
         outreach = asyncio.create_task(outreach_watcher())
         try:
             await telegram_poller(offset)
@@ -2872,6 +2903,7 @@ async def main():
             idle.cancel()
             trigger.cancel()
             flush_trigger.cancel()
+            activity.cancel()
             outreach.cancel()
 
 

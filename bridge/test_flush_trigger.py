@@ -83,6 +83,30 @@ async def scenario():
                 pass
             B.TRIGGER_POLL_SECS = orig_poll
 
+    # 5. activity_watcher: a web-console ping restarts the idle countdown.
+    with tempfile.TemporaryDirectory() as d:
+        B.ACTIVITY_PING_FILE = pathlib.Path(d) / ".activity"
+        B.ACTIVITY_PING_FILE.write_text("stale")  # left from a prior crash
+        B.LAST_ACTIVITY = 0.0
+        orig_poll = B.TRIGGER_POLL_SECS
+        B.TRIGGER_POLL_SECS = 0.01
+        task = asyncio.create_task(B.activity_watcher())
+        try:
+            await asyncio.sleep(0.05)
+            assert not B.ACTIVITY_PING_FILE.exists(), "stale ping should be cleared at startup"; checks += 1
+            assert B.LAST_ACTIVITY == 0.0, "a stale ping must not count as activity"; checks += 1
+            B.ACTIVITY_PING_FILE.write_text("edit")
+            await asyncio.sleep(0.1)
+            assert not B.ACTIVITY_PING_FILE.exists(), "ping should be consumed"; checks += 1
+            assert B.LAST_ACTIVITY > 0.0, "a fresh ping must restart the idle countdown"; checks += 1
+        finally:
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+            B.TRIGGER_POLL_SECS = orig_poll
+
     print(f"flush_trigger: {checks}/{checks} checks passed")
 
 

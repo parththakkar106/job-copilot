@@ -19,6 +19,7 @@ from pathlib import Path
 import yaml
 
 from .paths import (
+    ACTIVITY_PING,
     ANSWER_BANK_PATH,
     COMPANIES_PATH,
     COMPANIES_WRITE,
@@ -404,6 +405,22 @@ def drop_flush_trigger() -> None:
     """Ask the bridge to flush (submit) the approved pile."""
     FLUSH_TRIGGER.parent.mkdir(parents=True, exist_ok=True)
     FLUSH_TRIGGER.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+
+
+def ping_activity() -> None:
+    """Tell the bridge Parth is still working, so its idle-watcher restarts the countdown.
+
+    The console is a separate process, so the bridge cannot see these edits. Without this
+    ping, an approval made after a quiet spell was flushed on the next idle poll, seconds
+    later. Call it from every route that represents Parth acting on a job: approving,
+    answering, changing a resume. Never from a read, and never from the Send-approved
+    path, which is meant to release the pile now."""
+    try:
+        ACTIVITY_PING.parent.mkdir(parents=True, exist_ok=True)
+        ACTIVITY_PING.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+    except OSError:
+        # A missed ping only costs an early flush, so never fail a real edit over it.
+        pass
 
 
 def bridge_alive(timeout: float = 0.4) -> bool:

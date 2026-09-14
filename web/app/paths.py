@@ -51,6 +51,9 @@ EXTENSION_BUILD = REPO_ROOT / "extension" / "build.py"
 # WITHOUT opening a WebSocket (which would supersede Parth's live session).
 RUN_TRIGGER = BRIDGE_DIR / ".run_trigger"       # existing: fires a P1 collection run
 FLUSH_TRIGGER = BRIDGE_DIR / ".flush_trigger"    # new: fires a P3 flush (send approved)
+# Not a command: it only tells the bridge Parth is still working, so its idle-watcher
+# restarts the countdown instead of flushing the pile he just approved.
+ACTIVITY_PING = BRIDGE_DIR / ".activity"
 
 # Re-exported so routers import them from one place.
 import pending as pending_mod        # noqa: E402  (bridge/pending.py)
@@ -62,6 +65,6 @@ __all__ = [
     "REPO_ROOT", "BRIDGE_DIR", "PROFILE_PATH", "ANSWER_BANK_PATH", "COMPANIES_PATH",
     "PROFILE_WRITE", "ANSWER_BANK_WRITE", "COMPANIES_WRITE",
     "QUEUE_PATH", "DREAM_PATH", "APPLIED_PATH", "SCRAPER_MODULE", "EXTENSION_BUILD",
-    "RUN_TRIGGER", "FLUSH_TRIGGER",
+    "RUN_TRIGGER", "FLUSH_TRIGGER", "ACTIVITY_PING",
     "pending_mod", "triage_mod", "bank_mod", "drafter_mod",
 ]

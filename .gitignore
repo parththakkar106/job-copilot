@@ -33,6 +33,9 @@ bridge/.run_trigger
 # web console: transient sentinel the web app drops to request a flush (send approved)
 bridge/.flush_trigger
 
+# web console: transient sentinel that says Parth is still editing (resets the idle clock)
+bridge/.activity
+
 # runtime toggles Parth flips by hand (e.g. Claude-drafting on/off) — local, per-machine
 bridge/prefs.json
 bridge/.prefs.*.tmp

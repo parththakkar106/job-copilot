@@ -75,6 +75,10 @@ def _isolate(tmp: Path) -> None:
     svc.QUEUE_PATH = tmp / "out" / "queue.json"
     svc.DREAM_PATH = tmp / "out" / "dream.json"
     svc.MANUAL_PATH = tmp / "out" / "manual.json"
+    # Sentinel files too: a test must never poke the real bridge into sending anything.
+    svc.FLUSH_TRIGGER = tmp / ".flush_trigger"
+    svc.RUN_TRIGGER = tmp / ".run_trigger"
+    svc.ACTIVITY_PING = tmp / ".activity"
 
 
 def _seed_pending() -> None:
@@ -176,6 +180,15 @@ def main() -> None:
 
         # 4. Approve -> filled; a still-open job would be refused (guarded).
         assert c.post("/api/jobs/pk1/state", json={"target": "filled"}).json()["ok"]; checks += 1
+        # Approving adds to the pile; it never sends. The pile leaves on "Send approved"
+        # or after the bridge's idle window, so no flush sentinel may appear here.
+        assert not svc.FLUSH_TRIGGER.exists(), "approving must not request a flush"; checks += 1
+        # And it counts as activity, which restarts that idle window. Without this ping the
+        # bridge saw a quiet console and flushed the pile on its next poll.
+        assert svc.ACTIVITY_PING.exists(), "approving must reset the idle countdown"; checks += 1
+        svc.ACTIVITY_PING.unlink()
+        c.put("/api/jobs/pk1/answers", json={"answers": [{"id": "q1", "value": "because"}]})
+        assert svc.ACTIVITY_PING.exists(), "answering must reset the idle countdown"; checks += 1
 
         # 5. Resume override.
         rr = c.put("/api/jobs/pk1/resume", json={"tag": "tech"}).json()

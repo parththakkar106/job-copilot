@@ -80,6 +80,7 @@ def update_answers(dedup_key: str, body: AnswersUpdate):
     rec = pending_mod.load(dedup_key)
     if rec is None:
         raise HTTPException(404, "record vanished")
+    svc.ping_activity()
     # Recomputed here too, not just on GET: answering a required question is exactly the
     # event that should retire its warning, and the drawer re-renders from this response.
     return _for_display(rec)
@@ -109,14 +110,22 @@ def update_resume(dedup_key: str, body: ResumeOverride):
     rec = pending_mod.set_resume_override(dedup_key, body.tag, display)
     if rec is None:
         raise HTTPException(404, "no pending record for that job")
+    svc.ping_activity()
     return rec
 
 
 @router.post("/jobs/{dedup_key}/state")
 def change_state(dedup_key: str, body: StateChange):
+    """Move one job between piles, including approving it.
+
+    Approving does NOT send anything. It only adds the job to the approved pile, which
+    leaves on "Send approved" or after the bridge's idle window with no further edits.
+    The activity ping is what keeps that window honest: without it, an approval made
+    after a quiet spell was flushed on the bridge's next idle poll."""
     res = svc.apply_transition(dedup_key, body.target, body.reason, body.meta)
     if not res.get("ok"):
         raise HTTPException(400, res.get("error", "transition failed"))
+    svc.ping_activity()
     return res
 
 

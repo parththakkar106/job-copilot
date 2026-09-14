@@ -27,10 +27,17 @@ a **sentinel file** the bridge already watches:
 
 - `bridge/.run_trigger`  → P1 collection (fill, never submit) — the existing daily-run path.
 - `bridge/.flush_trigger` → P3 flush (submit the approved pile) — added for this console.
+- `bridge/.activity` → "Parth is still working", which restarts the bridge's idle clock.
 
 Submitting is still done **only** by the extension on your machine with your live session.
 The console's "Submit this one" / "Send approved" buttons approve the job(s) and request a
 flush; the extension does the actual fill + submit through its hardened loop.
+
+Approving a job on the board or in Focus does **not** request a flush. It only adds the
+job to the approved pile, which leaves when you press "Send approved" or after the bridge
+sees 10 minutes with no edits (`APPLY_IDLE_FLUSH_SECS`). Every approval and answer edit
+drops `bridge/.activity`, so a review session keeps restarting that window: without the
+ping the bridge saw a silent console and flushed the job seconds after you approved it.
 
 ```
   React SPA ──HTTP──> FastAPI (web/app) ──imports──> pending.py / triage.py / core.bank

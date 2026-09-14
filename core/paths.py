@@ -172,3 +172,7 @@ AUDIT_INDEX = LOGS / "audit_dumps.jsonl"
 # instruction to go and fill in a form.
 RUN_TRIGGER = REPO_ROOT / "bridge" / ".run_trigger"
 FLUSH_TRIGGER = REPO_ROOT / "bridge" / ".flush_trigger"
+# Dropped by the web console on every edit or approval. The bridge treats it as
+# "Parth is still working" and restarts the idle countdown, so approving a job on the
+# dashboard no longer lets the idle-watcher send the pile seconds later.
+ACTIVITY_PING = REPO_ROOT / "bridge" / ".activity"
