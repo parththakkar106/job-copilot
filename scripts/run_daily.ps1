@@ -52,6 +52,31 @@ try {
     Push-Location $dataHome
     git fetch --quiet origin main 2>&1 | Out-Null
 
+    # Every step below assumes the checkout is on main: the fast-forward, the ledger commit,
+    # and `git push origin main`. From 2026-08-26 to 2026-09-14 this clone sat on a merged
+    # feature branch. The commits landed on that branch, the push sent the stale local
+    # main, and GitHub rejected it every day.
+    #
+    # If main is behind the branch, move main up to the branch first. The checkout is then
+    # between two names for the same commit, so it touches no files, and uncommitted edits
+    # to applied.json cannot block it. Otherwise a plain checkout carries uncommitted
+    # changes across and refuses only when they would be overwritten, so it never loses work.
+    $dataBranch = (git rev-parse --abbrev-ref HEAD 2>$null)
+    if ($dataBranch -ne 'main') {
+        git merge-base --is-ancestor main HEAD 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            git branch --force main HEAD 2>&1 | Out-Null
+        }
+        git checkout --quiet main 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Log "Switched $dataHome from '$dataBranch' back to main."
+        } else {
+            Log "WARNING: $dataHome is on '$dataBranch' and could not switch to main."
+            Log "         applied.json will not reach origin until you run, in ${dataHome}:"
+            Log "    git checkout main"
+        }
+    }
+
     # Fast-forward rather than cherry-picking one file. The Action force-commits out/* every
     # morning, so this clone is permanently behind origin - which meant the checkout below
     # left out/queue.json staged indefinitely, and a staged file blocks the rebase the push
