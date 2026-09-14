@@ -101,6 +101,34 @@ def _apply_url(rec: dict) -> str:
     return rec.get("url", "")
 
 
+# Dashboard order, lowest rank first. The awaiting tiers match the bridge's
+# pending.serving_order, so the console and Telegram agree. Telegram leaves approved jobs
+# out of that order, because the flush submits them and a phone cannot act on them.
+RANK_READY_TO_SUBMIT = 0
+RANK_IN_PROGRESS = 1
+RANK_READY_TO_APPROVE = 2
+RANK_UNTOUCHED = 3        # also discovered, dream, and manual roles
+RANK_HELD = 4
+RANK_SKIPPED = 5
+RANK_DONE = 6             # submitted and blocked
+_AWAITING_RANK = {
+    pending_mod.TIER_IN_PROGRESS: RANK_IN_PROGRESS,
+    pending_mod.TIER_READY: RANK_READY_TO_APPROVE,
+    pending_mod.TIER_FRESH: RANK_UNTOUCHED,
+}
+
+
+def sort_rows(rows: list[dict]) -> None:
+    """Sort dashboard rows in place: by rank, then newest date, then fewest questions.
+
+    Only pending rows know their question count. A discovered, dream, or manual role has
+    not been opened yet, so on the same date it sorts after roles with a known count."""
+    rows.sort(key=lambda r: r["unanswered"] if "rank" in r else float("inf"))
+    rows.sort(key=lambda r: r.get("date") or "", reverse=True)
+    rows.sort(key=lambda r: r.get("rank", RANK_DONE if r.get("bucket") in ("submitted", "blocked")
+                                  else RANK_UNTOUCHED))
+
+
 def _pending_row(rec: dict, tiers: dict[str, str]) -> dict:
     st = rec.get("status")
     n = len(pending_mod.unanswered(rec))
@@ -113,6 +141,12 @@ def _pending_row(rec: dict, tiers: dict[str, str]) -> dict:
     else:  # awaiting
         bucket = "in_queue"
         tag = f"{n} question{'' if n == 1 else 's'}" if n else "ready to approve"
+    if st == pending_mod.APPROVED:
+        rank = RANK_READY_TO_SUBMIT
+    elif st == pending_mod.AWAITING:
+        rank = _AWAITING_RANK[pending_mod.next_tier(rec)]
+    else:
+        rank = RANK_HELD if st == pending_mod.HELD else RANK_SKIPPED
     return {
         "dedup_key": rec.get("dedup_key"),
         "company": rec.get("company", ""),
@@ -124,9 +158,10 @@ def _pending_row(rec: dict, tiers: dict[str, str]) -> dict:
         "tag": tag,
         "status": st,
         "tier": tiers.get((rec.get("company") or "").casefold(), "pipeline"),
-        "date": (rec.get("created") or "")[:10],
+        "date": pending_mod.job_date(rec),
         "unanswered": n,
         "resume": rec.get("resume", ""),
+        "rank": rank,
     }
 
 
@@ -208,7 +243,7 @@ def _manual_rows(seen_keys: set[str], tiers: dict) -> list[dict]:
 
 
 def dashboard_rows(since_days: int | None = 60) -> list[dict]:
-    """Every pile merged into dated, bucketed rows, newest first. Pending shown in full;
+    """Every pile merged into dated, bucketed rows, in `sort_rows` order. Pending shown in full;
     applied/blocked (only grows) is windowed to since_days (None = all). Scraped-but-not-yet
     collected roles ride in as 'discovered' and discovered dream roles as a manual-only
     'dream' pile, both minus any key another pile already surfaced."""
@@ -238,7 +273,7 @@ def dashboard_rows(since_days: int | None = 60) -> list[dict]:
     rows.extend(_queue_rows(seen))
     rows.extend(_dream_rows(seen))
     rows.extend(_manual_rows(seen, tiers))
-    rows.sort(key=lambda r: r.get("date") or "", reverse=True)
+    sort_rows(rows)
     return rows
 
 

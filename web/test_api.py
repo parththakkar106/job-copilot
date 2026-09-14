@@ -272,6 +272,31 @@ def main() -> None:
             assert rc.status_code == 409, rc.text
         checks += 1
 
+        # 10. Dashboard order: rank, then newest date, then fewest questions. An unopened
+        # discovered role sorts after a pending one with the same date.
+        def row(key, date, rank=None, unanswered=0, bucket="in_queue"):
+            r = {"dedup_key": key, "date": date, "unanswered": unanswered, "bucket": bucket}
+            if rank is not None:
+                r["rank"] = rank
+            return r
+        rows = [
+            row("done", "2026-09-12", bucket="submitted"),
+            row("skip", "2026-09-12", svc.RANK_SKIPPED),
+            row("held", "2026-09-12", svc.RANK_HELD),
+            row("disc", "2026-09-10", bucket="discovered"),
+            row("old3", "2026-09-01", svc.RANK_UNTOUCHED, 1),
+            row("new5", "2026-09-10", svc.RANK_UNTOUCHED, 5),
+            row("new2", "2026-09-10", svc.RANK_UNTOUCHED, 2),
+            row("appr", "2026-08-01", svc.RANK_READY_TO_APPROVE),
+            row("half", "2026-08-02", svc.RANK_IN_PROGRESS, 1),
+            row("send", "2026-07-01", svc.RANK_READY_TO_SUBMIT, bucket="filled"),
+        ]
+        svc.sort_rows(rows)
+        assert [r["dedup_key"] for r in rows] == [
+            "send", "half", "appr", "new2", "new5", "disc", "old3", "held", "skip", "done",
+        ], [r["dedup_key"] for r in rows]
+        checks += 1
+
     print(f"web_api: {checks}/{checks} checks passed")
 
 

@@ -782,9 +782,9 @@ def job_meta_lines(rec: dict) -> list[str]:
 
 
 def _found_on(rec: dict) -> str:
-    """When phase 1 collected this role, as "24 Aug". The batch runs weeks deep, so
-    "found today" and "found three weeks ago" are very different things to be answering."""
-    raw = str(rec.get("created") or "")[:10]
+    """The date the batch is ordered by, as "24 Aug": the posting date, else the collect
+    date. The batch runs weeks deep, so the age of a role matters when answering it."""
+    raw = pending_mod.job_date(rec)
     try:
         return datetime.strptime(raw, "%Y-%m-%d").strftime("%d %b").lstrip("0")
     except ValueError:
@@ -808,7 +808,7 @@ def send_job_card(rec: dict) -> None:
     once per job, before the asking starts."""
     lines = [f"📋 {job_title_line(rec)}"]
     lines += job_meta_lines(rec)
-    tail = [f"📅 found {html.escape(_found_on(rec))}"]
+    tail = [f"📅 {'posted' if rec.get('posted') else 'found'} {html.escape(_found_on(rec))}"]
     qs = rec.get("questions") or []
     if qs:
         tail.append(f"❓ {pending_mod.answered_count(rec)}/{len(qs)} answered")
@@ -2115,6 +2115,8 @@ async def handle_collect(msg, ws):
         # one from the scraped company/title/location. A key already present is left untouched.
         if not str(job.get("dedup_key") or "").strip():
             job = {**job, "dedup_key": await asyncio.to_thread(resolve_dedup_key, job)}
+        if not job.get("posted"):
+            job = {**job, "posted": await asyncio.to_thread(posted_from_queue, job["dedup_key"])}
         rec = await asyncio.to_thread(
             pending_mod.put, job, msg.get("questions") or [],
             msg.get("filled") or [], None, msg.get("warnings") or [])
@@ -2255,6 +2257,21 @@ def _url_token(url: str) -> str:
     host = host.replace("job-boards.greenhouse.io", "boards.greenhouse.io")
     path = re.sub(r"/(apply|application)/?$", "", path).rstrip("/")
     return "url:" + host + path
+
+
+def posted_from_queue(dedup_key: str) -> str:
+    """The scraper's posting date for a queued job, or "" if the queue does not hold it.
+
+    The extension's collect message does not carry `posted`, so the bridge reads it from
+    the queue here. A job from `/apply` is not in the queue, so its record falls back to
+    the collect date when the batch is ordered."""
+    try:
+        for job in triage_mod.load_queue(triage_mod.QUEUE_PATH):
+            if job.get("dedup_key") == dedup_key:
+                return str(job.get("posted") or "")
+    except Exception as e:
+        dlog(f"[collect] posted lookup for {dedup_key} failed ({e})")
+    return ""
 
 
 def resolve_dedup_key(record: dict) -> str:

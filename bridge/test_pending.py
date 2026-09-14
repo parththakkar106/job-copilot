@@ -136,8 +136,9 @@ def test_listing_and_counts():
     assert c == {"jobs": 3, "awaiting": 2, "approved": 1, "held": 0, "skipped": 0, "ready": 0, "questions_left": 3}, c
     n += 1
 
-    # next_job skips the approved one — it's done needing him
-    assert P.next_job(base=d)["dedup_key"] == JOB["dedup_key"]
+    # next_job skips the approved one. Both others are untouched and share a date, so the
+    # one with fewer questions left comes first.
+    assert P.next_job(base=d)["dedup_key"] == "bbb"
     n += 1
 
     assert P.delete("bbb", base=d) and not P.delete("bbb", base=d)
@@ -361,17 +362,12 @@ def test_draft_from_form():
 
 
 def test_serving_order():
-    """/next must not open on a role collected a month ago.
-
-    The old rule was oldest-`created` first, which is correct while the batch is one
-    collect run deep (phase 1 writes in triage order, and triage serves freshest first)
-    and wrong the moment it is not. Measured 2026-08-24: 178 awaiting records over 24
-    collect days, so /next served a 33-day-old posting and would have kept doing so.
-    """
+    """/next serves half-answered, then ready-to-approve, then untouched jobs. Each tier
+    is ordered newest posting date first, and fewest questions first on the same date."""
     d, n = tmp(), 0
 
-    def put(key, created, qs, answers=()):
-        rec = P.put({**JOB, "dedup_key": key}, qs, FILLED, base=d)
+    def put(key, created, qs, answers=(), posted=""):
+        rec = P.put({**JOB, "dedup_key": key, "posted": posted}, qs, FILLED, base=d)
         rec["created"] = created
         for qid, val in answers:
             for q in rec["questions"]:
@@ -396,16 +392,27 @@ def test_serving_order():
     n += 1
     assert order[1] == "ddddddddddddddd1", f"then the one that only needs a ✅: {order}"
     n += 1
-    # the untouched tier: newest RUN first...
+    # the untouched tier: newest date first, falling back to the collect date
     assert order[2:4] == ["bbbbbbbbbbbbbbb1", "bbbbbbbbbbbbbbb2"], order
     n += 1
     assert order[4:] == ["aaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaa2"],         f"the month-old run goes last, not first: {order}"
     n += 1
-    # ...and freshest posting first WITHIN a run. A plain reverse would have flipped this:
-    # triage writes freshest first, so last-written is the OLDEST posting of that run.
-    assert order.index("bbbbbbbbbbbbbbb1") < order.index("bbbbbbbbbbbbbbb2"),         "within one run the original triage order survives"
-    n += 1
     assert P.next_job(base=d)["dedup_key"] == "ccccccccccccccc1", "next_job agrees"
+    n += 1
+
+    # the posting date outranks the collect date, and a tie goes to fewer questions
+    d2 = tmp()
+    three = [{"id": f"ask_{i}", "label": str(i)} for i in range(3)]
+    for key, created, qs, posted in [
+        ("eeeeeeeeeeeeeee1", "2026-09-10T09:00:00+00:00", three, "2026-09-01T00:00:00Z"),
+        ("eeeeeeeeeeeeeee2", "2026-09-01T09:00:00+00:00", three, "2026-09-05T00:00:00Z"),
+        ("eeeeeeeeeeeeeee3", "2026-09-01T09:00:00+00:00", list(two), "2026-09-05T00:00:00Z"),
+    ]:
+        rec = P.put({**JOB, "dedup_key": key, "posted": posted}, qs, FILLED, base=d2)
+        rec["created"] = created
+        P.save(rec, base=d2)
+    order = [r["dedup_key"] for r in P.serving_order(base=d2)]
+    assert order == ["eeeeeeeeeeeeeee3", "eeeeeeeeeeeeeee2", "eeeeeeeeeeeeeee1"], order
     n += 1
 
     # tier classification, including the two ways a record reads as READY

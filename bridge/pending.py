@@ -201,6 +201,7 @@ def put(job: dict, questions: list[dict], filled: list[dict],
         "compensation": job.get("compensation", ""),
         "employment_type": job.get("employment_type", ""),
         "resume": job.get("resume", ""),
+        "posted": job.get("posted", ""),
         "filled": filled,
         "questions": [{**q, "answer": q.get("answer")} for q in questions],
         "warnings": list(warnings or []),
@@ -545,28 +546,33 @@ def next_tier(rec: dict) -> int:
     return TIER_FRESH
 
 
+def job_date(rec: dict) -> str:
+    """The date a job is ordered by: its posting date, else the day phase 1 collected it.
+
+    Records written before 2026-09-14 have no `posted` field unless it was backfilled
+    from the queue history, so the collect date is the fallback."""
+    return str(rec.get("posted") or rec.get("created") or "")[:10]
+
+
+def by_date_then_questions(recs: list[dict]) -> list[dict]:
+    """Newest `job_date` first. On the same date, the job with fewer questions left
+    comes first, because it is closer to a finished application."""
+    # Two stable sorts: the second key is applied first.
+    out = sorted(recs, key=lambda r: len(unanswered(r)))
+    return sorted(out, key=job_date, reverse=True)
+
+
 def serving_order(base: Path | str | None = None) -> list[dict]:
     """Every awaiting job in the order /next should hand them over.
 
-    Was: oldest `created` first, full stop. That was written when the batch was one
-    collect run deep, where oldest-first IS freshest-first (phase 1 writes records in the
-    order triage served them, and triage serves freshest postings first). It does not
-    survive a backlog. Measured 2026-08-24: 178 awaiting records spanning 24 collect days,
-    so /next opened on a role collected on 2026-07-22 — 33 days stale, and very likely
-    closed — and would have kept doing so for another hundred taps.
-
     A job picked by hand from /jobs is pinned and comes before all of it. Then three tiers:
       1. Started and unfinished. Half-answered is the worst state for a record to sit in,
-         and he already paid the cost of reading the role.
-      2. Complete but unapproved. One ✅ turns it into a real application; leaving 22 of
-         them parked behind 155 unread roles is the batch's biggest cheap win.
-      3. Everything untouched, newest collect run first.
+         and Parth already read the role.
+      2. Complete but unapproved. One ✅ turns it into a real application.
+      3. Everything untouched.
 
-    Within tier 3 the order is by RUN, not by record. Reversing the records outright would
-    put the last-written record of the newest run first, and within a run last-written is
-    the OLDEST posting — triage serves freshest first, so a plain reverse quietly inverts
-    the ordering that already exists inside each run. Bucketing by collect day and
-    reversing the buckets keeps both: newest run first, freshest posting first inside it.
+    Each tier is ordered by `by_date_then_questions`. The web console uses the same tiers
+    and key, so both surfaces show the same order.
     """
     awaiting = all_jobs(AWAITING, base)          # oldest first
 
@@ -583,12 +589,10 @@ def serving_order(base: Path | str | None = None) -> list[dict]:
             continue
         tiers[next_tier(rec)].append(rec)
 
-    by_run: dict[str, list[dict]] = {}
-    for rec in tiers[TIER_FRESH]:
-        by_run.setdefault((rec.get("created") or "")[:10], []).append(rec)
-    fresh = [rec for day in sorted(by_run, reverse=True) for rec in by_run[day]]
-
-    return pinned + tiers[TIER_IN_PROGRESS] + tiers[TIER_READY] + fresh
+    return (pinned
+            + by_date_then_questions(tiers[TIER_IN_PROGRESS])
+            + by_date_then_questions(tiers[TIER_READY])
+            + by_date_then_questions(tiers[TIER_FRESH]))
 
 
 def next_job(base: Path | str | None = None) -> dict | None:

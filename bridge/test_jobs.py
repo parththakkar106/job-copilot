@@ -50,7 +50,8 @@ def run():
     P.approve("k_vercel", base=d)      # zero-question job, already ✅'d
 
     # --- 1) the card leads the questions, once per job ------------------------------
-    # serving_order takes the newest collect day first, so Notion (25 Aug) leads Ramp.
+    # With no posting date, serving_order takes the newest collect day first, so Notion
+    # (25 Aug) leads Ramp.
     B._LAST_CARD_KEY = None
     sent.clear()
     asyncio.run(B.serve_next())
