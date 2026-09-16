@@ -146,6 +146,26 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 let CDP_READY = false; // set by runFill after attaching the debugger
 
 const rpc = (msg) => new Promise(res => chrome.runtime.sendMessage(msg, res));
+
+// Every step that writes to the form, in order, with the fields it touched. If a run
+// fills the same field more than once, the trace shows which step did it. `runFill`
+// starts a new trace. `submitWithRetry` adds to the same trace, because phase 3 sends
+// SUBMIT to the same page right after its fill.
+let WRITE_TRACE = { t0: Date.now(), steps: [] };
+function traceStart() { WRITE_TRACE = { t0: Date.now(), steps: [] }; }
+function traceStep(step, fields) {
+  const names = (fields || []).map(f => String(f || "").slice(0, 80));
+  WRITE_TRACE.steps.push({ ms: Date.now() - WRITE_TRACE.t0, step, count: names.length, fields: names });
+}
+// Write the trace to `fill_reports.jsonl` as its own row. The caller does not await this.
+// A submit that navigates unloads this script, so the message must leave before the click.
+function logTrace(stage, extra) {
+  try {
+    chrome.runtime.sendMessage({ type: "LOG_REPORT", report: {
+      mode: "write-trace", stage, url: location.href, trace: WRITE_TRACE.steps, ...(extra || {}) } });
+  } catch (_) { /* extension reloaded: skip */ }
+}
+
 const centerOf = (el) => {
   const r = el.getBoundingClientRect();
   return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
@@ -1527,6 +1547,7 @@ function askId(label, kind, used) {
  */
 async function runFill(autoSubmit = false, opts = {}) {
   const mode = opts.mode || "live";
+  traceStart();
   // `optional` = fields the form does NOT require and no rule recognized. Collected in panel
   // mode only, so Parth can open them on demand; the queue modes still skip them silently
   // (they'd be noise on Telegram and would drag every unattended fill into a human wait).
@@ -1978,6 +1999,7 @@ async function runFill(autoSubmit = false, opts = {}) {
       const value = chips.map(cleanText).join(", ");
       report.filled.push({ label: label || "(unlabeled dropdown)", value });
     }
+    traceStep("fill", report.filled.map(f => f.label || f.key));
 
     // 5) page-boundary escalation — send every unresolved field to Telegram and apply the
     // answers. Runs INSIDE the try so a Greenhouse react-select answer can still use the
@@ -2025,7 +2047,9 @@ async function runFill(autoSubmit = false, opts = {}) {
       // PHASE 3: he answered these already. Ids are label-derived, so they still match
       // even if this fill's field set came out different from phase 1's.
       let applied = 0;
-      for (const a of asks) if ((await applyAnswer(a, (opts.answers || {})[a.id])).ok) applied++;
+      const wrote = [];
+      for (const a of asks) if ((await applyAnswer(a, (opts.answers || {})[a.id])).ok) { applied++; wrote.push(a.label); }
+      traceStep("stored answers", wrote);
       report.answered = applied;
       report.unanswered = asks.filter(a => !((opts.answers || {})[a.id] || "").trim())
                               .map(a => a.label);
@@ -2061,20 +2085,24 @@ async function runFill(autoSubmit = false, opts = {}) {
         // This syncs state<-DOM uniformly for core AND custom fields with no re-derivation,
         // and re-clicking checked radios re-commits those too (safe: a radio can't untoggle).
         // Skipped in collect mode: phase 1 never submits, so there is no state to get right.
-        if (mode !== "collect") {
+        // Also skipped when the adapter sets `stateResync: false`. That form keeps the values
+        // it was given, so the resync only types every field a second time.
+        if (mode !== "collect" && adapter.stateResync !== false) {
         await sleep(400);
+        const retyped = [];
         for (const el of document.querySelectorAll("input, textarea")) {
           const t = (el.type || "text").toLowerCase();
           if (["hidden", "submit", "button", "file", "password", "radio", "checkbox"].includes(t)) continue;
           if (el.offsetParent === null || !isRealField(el)) continue;
           if (el.getAttribute && el.getAttribute("role") === "combobox") continue; // committed elsewhere
           if (!(el.value && el.value.trim())) continue;         // only resync fields that hold a value
+          retyped.push(fieldLabel(el, adapter) || el.id);
           forceSetText(el, el.value);
         }
         for (const g of collectChoiceGroups(adapter)) {
           if (g.kind !== "radio") continue;                     // re-clicking a checkbox would toggle it off
           const checked = g.inputs.find(i => i.checked);
-          if (checked) clickOption(checked);                    // re-fire onChange -> state, stays selected
+          if (checked) { retyped.push(questionLabel(g, adapter) || labelFor(checked)); clickOption(checked); } // re-fire onChange -> state, stays selected
         }
         // Ashby Yes/No button widgets: the pick lives in a hidden backing checkbox. If the
         // re-init cleared that checkbox (state lost) while the button still shows active (DOM),
@@ -2085,8 +2113,9 @@ async function runFill(autoSubmit = false, opts = {}) {
           if (!active) continue;
           const sel = (adapter.questionContainerSelectors || []).join(",");
           const cb = (sel ? g.container.closest(sel) : g.container.parentElement)?.querySelector('input[type="checkbox"]');
-          if (cb && !cb.checked) active.click();
+          if (cb && !cb.checked) { retyped.push(yesNoQuestion(g.container, adapter)); active.click(); }
         }
+        traceStep("retype", retyped);
         }
         // PHASE 3 wipe-recovery from INTENT. The resync above only re-commits values the DOM
         // STILL shows; Ashby's re-init can clear a field outright (empty DOM), and that clear
@@ -2099,8 +2128,11 @@ async function runFill(autoSubmit = false, opts = {}) {
         if (mode === "apply") {
           for (let i = 0; i < 3; i++) {
             await sleep(1200);
-            const again = reassertChoices(adapter, report, null)
-                        + await reassertText(adapter, report, null);
+            const wrote = [];
+            const note = (m) => wrote.push(m);
+            const again = reassertChoices(adapter, report, note)
+                        + await reassertText(adapter, report, note);
+            traceStep(`recheck ${i + 1}`, wrote);
             if (!again) break;
           }
         }
@@ -2174,6 +2206,7 @@ async function runFill(autoSubmit = false, opts = {}) {
   }
   // Persist this run so audits don't require live re-testing. Best-effort and
   // never blocks the popup/orchestrator from getting `report` back.
+  report.trace = WRITE_TRACE.steps.slice();
   try { await rpc({ type: "LOG_REPORT", report }); } catch (_) { /* bridge down: skip */ }
   return report;
 }
@@ -2629,8 +2662,11 @@ async function reassertText(adapter, report, log) {
     const inp = ctl.querySelector("input");
     if (inp) await tryApply(inp, fieldLabel(inp, adapter));
   }
-  // Ashby combobox typeahead: role=combobox input with an empty value
+  // Ashby combobox typeahead: role=combobox input with an empty value. Skip react-select
+  // inputs. Greenhouse gives them role=combobox too, but they stay empty after a pick
+  // because the answer shows in a chip. The loop above already checks those by chip.
   for (const el of document.querySelectorAll('[role="combobox"]')) {
+    if (el.closest(".select__control")) continue;
     if (el.offsetParent === null || (el.value && el.value.trim())) continue;
     await tryApply(el, fieldLabel(el, adapter));
   }
@@ -2713,8 +2749,11 @@ async function submitWithRetry(log) {
     // Re-apply any choice answer Ashby's post-resume re-init wiped since fill (idempotent —
     // skips groups that still hold their selection). Catches optional wiped fields too,
     // which never surface as validation errors.
-    const reasserted = reassertChoices(adapter, PANEL_REPORT, log)
-                     + await reassertText(adapter, PANEL_REPORT, log);
+    const wrote = [];
+    const note = (m, kind) => { wrote.push(m); log(m, kind); };
+    const reasserted = reassertChoices(adapter, PANEL_REPORT, note)
+                     + await reassertText(adapter, PANEL_REPORT, note);
+    traceStep(`submit ${pass}: recheck`, wrote);
     if (reasserted) { log(`re-asserted ${reasserted} wiped field(s)`, "warn"); await sleep(400); }
     log(`Pass ${pass}: submitting…`);
     const urlBefore = location.href;
@@ -2722,6 +2761,8 @@ async function submitWithRetry(log) {
     // answers, so a too-early read sees the STALE banner. Snapshot what's shown now: a
     // set that DIFFERS from this is definitely a fresh response.
     const errsBefore = readValidationErrors().sort().join("|");
+    traceStep(`submit ${pass}: click`, []);
+    logTrace(`before submit click ${pass}`);
     await clickSubmit(adapter, log);
     // Ashby validates on the SERVER: the error banner (or the confirmation) renders
     // 2–8s after the click (measured live on a real board). The old fixed 1.6s wait
@@ -2787,6 +2828,7 @@ async function submitWithRetry(log) {
       if (r === "fixed") fixed++;
       else unfixable.push(title);   // "empty" (blank field) or "notfound"
     }
+    traceStep(`submit ${pass}: retype errored fields`, errs.filter(e => !unfixable.includes(e)));
     log(`re-synced ${fixed} field(s)` + (unfixable.length ? ` · needs you: ${unfixable.join(", ")}` : ""),
       unfixable.length ? "warn" : "ok");
     if (unfixable.length) { log("Fill the fields above by hand, then press Submit again.", "warn"); return "needs_input"; }
@@ -3209,6 +3251,7 @@ function mountPanel() {
     setBusy(true); PANEL_STOP = false;
     try {
       const outcome = await submitWithRetry(log);
+      logTrace("submit finished", { outcome });
       if (outcome === "confirmed") await logApplied();
       else if (outcome === "needs_verification") {
         // Anti-bot email code gate. We don't solve it — tell Parth on his phone and leave
@@ -3291,7 +3334,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const logs = [];
     const log = (m, kind) => { logs.push({ m: String(m), kind: kind || "info" }); };
     submitWithRetry(log)
-      .then(outcome => sendResponse({ outcome, logs }))
+      .then(outcome => { logTrace("submit finished", { outcome }); sendResponse({ outcome, logs }); })
       .catch(e => sendResponse({ outcome: "error", logs, error: String((e && e.message) || e) }));
     return true; // async response
   }

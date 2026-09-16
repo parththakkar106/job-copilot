@@ -1173,7 +1173,7 @@ const labelOf = (el) => (el && el._label) || "";
       "matchedVerifyPhrases", "confirmationVisible", "reassertChoices", "reassertText",
       "readValidationErrors", "clickSubmit", "submitRejectedText", "submitVerificationText",
       "verifyCodeStillShown", "waitForVerifyCode", "sleep", "Date", "location",
-      "PANEL_STOP", "PANEL_REPORT",
+      "PANEL_STOP", "PANEL_REPORT", "traceStep", "logTrace",
       "async " + extract("submitWithRetry") + "; return submitWithRetry;")(
         async () => ({ adapters: [{}] }), () => ({ submit: {} }),
         () => [], () => [], () => [],
@@ -1188,7 +1188,7 @@ const labelOf = (el) => (el && el._label) || "";
         async (ms) => { now += ms; tick(); },
         { now: () => now },
         { href: "https://boards.greenhouse.io/acme/jobs/1" },
-        false, {});
+        false, {}, () => {}, () => {});
     const outcome = await fn((m) => logs.push(String(m)));
     return { outcome, fetches: fetches.length, logs };
   };
@@ -1343,6 +1343,38 @@ ok(fieldKey("") === "" && fieldKey(null) === "", "an absent label yields no key 
   const currentValue = makeCurrentValue(cleanText, () => "");
   ok(currentValue(el, {}) === "",
      "no chip means genuinely empty, so the field is still escalated");
+}
+
+// --- reassertText: a filled Greenhouse dropdown is not an empty combobox ---------------
+//
+// Greenhouse's react-select search input carries role=combobox and keeps value "" after a
+// pick, because the answer renders in a chip. The Ashby combobox branch used to read that
+// as empty and pick every filled dropdown again on each of the three phase 3 rechecks.
+{
+  const run = async (els) => {
+    const picked = [];
+    globalThis.document = { querySelectorAll: (sel) => els[sel] || [] };
+    try {
+      const fn = new Function("document", "norm", "fieldLabel", "applyValue", "isRealField",
+        extract("reassertText").replace(/^function/, "return async function"))(
+        globalThis.document, (s) => String(s).toLowerCase(), (el) => el.label,
+        async (el, v) => { picked.push(el.label); return { ok: true }; }, () => true);
+      const count = await fn({}, { filled: [{ label: "Country", value: "United States" },
+                                           { label: "Location", value: "Atlanta" }] }, null);
+      return { count, picked };
+    } finally { delete globalThis.document; }
+  };
+  const chip = {};
+  const ghInput = { label: "Country", value: "", offsetParent: {}, getAttribute: () => "combobox" };
+  const ghControl = { querySelector: (sel) => sel.includes("single-value") ? chip : ghInput };
+  ghInput.closest = (sel) => (sel === ".select__control" ? ghControl : null);
+  const ashbyInput = { label: "Location", value: "", offsetParent: {}, getAttribute: () => "combobox",
+    closest: () => null };
+
+  const r = await run({ ".select__control": [ghControl], '[role="combobox"]': [ghInput, ashbyInput] });
+  ok(!r.picked.includes("Country"), "a Greenhouse dropdown showing a chip is not picked again");
+  ok(r.picked.includes("Location"), "an empty Ashby combobox is still re-applied");
+  ok(r.count === 1, "only the empty field counts, so the recheck loop can stop");
 }
 
 console.log(`fill units: ${n}/${n} checks passed`);

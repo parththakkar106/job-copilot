@@ -37,6 +37,11 @@ export const GREENHOUSE = {
   // (Lever/Ashby set this false; their widgets honor synthesized events.)
   needsCDP: true,
 
+  // Skip fill.js's post-fill state resync. It exists for Ashby, which drops values from
+  // its form state after the resume upload. Greenhouse keeps them, so the resync only
+  // retypes every text field (seen live on the Vercel form, 2026-09-17).
+  stateResync: false,
+
   // Dropdown widget descriptor consumed by fill.js. Greenhouse = react-select combobox.
   dropdown: {
     kind: "reactSelect",
