@@ -185,7 +185,7 @@ Items are asked one at a time; the next Telegram message (or a 👍 on a drafted
 that item's answer. A `draft` lets you accept with one tap or reply to edit.
 
 The batch flow adds `collect` (phase 1 parks a job's open questions on disk), `approved`
-(phase 3 pulls back the approved pile), `applied`, `drafts` and `notify`. The full set,
+(phase 3 pulls back the approved pile), `applied`, `drafts`, `ai_pass` and `notify`. The full set,
 with the reply shape for each, is documented in the module docstring at the top of
 `bridge.py` — that is the source of truth, since it sits next to the dispatch table.
 
@@ -256,3 +256,34 @@ Drafting is a persisted on/off flag rather than a startup setting, so the web co
 Telegram (`/draft`) can toggle it and the running bridge picks the change up on its next
 read. The answer bank always wins over a generated draft, since a saved answer is wording
 you already approved.
+
+## AI fill + verify (optional, off by default)
+
+A second, separate flag (`aipass.py`, `/ai` on Telegram, or the console) that spends **one**
+`claude -p` call on a whole form instead of one per essay. The extension serializes every
+control it found — label, shape, options, whether it is required, the value the
+deterministic pass put there and where that value came from — and gets back four kinds of
+decision:
+
+| action | what happens to the form |
+| --- | --- |
+| `fill` | the field was empty; it is written, low confidence included (and marked as such) |
+| `replace` | the field had a value and the model cleared `AI_REPLACE_MIN`; the old value is kept and shown |
+| `flag` | the model disagrees but below that bar — **nothing is written** |
+| `propose` | an `always_ask` question (salary, notice, YOE) — **never written**, offered as a draft you tap to accept |
+
+Everything it did is listed at the top of the review, worst first: confident overwrites of
+hard facts (a phone number, a graduation date), then low-confidence fills, then the rest.
+Nothing bypasses that gate and nothing submits — the submit is still your own tap.
+
+One call per JOB, not per fill: phase 1 stores the decisions on the pending record and
+phase 3 replays them. A second opinion hours later could differ from the summary you
+approved, and the drift guard would then refuse to submit our own fill.
+
+Free-text answers you approve are appended to the answer bank as `status: draft` rows
+(`python -m core.bank list --status draft` to review and promote), so the next form asking
+the same thing is served off disk for free.
+
+Knobs, all optional: `AI_PASS_MODEL` (default `sonnet`), `AI_REPLACE_MIN` (0.8),
+`AI_LOW_CONF` (0.6), `AI_PASS_TIMEOUT` (180s), `AI_PASS_MAX_FIELDS` (120). Workday's
+multi-step wizard does not run the pass yet.

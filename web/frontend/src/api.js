@@ -49,4 +49,6 @@ export const api = {
 
   draftsPref: () => req('GET', '/prefs/drafts'),
   setDraftsPref: (enabled) => req('PUT', '/prefs/drafts', { enabled }),
+  aiPref: () => req('GET', '/prefs/ai'),
+  setAiPref: (enabled) => req('PUT', '/prefs/ai', { enabled }),
 };

@@ -132,6 +132,49 @@ function DraftsToggle() {
   )
 }
 
+function AiPassToggle() {
+  const notify = useToast()
+  const [pref, setPref] = useState(null)   // { enabled, available, model }
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    api.aiPref().then(setPref).catch((e) => notify(e.message, 'error'))
+    /* eslint-disable-next-line */
+  }, [])
+
+  const toggle = async () => {
+    if (!pref) return
+    setBusy(true)
+    try {
+      const next = await api.setAiPref(!pref.enabled)
+      setPref(next)
+      notify(next.enabled ? `AI fill + verify ON (${next.model})` : 'AI fill + verify OFF', 'success')
+    } catch (e) { notify(e.message, 'error', 6000) } finally { setBusy(false) }
+  }
+
+  if (!pref) return null
+  return (
+    <div className="card pf-section">
+      <div className="section-label">AI fill + verify</div>
+      <div className="pf-grid">
+        <label className="pf-field full">
+          <span>One Claude pass per form</span>
+          <button className={`btn ${pref.enabled ? 'btn-primary' : ''}`} disabled={busy} onClick={toggle}>
+            {busy ? '…' : pref.enabled ? `ON — model ${pref.model}` : 'OFF'}
+          </button>
+        </label>
+      </div>
+      <p className="page-hint">
+        When ON, one Claude call reads each whole form: it fills what the rules left blank and
+        checks what they filled, flagging anything that looks mis-mapped. Salary-style
+        questions are only ever suggested, never typed in, and every AI answer is listed at the
+        top of your review before you approve. When OFF, deterministic fills only.
+        {pref.enabled && !pref.available && ' ⚠️ No claude binary found, so nothing will actually run.'}
+      </p>
+    </div>
+  )
+}
+
 export default function Profile() {
   const notify = useToast()
   const [profile, setProfile] = useState(null)
@@ -172,6 +215,7 @@ export default function Profile() {
       </div>
       <p className="page-hint">Deterministic autofill values. After saving, hit <b>Rebuild extension</b> and reload the unpacked extension for changes to take effect.</p>
       <DraftsToggle />
+      <AiPassToggle />
       {Object.entries(profile).map(([name, val]) =>
         (val && typeof val === 'object' && !Array.isArray(val))
           ? <Section key={name} path={[]} name={name} obj={val} onChange={onChange} />

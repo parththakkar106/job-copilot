@@ -42,6 +42,13 @@ Protocol over the WebSocket (JSON per message):
     {type:"drafts", reqId, context?:{company?}, items:[{id, answer_key?, draft?}]}
         # the on-page panel asking what the answer bank has for these questions, with no
         # Telegram involved (Parth is at the keyboard). Reply answers = {id: {draft, bank_id}}.
+    {type:"ai_pass", reqId, context?:{company?, role?, url?},
+                     fields:[{id, label, kind, bucket?, required, options[], value, source,
+                              answer_key?}]}
+        # the OPTIONAL one-call AI fill + verify pass over a whole form (see aipass.py).
+        # Reply answers = {enabled, decisions:[{id, action, value, was, confidence, why,
+        # low, hot, answer_key?}]} where action is fill | replace | flag | propose. A
+        # disabled flag answers {enabled:false, decisions:[]} without spending a call.
     {type:"verify_code", reqId, since, company?, role?, key?}
         # a board is asking for an emailed verification code and Parth has ALREADY acted
         # (clicked Submit, or tapped the panel's code button). `since` = that click, epoch
@@ -108,6 +115,7 @@ import websockets
 import pending as pending_mod
 import triage as triage_mod
 import drafter as drafter_mod  # Tier-2 essay drafting via the Claude Code CLI
+import aipass as aipass_mod  # optional one-call AI fill + verify pass over a whole form
 import mailcode as mailcode_mod  # emailed verification codes, human-triggered only
 
 # The shared pipeline modules live in core/ (data-layer tools, not bridge ones), so put the
@@ -430,6 +438,11 @@ async def telegram_poller(offset):
                                             "Drafting " + ("on" if data == "draft:on" else "off"))
                     await _safe("/draft", handle_draft_toggle(data == "draft:on"))
                     continue
+                if data in ("ai:on", "ai:off"):  # AI fill + verify toggle button
+                    await asyncio.to_thread(tg_answer_callback, cq["id"],
+                                            "AI pass " + ("on" if data == "ai:on" else "off"))
+                    await _safe("/ai", handle_ai_toggle(data == "ai:on"))
+                    continue
                 if data.startswith(f"{CB}:"):  # batch button — carries its own ids
                     await _safe(f"callback {data!r}", batch_callback(data, cq["id"]))
                     continue
@@ -463,6 +476,9 @@ async def telegram_poller(offset):
                     continue
                 if low == "/draft" or low.startswith("/draft ") or low.startswith("/draft\n"):
                     await _safe("/draft", handle_draft(text.strip()))
+                    continue
+                if low == "/ai" or low.startswith("/ai ") or low.startswith("/ai\n"):
+                    await _safe("/ai", handle_ai(text.strip()))
                     continue
                 if low in ("/run", "run"):  # manual kick of the P1 collection run
                     await _safe("/run", fire_run_queue("telegram"))
@@ -676,6 +692,44 @@ async def handle_ask(msg, ws):
     await asyncio.to_thread(tg_send, "✅ Got it — sending back to the form.")
 
 
+def ai_review_lines(decisions: list[dict]) -> list[str]:
+    """The AI pass's section of the final review, or [] when it did nothing.
+
+    Deliberately says what happened to each field rather than only what it now holds: an
+    overwrite is the one thing here Parth cannot reconstruct from looking at the form, so
+    the old value is printed next to the new one. Flags and proposals are listed as what
+    they are — nothing was written for either.
+    """
+    if not decisions:
+        return []
+    verb = {"fill": "filled", "replace": "REPLACED", "flag": "flagged", "propose": "suggests"}
+    out = ["", "🧠 <b>AI pass</b> — check these first:"]
+    shown = 0
+    for d in decisions:
+        if shown >= 12:
+            out.append(f"<i>…and {len(decisions) - shown} more</i>")
+            break
+        act = str(d.get("action") or "")
+        if act in ("fill", "replace") and not d.get("applied"):
+            continue            # it wanted to, the setter refused: nothing is on the form
+        lab = html.escape(_one_line(d.get("label", ""), 70))
+        val = html.escape(_one_line(d.get("value", ""), 220))
+        mark = "🔴 " if d.get("hot") else ("🟡 " if d.get("low") else "")
+        line = f"{mark}• <b>{lab}</b> — {verb.get(act, act)}: {val}"
+        if act == "replace" and d.get("was"):
+            line += f"\n   <i>was: {html.escape(_one_line(d.get('was'), 120))}</i>"
+        if act == "flag":
+            line = (f"🟡 • <b>{lab}</b> — left as <i>{html.escape(_one_line(d.get('was'), 120))}</i>; "
+                    f"AI would have said: {val}")
+        if act == "propose":
+            line = f"• <b>{lab}</b> — suggested (not filled): {val}"
+        if d.get("why"):
+            line += f"\n   <i>{html.escape(_one_line(d.get('why'), 120))}</i>"
+        out.append(line)
+        shown += 1
+    return out
+
+
 async def handle_review(msg, ws):
     """End-of-form gate: show everything that will be submitted + any still-empty required
     fields, and wait for a ✅/✋ tap. Returns {__review: "ok"|"hold"}. Never submits."""
@@ -683,6 +737,7 @@ async def handle_review(msg, ws):
     summary = msg.get("summary") or []
     warnings = msg.get("warnings") or []
     req_id = msg.get("reqId")
+    ai = msg.get("ai") or []
 
     # Budget per LINE, never a blind text[:N] slice: cutting mid-<b> makes Telegram
     # reject the whole message ("can't parse entities") and the review dies as
@@ -690,6 +745,11 @@ async def handle_review(msg, ws):
     # dropping whole lines keeps the tags balanced. (Same approach as send_summary.)
     head = ["🧾 <b>Final review — nothing is submitted yet</b>"]
     head += context_lines(ctx)
+    # The AI pass's work goes ABOVE the full field list, not inside it. This is the part of
+    # the review that only a human can do: a deterministic fill he has approved a hundred
+    # times needs a glance, and a value a model overwrote or is unsure about needs reading.
+    # aipass.decide() already sorted them worst-first (hot overwrites, then low confidence).
+    head += ai_review_lines(ai)
     head += ["", "<b>Will be submitted:</b>"]
     tail = []
     if warnings:
@@ -874,6 +934,10 @@ def send_summary(rec: dict) -> None:
     if warns:
         lines.append("⚠️ <i>Form still showed empty (required): "
                      + html.escape(_one_line(", ".join(warns), 250)) + "</i>")
+    # Same section the live path's final review shows, for the same reason: this tap is
+    # the gate, and what an AI wrote or overwrote is the part of the form he cannot check
+    # by recognising it.
+    lines += ai_review_lines(rec.get("ai_decisions") or [])
     lines.append("")
 
     rows = list(rec.get("filled") or [])
@@ -1652,6 +1716,7 @@ COMMANDS = [
     ("refer", "Paste someone's profile, get the reqs and the messages"),
     ("refers", "Everyone you're in outreach with"),
     ("draft", "Turn Claude answer-drafting on or off"),
+    ("ai", "Turn the AI fill + verify pass on or off"),
     ("stop", "Halt the queue"),
     ("help", "Show all commands"),
 ]
@@ -2052,9 +2117,15 @@ async def batch_callback(data: str, cb_id: str) -> None:
                 await serve_next()
                 return
             await asyncio.to_thread(tg_answer_callback, cb_id, "Approved")
+            # He has now read and approved these answers, so the free-text ones the AI pass
+            # wrote are worth keeping — as drafts, for the next form that asks the same thing.
+            learned = await asyncio.to_thread(learn_from_ai, ok)
             await asyncio.to_thread(
                 tg_send, f"✅ <b>{html.escape(str(rec.get('company')))}</b> approved — "
-                         f"it'll go out shortly.")
+                         f"it'll go out shortly."
+                         + (f"\n<i>Banked {len(learned)} AI answer(s) as drafts — "
+                            f"<code>bank.py list --status draft</code> to promote them.</i>"
+                            if learned else ""))
 
         elif action == "defer":
             # The ✋ on a QUESTION, not on the summary. Different verb on purpose: it keeps
@@ -2149,7 +2220,8 @@ async def handle_collect(msg, ws):
             job = {**job, "posted": await asyncio.to_thread(posted_from_queue, job["dedup_key"])}
         rec = await asyncio.to_thread(
             pending_mod.put, job, msg.get("questions") or [],
-            msg.get("filled") or [], None, msg.get("warnings") or [])
+            msg.get("filled") or [], None, msg.get("warnings") or [],
+            msg.get("ai_decisions") or [])
         answers = {"ok": True, "added": rec is not None}
         # Kick off Claude drafting in the background so the push finds ready drafts. Context
         # is the job's own facts; the tab has already closed, so nobody is waiting on this.
@@ -2487,6 +2559,152 @@ async def handle_drafts(msg, ws):
     await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
 
 
+async def handle_ai_pass(msg, ws):
+    """The optional AI fill + verify pass — ONE `claude -p` call for a whole form.
+
+    The extension serializes every control it found (label, shape, options, required, the
+    value the deterministic pass put there and where that came from) and gets back a list
+    of decisions: blanks to fill, values to replace, disagreements to flag, and proposals
+    for the questions Parth answers himself. See bridge/aipass.py for what each may do.
+
+    Two things are added HERE rather than in the extension, because both live on disk where
+    only the bridge can read them: the answer bank (so a saved reply is presented to the
+    model as his confirmed wording instead of being rewritten from scratch) and the flag.
+    Best-effort throughout: a disabled flag, a missing binary or any failure answers with an
+    empty decision list, and the fill carries on exactly as it does today.
+    """
+    req_id = msg.get("reqId")
+    ctx = msg.get("context") or {}
+    fields = list(msg.get("fields") or [])
+    out = {"enabled": aipass_mod.available(), "decisions": []}
+    if out["enabled"] and fields:
+        try:
+            fields = await asyncio.to_thread(_seed_bank_values, fields, ctx.get("company"))
+            out["decisions"] = await asyncio.to_thread(aipass_mod.run, fields, ctx)
+        except Exception as e:
+            print(f"[aipass] failed: {redact(e)}", file=sys.stderr)
+            out = {"enabled": True, "decisions": [], "error": str(e)}
+    await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
+
+
+def _seed_bank_values(fields: list[dict], company: str | None) -> list[dict]:
+    """Put Parth's own saved answers into the field list before the model sees it.
+
+    Without this the model is handed an empty box for a question he has already answered in
+    his own words, writes a fresh one, and his approved wording quietly stops being used.
+    Seeded values are marked `source: "bank"`, which is what the prompt keys off to say
+    "keep this verbatim unless the question asks something it does not address".
+    """
+    out = []
+    for f in fields:
+        key = f.get("answer_key")
+        if key and not str(f.get("value") or "").strip():
+            try:
+                row = bank_mod.resolve(key, company)
+            except Exception:
+                row = None
+            if row and str(row.get("answer") or "").strip():
+                f = {**f, "value": row["answer"], "source": "bank"}
+        out.append(f)
+    return out
+
+
+def learn_from_ai(rec: dict) -> list[str]:
+    """Bank the AI answers Parth approved, as `status: draft` rows he can promote.
+
+    The point is that the SECOND form asking the same thing costs nothing: the bank is read
+    before the model is, so a promoted row is served straight out of disk. They land as
+    drafts, never active, because approving an answer for one application is not the same
+    as blessing it as his standard wording — `bank.py list --status draft` is the review
+    queue, and only he moves a row to active.
+
+    Only free-text answers with an answer_key are worth banking: a dropdown pick is an
+    option on one company's form and means nothing on the next. Returns the ids written.
+    """
+    written = []
+    decisions = [d for d in (rec.get("ai_decisions") or [])
+                 if d.get("answer_key") and d.get("action") in ("fill", "replace")
+                 and not d.get("options") and len(str(d.get("value") or "")) > 40]
+    if not decisions:
+        return written
+    try:
+        rows = bank_mod.load()
+    except Exception as e:
+        print(f"[bank] could not read the bank to learn from {rec.get('dedup_key')!r}: {redact(e)}",
+              file=sys.stderr)
+        return written
+    company = str(rec.get("company") or "").strip()
+    dirty = False
+    for d in decisions:
+        key = str(d["answer_key"]).strip()
+        # Company-scoped: a why-company answer is about THIS employer, and a common-scoped
+        # row would serve it to the next one. He can rescope it when he promotes it.
+        _id = bank_mod.slug("ai", key, company)
+        if bank_mod.find(rows, _id):
+            continue                      # already banked from an earlier application
+        rows.append({
+            "id": _id, "key": key, "scope": "company" if company else "common",
+            "company": company or None, "answer": d["value"],
+            "tags": ["ai-drafted"], "status": "draft",
+            "created": bank_mod.TODAY, "updated": bank_mod.TODAY,
+            "last_used": None, "uses": 0,
+        })
+        written.append(_id)
+        dirty = True
+    if dirty:
+        try:
+            bank_mod.save(rows)
+        except Exception as e:
+            print(f"[bank] could not save AI-learned answers: {redact(e)}", file=sys.stderr)
+            return []
+    return written
+
+
+def _ai_status_text() -> str:
+    """The status line for /ai — the flag, the model, and the warning that matters (the
+    flag is on but there is no binary to honour it, so nothing will actually happen)."""
+    on = aipass_mod.is_enabled()
+    model = aipass_mod.AI_MODEL or "CLI default"
+    if on:
+        body = (f"🧠 The AI fill + verify pass is <b>ON</b> (model: <code>{html.escape(model)}</code>).\n"
+                "One Claude call per form: it fills what the rules left blank and checks what "
+                "they filled. Salary-style questions are only ever proposed, never typed in, "
+                "and you still review everything before submit.")
+        if not drafter_mod.CLAUDE_BIN:
+            body += "\n\n⚠️ But no <code>claude</code> binary was found, so nothing will actually run."
+    else:
+        body = ("🚫 The AI fill + verify pass is <b>OFF</b>.\n"
+                "Deterministic fills only; anything the rules don't know comes to you as a question.")
+    return body
+
+
+async def handle_ai_toggle(on: bool) -> None:
+    touch_activity()
+    aipass_mod.set_enabled(on)
+    await asyncio.to_thread(tg_send, _ai_status_text())
+
+
+async def handle_ai(text: str) -> None:
+    """/ai            show the flag with an on/off button
+       /ai on|off     set it directly
+
+    Off by default: it spends a Claude call on every form, and the deterministic pass is
+    what the pipeline has always run on."""
+    touch_activity()
+    parts = text.strip().split()
+    arg = parts[1].lower() if len(parts) > 1 else ""
+    if arg in ("on", "enable", "1", "yes"):
+        await handle_ai_toggle(True)
+        return
+    if arg in ("off", "disable", "0", "no"):
+        await handle_ai_toggle(False)
+        return
+    on = aipass_mod.is_enabled()
+    button = ({"text": "🚫 Turn OFF", "callback_data": "ai:off"} if on
+              else {"text": "🧠 Turn ON", "callback_data": "ai:on"})
+    await asyncio.to_thread(tg_send, _ai_status_text(), [[button]])
+
+
 async def handle_bank_touch(msg, ws):
     """Mark a bank answer as used. Only ever sent when Parth ACCEPTS its draft.
 
@@ -2736,7 +2954,7 @@ def _apply_transition(key: str, target: str, reason: str | None, meta: dict) -> 
     if target == "filled":
         r = pending_mod.approve(key)  # guarded: refuses if incomplete / no record
         if r:
-            return {"ok": True}
+            return {"ok": True, "banked": learn_from_ai(r)}
         return {"ok": False, "error": "answer its questions first (or no filled record exists)"}
 
     if target == "in_queue":
@@ -2802,6 +3020,7 @@ async def ws_handler(ws):
                 "log_report": handle_log_report, "audit_dump": handle_audit_dump,
                 "collect": handle_collect, "approved": handle_approved,
                 "drafts": handle_drafts, "bank_touch": handle_bank_touch,
+                "ai_pass": handle_ai_pass,
                 "hold_job": handle_hold_job, "pending_answers": handle_pending_answers,
                 "list_all": handle_list_all, "set_state": handle_set_state,
                 "workday_route": handle_workday_route,

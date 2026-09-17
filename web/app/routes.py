@@ -21,7 +21,8 @@ from .models import (
     ResumeOverride,
     StateChange,
 )
-from .paths import EXTENSION_BUILD, REPO_ROOT, SCRAPER_MODULE, drafter_mod, pending_mod
+from .paths import (EXTENSION_BUILD, REPO_ROOT, SCRAPER_MODULE, aipass_mod,
+                    drafter_mod, pending_mod)
 
 router = APIRouter()
 
@@ -279,6 +280,27 @@ def set_drafts_pref(body: DraftPref):
     return {"ok": True, "enabled": drafter_mod.is_enabled(),
             "available": bool(drafter_mod.CLAUDE_BIN),
             "model": drafter_mod.DRAFT_MODEL or "default"}
+
+
+@router.get("/prefs/ai")
+def get_ai_pref():
+    """The AI fill + verify flag, the model it would use, and whether a `claude` binary is
+    actually around — so the UI can say "on but unusable" instead of quietly doing nothing.
+    Shares the binary with drafting: one CLI, one place to point it somewhere else."""
+    return {"enabled": aipass_mod.is_enabled(),
+            "available": bool(drafter_mod.CLAUDE_BIN),
+            "model": aipass_mod.AI_MODEL or "default"}
+
+
+@router.put("/prefs/ai")
+def set_ai_pref(body: DraftPref):
+    """Flip the flag. Same shared prefs file as drafting, so the running bridge sees it on
+    its next read with no restart. Submitting is unaffected — this only governs whether one
+    Claude call reads each form before you review it."""
+    aipass_mod.set_enabled(body.enabled)
+    return {"ok": True, "enabled": aipass_mod.is_enabled(),
+            "available": bool(drafter_mod.CLAUDE_BIN),
+            "model": aipass_mod.AI_MODEL or "default"}
 
 
 # ── Companies (dream vs pipeline) ────────────────────────────────────────────────────

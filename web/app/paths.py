@@ -59,6 +59,7 @@ ACTIVITY_PING = BRIDGE_DIR / ".activity"
 import pending as pending_mod        # noqa: E402  (bridge/pending.py)
 import triage as triage_mod          # noqa: E402  (bridge/triage.py)
 import drafter as drafter_mod        # noqa: E402  (bridge/drafter.py — Tier-2 draft flag)
+import aipass as aipass_mod          # noqa: E402  (bridge/aipass.py — AI fill+verify flag)
 from core import bank as bank_mod    # noqa: E402  (core/bank.py)
 
 __all__ = [
@@ -66,5 +67,5 @@ __all__ = [
     "PROFILE_WRITE", "ANSWER_BANK_WRITE", "COMPANIES_WRITE",
     "QUEUE_PATH", "DREAM_PATH", "APPLIED_PATH", "SCRAPER_MODULE", "EXTENSION_BUILD",
     "RUN_TRIGGER", "FLUSH_TRIGGER", "ACTIVITY_PING",
-    "pending_mod", "triage_mod", "bank_mod", "drafter_mod",
+    "pending_mod", "triage_mod", "bank_mod", "drafter_mod", "aipass_mod",
 ]

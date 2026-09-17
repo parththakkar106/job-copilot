@@ -224,8 +224,9 @@ const askUser = (items, context) =>
 
 // End-of-form review: send the full summary + any still-empty required fields; the bridge
 // returns { __review: "ok" | "hold" } from Parth's tap. The extension never submits either way.
-const reviewUser = (summary, warnings, context) =>
-  requestBridge({ type: "review", summary: summary || [], warnings: warnings || [], context: context || null });
+const reviewUser = (summary, warnings, context, ai) =>
+  requestBridge({ type: "review", summary: summary || [], warnings: warnings || [],
+                  context: context || null, ai: ai || [] });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) return; // not for us
@@ -249,6 +250,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // each one spends subscription quota.
       try { sendResponse({ ok: true, drafts: await requestBridge({ type: "drafts", items: msg.items || [], context: msg.context || null, force: !!msg.force }) }); }
       catch (_) { sendResponse({ ok: false, drafts: {} }); }
+    })();
+    return true; // async sendResponse
+  }
+  // The optional AI fill + verify pass: fill.js hands over the whole serialized form and
+  // gets back what to write, replace, flag or propose (bridge/aipass.py). One Claude call
+  // per form, and only when the flag is on — the bridge answers {enabled:false} cheaply
+  // when it is off, so the extension never has to know the state of a preference.
+  // Best-effort like every other bridge call: a bridge that is down means no AI pass and
+  // the deterministic fill stands, which is exactly today's behaviour.
+  if (msg.type === "AI_PASS") {
+    (async () => {
+      try { sendResponse(await requestBridge({ type: "ai_pass", fields: msg.fields || [], context: msg.context || null })); }
+      catch (_) { sendResponse({ enabled: false, decisions: [] }); }
     })();
     return true; // async sendResponse
   }
@@ -309,7 +323,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "REVIEW_USER") {
     (async () => {
-      try { sendResponse({ ok: true, answers: await reviewUser(msg.summary, msg.warnings, msg.context) }); }
+      try { sendResponse({ ok: true, answers: await reviewUser(msg.summary, msg.warnings, msg.context, msg.ai) }); }
       catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
     })();
     return true; // async sendResponse
@@ -768,7 +782,11 @@ async function runFlush() {
         // track instead of its best-of-4 pick; unset => the auto pick stands.
         const report = await fillTab(tab.id, /* autoSubmit */ true,
           { mode: "apply", answers, approved, resumeTag: rec.resume_override || null,
-            company: rec.company || "" });
+            company: rec.company || "",
+            // What the AI pass decided back in phase 1, already reflected in the summary he
+            // approved. Replayed, never recomputed: a second call could answer differently
+            // and the drift guard would (rightly) refuse to submit its own fill.
+            aiDecisions: rec.ai_decisions || [] });
 
         if (report.reviewed !== "ok") {
           summary.parked++;
@@ -908,6 +926,7 @@ async function runApplyUrl(url) {
       questions,
       filled: report.summary || report.filled || [],
       warnings: report.warnings || [],
+      ai_decisions: report.aiDecisions || [],
     });
     await notify(
       `📋 <b>${escHtml(report.company || "This role")}</b> — filled what I can.\n`
@@ -999,6 +1018,7 @@ async function runQueue(opts = {}) {
           },
           questions,
           filled: report.summary || report.filled || [],
+          ai_decisions: report.aiDecisions || [],
           warnings: report.warnings || [],
         });
         summary.collected++;

@@ -386,23 +386,30 @@ def sanitize(text: str) -> str:
     return t.strip()
 
 
-def _run_claude(prompt: str) -> str | None:
+def _run_claude(prompt: str, model: str | None = None, timeout: float | None = None) -> str | None:
     """The subprocess boundary — isolated so tests can monkeypatch it. Runs the CLI in a
     throwaway cwd so it never loads the project's CLAUDE.md or explores the repo, and always
-    returns a string or None (never raises)."""
+    returns a string or None (never raises).
+
+    `model`/`timeout` override the draft defaults for callers that are not drafting an
+    essay — aipass.py reads a whole form in one call, so it wants its own model knob and a
+    longer clock. They are arguments rather than a second copy of this function because
+    everything that makes this boundary safe (throwaway cwd, never raises, one place to
+    point at a different binary) has to hold for every `claude -p` call the bridge makes."""
     if not CLAUDE_BIN:
         return None
     cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "text"]
     # Pin the model unless explicitly told to use the CLI default. Keeping this a --model
     # flag (not the ANTHROPIC_MODEL env) means it can't leak into any other claude call.
-    if DRAFT_MODEL and DRAFT_MODEL.lower() != "default":
-        cmd += ["--model", DRAFT_MODEL]
+    pin = DRAFT_MODEL if model is None else model
+    if pin and pin.lower() != "default":
+        cmd += ["--model", pin]
     try:
         with tempfile.TemporaryDirectory() as tmp:
             proc = subprocess.run(
                 cmd,
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=DRAFT_TIMEOUT, cwd=tmp,
+                timeout=DRAFT_TIMEOUT if timeout is None else timeout, cwd=tmp,
             )
         if proc.returncode != 0:
             print(f"[drafter] claude exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}",
@@ -410,7 +417,7 @@ def _run_claude(prompt: str) -> str | None:
             return None
         return proc.stdout
     except subprocess.TimeoutExpired:
-        print(f"[drafter] claude timed out after {DRAFT_TIMEOUT}s", file=sys.stderr)
+        print(f"[drafter] claude timed out after {DRAFT_TIMEOUT if timeout is None else timeout}s", file=sys.stderr)
         return None
     except Exception as e:
         print(f"[drafter] claude call failed: {e}", file=sys.stderr)

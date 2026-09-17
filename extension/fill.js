@@ -1544,6 +1544,77 @@ function askId(label, kind, used) {
   return id;
 }
 
+// Write what the AI pass decided onto the form, and fold it into the report.
+//
+// Split out of runFill so it can be tested without a browser: this is the code that
+// decides what Parth ends up looking at, and every branch of it is a way to mislead him.
+// A flag or a proposal writes NOTHING here — those two actions exist precisely because
+// the model was not confident enough, or was never allowed, to touch the field.
+//
+// Returns the labels it actually wrote, for the trace.
+async function applyAiDecisions(decisions, pool, report, asks) {
+  const byId = new Map(pool.map(e => [e.id, e]));
+  const wrote = [];
+  for (const d of decisions) {
+    const entry = byId.get(d.id);
+    if (!entry) {
+      // Phase 3 re-fills a form that can genuinely come out different (Ashby's re-render
+      // race, a posting edited overnight). A decision with nowhere to land is recorded as
+      // un-applied, never re-homed by label onto whatever looks similar.
+      d.applied = false; d.why_not = "that field is not on this page";
+      continue;
+    }
+    if (d.action === "flag" || d.action === "propose") {
+      d.applied = false;
+      // A proposal for an always_ask question rides in as the draft on that question, so
+      // Parth sees it where he is already being asked and one tap accepts it.
+      const ask = asks.find(a => a.id === d.id);
+      if (ask && d.action === "propose" && !ask.draft) ask.draft = d.value;
+      continue;
+    }
+    const r = await entry.apply(d.value);
+    d.applied = !!(r && r.ok);
+    if (!d.applied) { d.why_not = (r && r.why) || "setter failed"; continue; }
+    const written = (r && r.value) || d.value;
+    d.value = written;
+    wrote.push(entry.label);
+    // One row per field in the report. A replacement REPLACES the deterministic row rather
+    // than sitting next to it — two rows for one control is how a review ends up vouching
+    // for a value that is no longer on the form.
+    const k = fieldKey(entry.label);
+    for (const bucket of ["filled", "needsInput", "flagged", "optional"]) {
+      const at = report[bucket].findIndex(i => i._askId === d.id
+                                            || fieldKey(i.label || i.key || "") === k);
+      if (at >= 0) report[bucket].splice(at, 1);
+    }
+    report.filled.push({ label: entry.label, value: written,
+                         via: `AI ${d.action}${d.low ? ", low confidence" : ""}` });
+    // Answered by the pass, so it is no longer a question for Parth. Removing it here
+    // (before the escalation step) is what keeps it off Telegram and out of the panel.
+    const ai = asks.findIndex(a => a.id === d.id);
+    if (ai >= 0) asks.splice(ai, 1);
+  }
+  return wrote;
+}
+
+// Ask the bridge to run the AI fill + verify pass over this form. Returns [] for every
+// reason there could be not to run one — the toggle is off, there is no `claude` binary,
+// the bridge is down, the call failed — because every one of those has the same right
+// answer: keep the deterministic fill and carry on. This is the only place the extension
+// talks about the pass at all; the flag itself lives in the bridge's prefs, so nothing
+// here has to be kept in step with a preference it cannot see.
+async function runAiPass(pool, context) {
+  if (!pool.length) return [];
+  try {
+    const res = await rpc({ type: "AI_PASS", fields: pool.map(e => e.meta), context });
+    if (!res || !res.enabled) return [];
+    return Array.isArray(res.decisions) ? res.decisions : [];
+  } catch (e) {
+    console.warn("[fill] AI pass unavailable:", e);
+    return [];
+  }
+}
+
 /**
  * @param {boolean} autoSubmit  background will submit after a ✅ (live queue path)
  * @param {object}  opts
@@ -1554,6 +1625,7 @@ function askId(label, kind, used) {
  *   answers:  {askId: value}  (mode "apply")
  *   approved: [{label,value}] the summary he approved (mode "apply") — diffed before submit
  *   company:  the queue's display name, when the caller knows it. Overrides the URL guess.
+ *   aiDecisions: what the AI pass decided in phase 1 (mode "apply") — replayed, not redone.
  */
 async function runFill(autoSubmit = false, opts = {}) {
   const mode = opts.mode || "live";
@@ -1582,6 +1654,40 @@ async function runFill(autoSubmit = false, opts = {}) {
     const shown = readableLabel(item.label || item.key);
     asks.push({ id, label: shown, why: item.why, draft: item.draft, answer_key: item.answer_key, required: item.required, options: item.options, optional: bucket === "optional", apply });
     report[bucket].push({ ...item, label: shown });
+    // Unresolved fields are exactly what the AI pass is for, so every escalation is also a
+    // pool entry — under the SAME id, or an answer it writes could never be matched back to
+    // the question it answered.
+    poolAdd({ ...item, value: "", source: "" }, apply, id);
+  };
+  // ── the AI pass's view of this form ───────────────────────────────────────────────
+  // Every control the deterministic pass touched or gave up on, in the shape
+  // bridge/aipass.py expects. This list is the ONLY thing the model sees — it cannot read
+  // the page — so a field missing here is one it silently cannot fix, and a `source` that
+  // lies is how Parth's confirmed answer-bank wording gets rewritten as if it were a guess.
+  // Each entry keeps its own apply closure, the same one the Telegram/panel answer path
+  // uses, so an AI answer lands through the control's own setter (react-select via CDP,
+  // Ashby's Yes/No buttons, a native <select>) rather than a second, weaker writer.
+  const aiPool = [];
+  const poolAdd = (meta, apply, id) => {
+    if (!apply) return null;
+    const label = readableLabel(meta.label || meta.key || "");
+    if (!label) return null;
+    const fid = id || askId(meta.label || meta.key, meta.kind, usedIds);
+    aiPool.push({ id: fid, apply, label, meta: {
+      id: fid, label, kind: meta.kind || "text",
+      // always_ask is the one bucket the model may never write to (salary, notice period,
+      // YOE gates — Parth's own decisions, not facts about him). Every escalate site that
+      // classifies into it now says so explicitly; the `why` fallback stays as belt and
+      // braces, because the cost of this one arriving unlabelled is a salary number typed
+      // into a real application, which reviewing it afterwards does not undo.
+      bucket: meta.bucket || (meta.why === "always_ask" ? "always_ask" : null),
+      required: !!meta.required,
+      options: meta.options || [],
+      value: meta.value == null ? "" : String(meta.value),
+      source: meta.source || "",
+      ...(meta.answer_key ? { answer_key: meta.answer_key } : {}),
+    } });
+    return fid;
   };
   try {
     const deps = await loadDeps();
@@ -1715,6 +1821,10 @@ async function runFill(autoSubmit = false, opts = {}) {
       // r.value = what the control actually holds when a setter had to substitute (a school
       // that isn't in the ATS's list committing as "Other"). Report that, not what we asked for.
       (r.ok ? report.filled : report.skipped).push({ key: f.key, value: r.value || value, ...(r.ok ? {} : { why: r.why || "setter failed" }) });
+      poolAdd({ label: labelFor(el) || f.key, kind: "core", bucket: "deterministic",
+                required: !f.optional && isRequired(el, adapter),
+                value: r.ok ? (r.value || value) : "", source: r.ok ? "deterministic" : "" },
+              (v) => applyValue(el, v, adapter));
     }
 
     // 2) resume attach — pick best-of-4 from the role title
@@ -1782,7 +1892,7 @@ async function runFill(autoSubmit = false, opts = {}) {
       };
       if (c.bucket !== "deterministic") {
         if (c.bucket === "draftable") escalate("needsInput", { label, why: `draftable -> ${c.answer_key} (Tier 2)`, answer_key: c.answer_key, required: req, options: groupOptions, kind: "group" }, applyGroup);
-        else if (c.bucket === "always_ask") escalate("needsInput", { label, why: "always_ask", required: req, options: groupOptions, kind: "group" }, applyGroup);
+        else if (c.bucket === "always_ask") escalate("needsInput", { label, bucket: "always_ask", why: "always_ask", required: req, options: groupOptions, kind: "group" }, applyGroup);
         // Unrecognized: skip optional ones (genuine Tier 1), but never silently drop a
         // REQUIRED field — surface it so it can't block submit unnoticed.
         else if (req) escalate("needsInput", { label, why: "unrecognized required field", required: true, options: groupOptions, kind: "group" }, applyGroup);
@@ -1800,6 +1910,9 @@ async function runFill(autoSubmit = false, opts = {}) {
       const stuck = pick.hit.input.checked;
       (stuck ? report.filled : report.flagged).push({ label, value: pick.hit.textContent,
         ...(pick.viaAlternate ? { via: pick.want } : {}), ...(stuck ? {} : { why: "clicked but did not commit" }) });
+      if (stuck) poolAdd({ label, kind: "group", bucket: "deterministic", required: req,
+                           options: groupOptions, value: pick.hit.textContent,
+                           source: "deterministic" }, applyGroup);
     }
 
     // 3a) LONE radios: a radio whose siblings are hidden forms no group (needs >= 2
@@ -1838,7 +1951,7 @@ async function runFill(autoSubmit = false, opts = {}) {
       };
       if (c.bucket !== "deterministic") {
         if (c.bucket === "draftable") escalate("needsInput", { label, why: `draftable -> ${c.answer_key} (Tier 2)`, answer_key: c.answer_key, required: req, options: ynOptions, kind: "yesno" }, applyYesNo);
-        else if (c.bucket === "always_ask") escalate("needsInput", { label, why: "always_ask", required: req, options: ynOptions, kind: "yesno" }, applyYesNo);
+        else if (c.bucket === "always_ask") escalate("needsInput", { label, bucket: "always_ask", why: "always_ask", required: req, options: ynOptions, kind: "yesno" }, applyYesNo);
         else if (req) escalate("needsInput", { label, why: "unrecognized required field", required: true, options: ynOptions, kind: "yesno" }, applyYesNo);
         else report.skipped.push({ label, why: "no rule matched -> Tier 1" });
         continue;
@@ -1852,6 +1965,9 @@ async function runFill(autoSubmit = false, opts = {}) {
       const committed = pick.hit.el.matches(adapter.yesNo.committed) || (cb && cb.checked);
       (committed ? report.filled : report.flagged).push({ label, value: pick.hit.textContent,
         ...(pick.viaAlternate ? { via: pick.want } : {}), ...(committed ? {} : { why: "clicked but did not commit" }) });
+      if (committed) poolAdd({ label, kind: "yesno", bucket: "deterministic", required: req,
+                               options: ynOptions, value: pick.hit.textContent,
+                               source: "deterministic" }, applyYesNo);
     }
 
     // 4) every other control -> classify by label
@@ -1897,7 +2013,9 @@ async function runFill(autoSubmit = false, opts = {}) {
         // which is unreadable in a fill report — name the field by what it is instead.
         const nice = /--\d+$/.test(label) ? `${eduDate.profileKey.split(".")[1]} (${eduDate.part})` : label;
         const r = await applyValue(el, want, adapter);
-        if (r.ok) report.filled.push({ label: nice, value: r.value || want });
+        if (r.ok) { report.filled.push({ label: nice, value: r.value || want });
+                    poolAdd({ label: nice, kind: ctlKind, bucket: "deterministic", required: req,
+                              value: r.value || want, source: "deterministic" }, applyCtl); }
         else escalate("flagged", { label, value: want, why: r.why || "setter failed", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
         continue;
       }
@@ -1924,6 +2042,11 @@ async function runFill(autoSubmit = false, opts = {}) {
             const r = await applyValue(el, "N/A", adapter);
             (r.ok ? report.filled : report.flagged).push({ label, value: "N/A",
               ...(r.ok ? { via: why } : { why: r.why || "setter failed" }) });
+            // Shown to the AI pass rather than hidden from it: the prompt's follow-up rule
+            // teaches it that an unfired conditional is answered "does not apply", and a
+            // field it cannot see is one it can contradict from the next field over.
+            if (r.ok) poolAdd({ label, kind: ctlKind, bucket: "deterministic", required: req,
+                                value: "N/A", source: "deterministic" }, applyCtl);
           } else {
             report.skipped.push({ label, why });
           }
@@ -1944,12 +2067,15 @@ async function runFill(autoSubmit = false, opts = {}) {
           r = await applyValue(el, want, adapter);
           if (r.ok) { used = want; break; }
         }
-        if (r && r.ok) report.filled.push({ label, value: r.value || used, ...(used !== tries[0] ? { via: used } : {}) });
+        if (r && r.ok) { report.filled.push({ label, value: r.value || used, ...(used !== tries[0] ? { via: used } : {}) });
+                         poolAdd({ label, kind: ctlKind, bucket: "deterministic", required: req,
+                                   options: nativeOpts, value: r.value || used,
+                                   source: "deterministic" }, applyCtl); }
         else escalate("flagged", { label, value: c.rendered, why: (r && r.why) || "setter failed", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
       } else if (c.bucket === "draftable") {
         escalate("needsInput", { label, why: `draftable -> ${c.answer_key} (Tier 2)`, answer_key: c.answer_key, required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
       } else if (c.bucket === "always_ask") {
-        escalate("needsInput", { label, why: "always_ask", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
+        escalate("needsInput", { label, bucket: "always_ask", why: "always_ask", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
       } else if (req) {
         // ALREADY ANSWERED ON THE PAGE. Greenhouse's resume parser fills the education
         // block (school, degree, discipline, the end date) before we ever scan it, and none
@@ -1966,6 +2092,8 @@ async function runFill(autoSubmit = false, opts = {}) {
         const already = currentValue(el, adapter);
         if (already) {
           report.filled.push({ label, value: already, via: "already on the form" });
+          poolAdd({ label, kind: ctlKind, required: true, options: nativeOpts,
+                    value: already, source: "already" }, applyCtl);
           continue;
         }
         escalate("needsInput", { label, why: "unrecognized required field", required: true, options: await optsFor(), kind: ctlKind }, applyCtl);
@@ -2013,6 +2141,36 @@ async function runFill(autoSubmit = false, opts = {}) {
     }
     traceStep("fill", report.filled.map(f => f.label || f.key));
 
+    // 4b) AI FILL + VERIFY — one Claude call for the whole form, when the toggle is on.
+    //
+    // The deterministic pass above is right about the fields it knows and blind in two
+    // ways only a reader of the whole page can fix: a question it never learned stays
+    // empty, and a rule can match the wrong field. So the entire pool goes to the bridge
+    // in ONE call (bridge/aipass.py) and comes back as decisions.
+    //
+    // What may happen to each decision is decided in Python, not here — this end only
+    // writes what it is told, through each control's own setter:
+    //   fill    — the field was empty. Written whatever the confidence; a low-confidence
+    //             one is tagged and sorted to the top of the review rather than withheld.
+    //   replace — the field had a value and the model was confident enough to overwrite.
+    //             The old value rides along so the review reads "was X, now Y".
+    //   flag    — it disagrees, but not confidently. NOTHING is written.
+    //   propose — always_ask (salary, notice, YOE). Never written; it becomes the draft on
+    //             the question Parth is asked, exactly like a draft from his answer bank.
+    //
+    // Phase 3 REPLAYS phase 1's decisions instead of asking again. That is not only the
+    // cost rule (one call per job): a second opinion could differ from the summary he
+    // approved, and the drift guard would then refuse to submit our own fill.
+    const aiDecisions = mode === "apply"
+      ? (opts.aiDecisions || []).map(d => ({ ...d }))
+      : await runAiPass(aiPool, { company, role: roleTitle, url: location.href, ...jobInfo() });
+    if (aiDecisions.length) {
+      traceStep("ai pass", await applyAiDecisions(aiDecisions, aiPool, report, asks));
+    }
+    // Rides on the report either way: phase 1 sends these to the bridge to store on the
+    // pending record, and the review renders them as its own section.
+    report.aiDecisions = aiDecisions;
+
     // 5) page-boundary escalation — send every unresolved field to Telegram and apply the
     // answers. Runs INSIDE the try so a Greenhouse react-select answer can still use the
     // (still-attached) debugger. Best-effort: if the bridge is down, the fields stay in
@@ -2038,6 +2196,9 @@ async function runFill(autoSubmit = false, opts = {}) {
       // Greenhouse dropdown answered ten minutes from now still lands.
       PANEL_ASKS = asks;
       PANEL_REPORT = report;
+      // The panel's revert button writes through the SAME setter the AI answer came in by,
+      // minutes later and after the cards have rendered — so the pool has to outlive this call.
+      PANEL_AI_POOL = aiPool;
       // Split, don't merge: the optional pile is a separate disclosure in the panel, and
       // `collected` must keep meaning "questions that actually need an answer".
       report.questions = asks.filter(a => !a.optional).map(serializeAsk);
@@ -2204,7 +2365,11 @@ async function runFill(autoSubmit = false, opts = {}) {
           // panel's own Submit, so there's nothing to send anywhere. The summary still rides
           // back on the report for the audit log.
         } else {
-          const res = await rpc({ type: "REVIEW_USER", summary, warnings, context });
+          // The AI pass rides separately from `summary`, not folded into it: the review
+          // needs to say what CHANGED (and what it declined to change), and a value read
+          // back off the DOM cannot say where it came from.
+          const res = await rpc({ type: "REVIEW_USER", summary, warnings, context,
+                                  ai: report.aiDecisions || [] });
           if (!res || !res.ok) throw new Error((res && res.error) || "no response from the control plane");
           report.reviewed = (res.answers && res.answers.__review) || null; // "ok" | "hold"
         }
@@ -2240,6 +2405,9 @@ let PANEL_STOP = false;
 // over by runFill in "panel" mode. Parth answers minutes later, long after runFill returned.
 let PANEL_ASKS = null;
 let PANEL_REPORT = null;
+// The AI pass's field pool from the last panel fill, kept for the "put the old value back"
+// button on a replaced field.
+let PANEL_AI_POOL = null;
 
 function currentAdapter(adapters) {
   return adapters.find(a => a.urlPatterns.some(re => re.test(location.href)));
@@ -2938,6 +3106,7 @@ function mountPanel() {
       /* question cards — the manual answer path; nothing here goes to Telegram */
       .qs{max-height:320px;overflow:auto;border-top:1px solid #eee}
       .qs:empty{display:none}
+      .ai:empty{display:none}
       .qhd{padding:8px 12px 2px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#6b7280}
       .q{padding:8px 12px 12px;border-bottom:1px solid #f1f1f1}
       .q.done{opacity:.5}
@@ -2972,6 +3141,7 @@ function mountPanel() {
       <div class="hd"><span>💼 Job Autofill</span><span class="x">✕</span></div>
       <div class="btns"><button id="fill">▶ Fill</button><button id="submit">✓ Submit</button><button id="code" title="Fetch the emailed verification code for this form">🔐 Code</button><button id="stop">⏹ Stop</button></div>
       <div class="alt"><button id="manual">✋ I submitted this by hand</button></div>
+      <div class="ai"></div>
       <div class="qs"></div>
       <div class="opts"></div>
       <div class="log"><div class="line empty">Fill the form, then Submit — I'll fix any rejected fields and retry.</div></div>
@@ -2990,7 +3160,7 @@ function mountPanel() {
   const setBusy = (b) => { $("#fill").disabled = b; $("#submit").disabled = b; };
   fab.onclick = () => panel.classList.toggle("hidden");
   $(".x").onclick = () => panel.classList.add("hidden");
-  const qsEl = $(".qs"), optEl = $(".opts");
+  const qsEl = $(".qs"), optEl = $(".opts"), aiEl = $(".ai");
 
   // Every string here (labels, options, drafts) comes off the page or the bank, so build
   // the cards with textContent and never innerHTML — a form label is not something to
@@ -3120,6 +3290,45 @@ function mountPanel() {
     }
   }
 
+  // What the AI pass did, above the questions. It is the only part of a panel fill Parth
+  // cannot check by looking at the form: a value it REPLACED looks exactly as settled as
+  // one the rules wrote, so the old value is printed next to it and a revert is one tap.
+  // Flags and always_ask proposals are listed as what they are — nothing was written.
+  function renderAi(decisions) {
+    aiEl.textContent = "";
+    const rows = (decisions || []).filter(d => d.action !== "fill" || d.applied);
+    if (!rows.length) return;
+    const head = el("div", "more", `🧠 AI pass — ${rows.length} thing${rows.length > 1 ? "s" : ""} to check`);
+    const list = el("div", "optqs");
+    for (const d of rows) {
+      const card = el("div", "q");
+      const verb = { fill: "filled", replace: "REPLACED", flag: "flagged", propose: "suggested (not filled)" }[d.action] || d.action;
+      const mark = d.hot ? "🔴 " : (d.low ? "🟡 " : "");
+      card.appendChild(el("div", "qlabel", `${mark}${d.label} — ${verb}`));
+      card.appendChild(el("div", "qwhy", d.action === "flag"
+        ? `left as "${d.was}"; AI would have said: ${d.value}`
+        : d.value));
+      if (d.action === "replace" && d.was) card.appendChild(el("div", "qwhy", `was: ${d.was}`));
+      if (d.why) card.appendChild(el("div", "qwhy", d.why));
+      if (d.action === "replace" && d.was) {
+        const undo = el("button", "skipq", "↩ Put the old value back");
+        undo.onclick = async () => {
+          undo.disabled = true;
+          const entry = (PANEL_AI_POOL || []).find(e => e.id === d.id);
+          if (!entry) { log(`can't reach "${d.label}" any more — re-run Fill.`, "err"); return; }
+          const r = await entry.apply(d.was);
+          if (r && r.ok) { d.reverted = true; card.appendChild(el("div", "qwhy", "↩ reverted")); log(`reverted "${d.label}".`, "ok"); }
+          else { undo.disabled = false; log(`couldn't revert "${d.label}": ${(r && r.why) || "setter failed"}`, "err"); }
+        };
+        card.appendChild(undo);
+      }
+      list.appendChild(card);
+    }
+    head.onclick = () => { list.style.display = list.style.display === "none" ? "" : "none"; };
+    aiEl.appendChild(head);
+    aiEl.appendChild(list);
+  }
+
   // The optional pile: one line by default, cards once he asks. Rendering them expanded
   // would bury the questions that actually block the submit under fields nobody needs.
   function renderOptional(questions) {
@@ -3137,7 +3346,7 @@ function mountPanel() {
   }
 
   $("#fill").onclick = async () => {
-    setBusy(true); PANEL_STOP = false; qsEl.textContent = ""; optEl.textContent = ""; log("Filling…");
+    setBusy(true); PANEL_STOP = false; qsEl.textContent = ""; optEl.textContent = ""; aiEl.textContent = ""; log("Filling…");
     try {
       const r = await runFill(false, { mode: "panel" });
       if (r.stopped) log(`Stopped. ${r.filled.length} field(s) were filled before that.`, "warn");
@@ -3215,6 +3424,12 @@ function mountPanel() {
       // Whatever the form doesn't require, offered but not pushed. Drafts aren't fetched for
       // these — most carry no answer_key, and pre-drafting a pile he may never open would
       // spend quota on nothing. Each card has its own "✨ Draft it" for that.
+      const ai = r.aiDecisions || [];
+      renderAi(ai);
+      if (ai.length) {
+        const wrote = ai.filter(d => d.applied).length;
+        log(`AI pass: ${wrote} field(s) written, ${ai.length - wrote} to look at.`, wrote ? "ok" : "warn");
+      }
       const optQs = r.optionalQuestions || [];
       renderOptional(optQs);
       if (optQs.length) log(`${optQs.length} optional field(s) available below if you want them.`);

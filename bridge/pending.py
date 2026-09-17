@@ -175,7 +175,8 @@ def load_archived(dedup_key: str, base: Path | str | None = None) -> dict | None
 
 
 def put(job: dict, questions: list[dict], filled: list[dict],
-        base: Path | str | None = None, warnings: list | None = None) -> dict | None:
+        base: Path | str | None = None, warnings: list | None = None,
+        ai_decisions: list | None = None) -> dict | None:
     """Record what phase 1 found for one job. Returns the new record, or None if this
     job is already pending — never clobbers a record Parth has partly answered, which
     is what a re-run of phase 1 would otherwise do.
@@ -183,7 +184,14 @@ def put(job: dict, questions: list[dict], filled: list[dict],
     warnings = required fields the DOM said were still empty after the phase-1 fill
     (beyond the questions themselves) — shown on the ✅ summary so Parth isn't
     approving blind. ats/ats_slug/ats_job_id ride along so phase 3 can rebuild a
-    fillable URL for jobs whose queue URL points at a custom career domain."""
+    fillable URL for jobs whose queue URL points at a custom career domain.
+
+    ai_decisions = what the optional AI fill + verify pass did on this form (see
+    bridge/aipass.py), already applied to the page by phase 1. They are stored rather than
+    recomputed because the whole point of that pass is ONE Claude call per job: phase 3
+    re-opens the form hours later and replays these by field id, exactly as it replays
+    Parth's own typed answers, instead of paying for a second opinion that could differ
+    from the summary he approved."""
     key = job.get("dedup_key")
     if not key:
         raise ValueError("job needs a dedup_key")
@@ -205,6 +213,7 @@ def put(job: dict, questions: list[dict], filled: list[dict],
         "filled": filled,
         "questions": [{**q, "answer": q.get("answer")} for q in questions],
         "warnings": list(warnings or []),
+        "ai_decisions": list(ai_decisions or []),
         "status": AWAITING,
         "created": _now(),
     }

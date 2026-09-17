@@ -263,6 +263,11 @@ python -m core.bank prune --days 90                         # mark unused active
 Resolution order at apply-time: company-scoped (active) → common (active) → Claude draft
 → ask user. Only `status: active` answers are served. The console has a UI for this.
 
+With the optional AI fill + verify pass on (`/ai`, or the console), free-text answers you
+approve are banked automatically as `status: draft` rows tagged `ai-drafted` — review them
+with `python -m core.bank list --status draft` and promote the ones worth keeping. They
+never serve until you do. See `bridge/README.md` for what that pass may and may not write.
+
 ## Resumes
 
 `resumes/` is a local, gitignored byte-cache of the real PDFs that the extension attaches
@@ -323,6 +328,7 @@ for t in bridge/test_*.py; do .venv/Scripts/python "$t"; done
 .venv/Scripts/python scripts/test_pii_guard.py
 .venv/Scripts/python test_home_layout.py && .venv/Scripts/python test_write_target.py
 node extension/test_fill_units.mjs
+node extension/test_aipass_units.mjs
 ```
 
 Run the whole thing **twice back to back, then `git status data/`**. Every suite is
