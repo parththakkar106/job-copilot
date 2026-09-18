@@ -174,7 +174,61 @@ def _load_facts() -> list[str]:
     status = txt("work_authorization", "status")
     if status:
         out.append(f"Work-authorization status: {status}")
+    # State the contact details outright. The CLI runs under a Claude account whose login
+    # email differs from the application email, and the AI pass, seeing only the form's
+    # value, flagged the application email as a typo and once replaced it.
+    contact = [
+        ("identity", "email", "Application email (use exactly this; ignore any other address you know)"),
+        ("identity", "phone", "Phone"),
+        ("identity", "location_display", "Location"),
+        ("links", "linkedin", "LinkedIn"),
+        ("links", "github", "GitHub"),
+    ]
+    for block, key, phrasing in contact:
+        v = txt(block, key)
+        if v:
+            out.append(f"{phrasing}: {v}")
     return out
+
+
+def work_block(track: str | None) -> str:
+    """His resume bullets and skills for one resume track, as a prompt section.
+
+    Without these the model knows a title and an employer and nothing he did there, so a
+    "why this role" answer comes out generic. The text is the same wording as the resume
+    that goes with this application, so the answer and the resume agree. Read per call
+    because the track differs per job. Returns "" when the profile is unreadable.
+    """
+    try:
+        root = pathlib.Path(__file__).resolve().parent.parent
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from core import paths
+        p = json.loads(paths.PROFILE.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    def pick(obj: dict, key: str):
+        # The track's own version when it has one, else the default.
+        v = ((obj.get("by_stream") or {}).get(track or "") or {}).get(key)
+        return v if v else obj.get(key)
+
+    lines = []
+    for job in p.get("work_history") or []:
+        desc = pick(job, "description")
+        if not desc or desc == "FILL_ME":
+            continue
+        end = "present" if job.get("current") else (job.get("end") or "")
+        lines.append(f"- {job.get('title', '')} at {job.get('employer', '')} "
+                     f"({job.get('start', '')} to {end}): {desc}")
+    skills = [s for s in (pick(p.get("skills") or {}, "list") or []) if s != "FILL_ME"]
+    if skills:
+        lines.append(f"- Skills: {', '.join(skills)}")
+    if not lines:
+        return ""
+    return ("His work, exactly as his resume for this application states it. Cite these "
+            "when a question asks about his experience; claim nothing beyond them:\n"
+            + "\n".join(lines) + "\n\n")
 
 
 NAME, BIO = _load_identity()
@@ -399,6 +453,14 @@ def _run_claude(prompt: str, model: str | None = None, timeout: float | None = N
     if not CLAUDE_BIN:
         return None
     cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "text"]
+    # Replace the CLI's coding-agent setup: its system prompt, tool and MCP definitions,
+    # skills, and user settings. Every prompt here is self-contained, and that setup was
+    # about 42k tokens per call against about 600 without it (measured 2026-09-18).
+    # `--bare` would cut more but refuses subscription auth.
+    cmd += ["--system-prompt", "You answer job application questions for one applicant. "
+            "Use only the facts in the user's message and output only what it asks for.",
+            "--tools", "", "--strict-mcp-config", "--setting-sources", "",
+            "--disable-slash-commands"]
     # Pin the model unless explicitly told to use the CLI default. Keeping this a --model
     # flag (not the ANTHROPIC_MODEL env) means it can't leak into any other claude call.
     pin = DRAFT_MODEL if model is None else model

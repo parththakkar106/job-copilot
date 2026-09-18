@@ -132,6 +132,8 @@ def main():
         drafter.DRAFT_MODEL = "default"
         drafter._run_claude("hi")
         ok &= check("DRAFT_MODEL=default omits --model", "--model" not in captured["cmd"])
+        ok &= check("the call replaces the CLI's own system prompt and tools",
+                    "--system-prompt" in captured["cmd"] and "--tools" in captured["cmd"])
     finally:
         drafter.DRAFT_MODEL, drafter.CLAUDE_BIN = orig_model, orig_bin2
         drafter.subprocess.run = orig_subrun
@@ -220,6 +222,10 @@ def main():
     facts = "\n".join(drafter.FACTS).lower()
     ok &= check("the facts block names work authorization", "authorized to work" in facts)
     ok &= check("the facts block names sponsorship", "sponsorship" in facts)
+    ok &= check("the facts block names the application email", "application email" in facts)
+    work = drafter.work_block("quant")
+    ok &= check("the work block is built from the profile or empty",
+                work == "" or "His work, exactly as his resume" in work)
     ok &= check("the facts block reaches the single prompt",
                 drafter.FACTS_BLOCK[:30] in drafter.build_prompt({"label": "Why us?", "answer_key": "why_company"}, None))
     ok &= check("the facts block reaches the batch prompt",

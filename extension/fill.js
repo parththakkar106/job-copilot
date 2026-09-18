@@ -2176,7 +2176,8 @@ async function runFill(autoSubmit = false, opts = {}) {
     // approved, and the drift guard would then refuse to submit our own fill.
     const aiDecisions = mode === "apply"
       ? (opts.aiDecisions || []).map(d => ({ ...d }))
-      : await runAiPass(aiPool, { company, role: roleTitle, url: location.href, ...jobInfo() });
+      : await runAiPass(aiPool, { company, role: roleTitle, url: location.href, ...jobInfo(),
+          track: (report.resumeChoice || {}).tag || "" });
     if (aiDecisions.length) {
       traceStep("ai pass", await applyAiDecisions(aiDecisions, aiPool, report, asks));
     }

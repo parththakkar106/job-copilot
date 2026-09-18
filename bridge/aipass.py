@@ -177,6 +177,10 @@ def build_prompt(fields: list[dict], context: dict | None) -> str:
     if role:
         where.append(f"Role: {role}")
     where_block = ("\n".join(where) + "\n\n") if where else ""
+    jd = str(ctx.get("description") or "").strip()
+    if jd:
+        where_block += ("Job description (from the posting; use it to make answers specific "
+                        f"to this role, never as a fact about him):\n{jd}\n\n")
 
     listing = "\n\n".join(_describe(f, i) for i, f in enumerate(fields, 1))
 
@@ -186,6 +190,7 @@ def build_prompt(fields: list[dict], context: dict | None) -> str:
         f"you are not sure of costs him the job, not a retry.\n\n"
         f"{drafter.ABOUT}"
         f"{drafter.FACTS_BLOCK}"
+        f"{drafter.work_block(ctx.get('track'))}"
         f"{where_block}"
         "Below is EVERY field on the form, with what is in it right now. Most values were "
         "filled by a rule engine that matches question wording to his profile. It is right "

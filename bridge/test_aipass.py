@@ -126,6 +126,14 @@ def test_prompt():
     assert "NEVER invent a fact" in p; checks += 1
     assert "never" in p.lower() and "dash" in p.lower(); checks += 1
     assert "(empty)" in p; checks += 1
+    # The posting and his resume bullets reach the prompt when the extension sends them.
+    p = aipass.build_prompt(fields, {"company": "Ramp", "description": "Build pricing models."})
+    assert "Build pricing models." in p; checks += 1
+    assert "Job description" not in aipass.build_prompt(fields, {"company": "Ramp"}); checks += 1
+    # Greenhouse sends the description entity-escaped; it must arrive as plain text.
+    from core import scraper
+    assert scraper._plain("&lt;p&gt;Build &amp;amp; ship&lt;/p&gt;&lt;li&gt;Python&lt;/li&gt;") \
+        == "Build & ship\nPython"; checks += 1
     return checks
 
 

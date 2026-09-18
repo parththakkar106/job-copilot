@@ -2580,11 +2580,36 @@ async def handle_ai_pass(msg, ws):
     if out["enabled"] and fields:
         try:
             fields = await asyncio.to_thread(_seed_bank_values, fields, ctx.get("company"))
+            if not ctx.get("description"):
+                ctx["description"] = await asyncio.to_thread(_posting_text, ctx.get("url") or "")
             out["decisions"] = await asyncio.to_thread(aipass_mod.run, fields, ctx)
         except Exception as e:
             print(f"[aipass] failed: {redact(e)}", file=sys.stderr)
             out = {"enabled": True, "decisions": [], "error": str(e)}
     await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
+
+
+def _posting_text(url: str) -> str:
+    """The job description for the AI pass, "" when it cannot be fetched.
+
+    A company-hosted Greenhouse embed (`careers.example.com/jobs?gh_jid=123`) names no
+    board in its URL, so the board slug comes from the queue row with that job id.
+    """
+    ats, slug, job_id = scraper_mod.ats_from_url(url)
+    if ats == "other":
+        import urllib.parse
+        jid = (urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("gh_jid") or [""])[0]
+        if not jid:
+            return ""
+        try:
+            rows = json.loads(paths_mod.QUEUE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        row = next((r for r in rows if str(r.get("ats_job_id")) == jid), None)
+        if not row:
+            return ""
+        ats, slug, job_id = row.get("ats", ""), row.get("ats_slug", ""), jid
+    return scraper_mod.job_description(url, ats, slug, job_id)
 
 
 def _seed_bank_values(fields: list[dict], company: str | None) -> list[dict]:

@@ -422,6 +422,56 @@ def is_fresh(posted: str | None, days: int) -> bool:
 
 
 # ----------------------------------------------------------------- fetch ----
+def _plain(markup: str) -> str:
+    """HTML (Greenhouse returns it entity-escaped) to plain text with line breaks kept."""
+    import html as html_mod
+    t = html_mod.unescape(html_mod.unescape(markup or ""))
+    t = re.sub(r"(?i)<br\s*/?>|</(p|li|h\d|div)>", "\n", t)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = re.sub(r"[ \t\xa0]+", " ", t)
+    return re.sub(r"\s*\n\s*", "\n", t).strip()
+
+
+def job_description(url: str, ats: str = "", slug: str = "", job_id: str = "",
+                    limit: int = 4000) -> str:
+    """The posting's description text from the ATS's public API, or "" on any failure.
+
+    The apply pages often do not render the description (Ashby's /application tab, Lever's
+    /apply), so the API is the one source that works for every supported board. Pass
+    ats/slug/job_id when the URL is a company-hosted embed (`?gh_jid=`) that
+    `ats_from_url` cannot read. One try with a short timeout: this runs inside a fill.
+    """
+    if not (ats and slug and job_id):
+        ats, slug, job_id = ats_from_url(url)
+    if requests is None or not (slug and job_id):
+        return ""
+    try:
+        if ats == "greenhouse":
+            r = requests.get(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{job_id}",
+                             headers={"User-Agent": UA}, timeout=8)
+            text = _plain(r.json().get("content", "")) if r.ok else ""
+        elif ats == "lever":
+            r = requests.get(f"https://api.lever.co/v0/postings/{slug}/{job_id}",
+                             headers={"User-Agent": UA}, timeout=8)
+            j = r.json() if r.ok else {}
+            parts = [j.get("descriptionPlain") or ""]
+            for sec in j.get("lists") or []:
+                parts.append(f"{sec.get('text', '')}\n{_plain(sec.get('content', ''))}")
+            parts.append(j.get("additionalPlain") or "")
+            text = "\n".join(p for p in parts if p.strip())
+        elif ats == "ashby":
+            r = requests.get(f"https://api.ashbyhq.com/posting-api/job-board/{slug}",
+                             headers={"User-Agent": UA}, timeout=8)
+            jobs = r.json().get("jobs", []) if r.ok else []
+            text = next((j.get("descriptionPlain") or _plain(j.get("descriptionHtml", ""))
+                         for j in jobs if str(j.get("id")) == job_id), "")
+        else:
+            return ""
+    except (requests.RequestException, ValueError, AttributeError):
+        return ""
+    return re.sub(r"\s*\n\s*", "\n", text).strip()[:limit]
+
+
 def _get(url, timeout=20, **kw):
     for attempt in range(3):
         try:
