@@ -3,6 +3,7 @@
 (bucket transitions). See dashboard_spec.md. Mocks the WebSocket + Telegram and isolates
 every pile in a temp dir, so no bot and no real pending/applied files are touched."""
 import asyncio
+import datetime
 import json
 import tempfile
 from pathlib import Path
@@ -58,11 +59,16 @@ def run():
         pending.put(_job("Beta", "DS", "k2"),
                     [{"id": "q1", "label": "Salary", "answer": None}], [])
         # Seed an already-applied role and a blocked one (dated older so sort is testable).
-        # Dated within the default 60-day window, but older than the (today) pending rows.
+        # Date them relative to today. Fixed dates drift out of the 60-day window as time
+        # passes, and the test then fails with no code change.
+        # 10 and 9 days back sit inside the 60-day window and outside the 5-day one.
+        today = datetime.date.today()
+        d10 = (today - datetime.timedelta(days=10)).isoformat()
+        d9 = (today - datetime.timedelta(days=9)).isoformat()
         triage.append_applied({"dedup_key": "k3", "company": "Gamma", "title": "MLE",
-                               "url": "https://x/k3", "status": "applied", "applied": "2026-07-10"}, ap)
+                               "url": "https://x/k3", "status": "applied", "applied": d10}, ap)
         triage.append_applied({"dedup_key": "k4", "company": "Delta", "title": "SRE",
-                               "url": "https://x/k4", "status": "rejected", "applied": "2026-07-11"}, ap)
+                               "url": "https://x/k4", "status": "rejected", "applied": d9}, ap)
 
         # 1) list_all merges all four, buckets + tags them, newest first.
         ans = _list_all()
@@ -72,11 +78,11 @@ def run():
         assert by_key["k2"]["bucket"] == "in_queue" and by_key["k2"]["tag"] == "1 question", by_key["k2"]; checks += 1
         assert by_key["k3"]["bucket"] == "submitted", by_key["k3"]; checks += 1
         assert by_key["k4"]["bucket"] == "blocked", by_key["k4"]; checks += 1
-        # newest first: today's pending (k1/k2) precede the Jan applied rows.
+        # newest first: today's pending (k1/k2) precede the older applied rows.
         assert ans["rows"][0]["dedup_key"] in ("k1", "k2"), ans["rows"][0]; checks += 1
 
         # 1b) since_days windows the applied pile only (pending always shown).
-        ans_recent = _list_all(since=5)  # cutoff ~2026-07-15, so the 07-10/11 rows drop
+        ans_recent = _list_all(since=5)  # the 10- and 9-day-old rows drop
         keys = {r["dedup_key"] for r in ans_recent["rows"]}
         assert keys == {"k1", "k2"}, keys; checks += 1
 
