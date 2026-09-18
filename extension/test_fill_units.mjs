@@ -1100,7 +1100,7 @@ const labelOf = (el) => (el && el._label) || "";
   }
 }
 
-// --- verifyCodeStillShown: whose code is in the box? ---------------------------------
+// --- verifyCodeState: whose code is in the box, and is there a box at all? -----------
 //
 // The gate's wording does not clear the moment the code is typed — it clears when the
 // server answers. So on the pass after a fill, "is the gate still up?" answers nothing.
@@ -1115,37 +1115,98 @@ const labelOf = (el) => (el && el._label) || "";
     id: "verification_code", value, disabled: false, readOnly: false, offsetParent: {},
     getAttribute: (k) => (k === "maxlength" ? "8" : null),
   });
-  const shown = (code, els) => {
+  // `target` stands in for CODE_TARGET, the elements the code was last written to.
+  const shown = (code, els, target = null) => {
     globalThis.document = {
       querySelectorAll: (sel) => sel.includes('maxlength="1"')
         ? els.filter(e => e.getAttribute("maxlength") === "1") : els,
     };
     const codeAttrAt = src.indexOf("const CODE_ATTR = ");
     try {
-      return new Function("document", "labelFor",
-        src.slice(codeAttrAt, src.indexOf("function findVerifyInput", codeAttrAt)) + ";"
+      return new Function("document", "labelFor", "CODE_TARGET",
+        src.slice(codeAttrAt, src.indexOf("function findVerifyInput", codeAttrAt))
+          .replace("let CODE_TARGET = null;", "") + ";"
         + extract("findVerifyInput") + ";" + extract("codeBoxGroup") + ";"
-        + extract("verifyCodeStillShown") + "; return verifyCodeStillShown;")(
-          globalThis.document, () => "")(code);
+        + extract("verifyCodeState") + "; return verifyCodeState;")(
+          globalThis.document, () => "", target)(code);
     } finally { delete globalThis.document; }
   };
 
   const boxes = (chars) => "Mp3bF6OD".split("").map((_, i) => mkBox(`code-${i}`, chars[i] ?? ""));
 
-  ok(shown("Mp3bF6OD", boxes("Mp3bF6OD")) === true,
+  ok(shown("Mp3bF6OD", boxes("Mp3bF6OD")) === "shown",
      "our code still across the eight boxes -> the page has not answered yet");
-  ok(shown("Mp3bF6OD", boxes("")) === false,
+  ok(shown("Mp3bF6OD", boxes("")) === "cleared",
      "boxes cleared by the form -> the code was rejected, a fresh one is worth fetching");
-  ok(shown("Mp3bF6OD", boxes("XY99ZZ11")) === false, "somebody else's code is not ours");
-  ok(shown("Mp3bF6OD", [mkField("Mp3bF6OD")]) === true, "a single code field counts the same way");
-  ok(shown("Mp3bF6OD", [mkField("")]) === false, "and an emptied single field means rejected");
+  ok(shown("Mp3bF6OD", boxes("XY99ZZ11")) === "cleared", "somebody else's code is not ours");
+  {
+    // The finder's guesses skip a single field that holds a value, so the loop reads it
+    // through CODE_TARGET, the element it wrote to.
+    const f = { ...mkField("Mp3bF6OD"), isConnected: true };
+    ok(shown("Mp3bF6OD", [f], { input: f, boxes: null }) === "shown",
+       "a single code field counts the same way");
+  }
+  ok(shown("Mp3bF6OD", [mkField("")]) === "cleared", "and an emptied single field means rejected");
 
   // Before anything has been filled there is nothing of ours to recognize.
-  ok(shown("", boxes("Mp3bF6OD")) === false, "no code filled yet -> nothing of ours is shown");
+  ok(shown("", boxes("Mp3bF6OD")) === "cleared", "no code filled yet -> nothing of ours is shown");
 
-  // Fails towards WAITING: a field that cannot be found is not evidence of rejection, and
-  // re-fetching on no evidence is exactly what burned the retry budget in the first place.
-  ok(shown("Mp3bF6OD", []) === true, "an unfindable field means wait, never 'go fetch another'");
+  // Fails towards WAITING: a field that cannot be found is not evidence of rejection. It is
+  // its own answer, so the loop can say the box is missing instead of "code is in place".
+  ok(shown("Mp3bF6OD", []) === "nofield", "an unfindable field is 'nofield', not 'shown'");
+
+  // The written-to elements win over a fresh search while they are still on the page.
+  {
+    const written = boxes("Mp3bF6OD").map(b => ({ ...b, isConnected: true }));
+    ok(shown("Mp3bF6OD", [mkField("")], { boxes: written, input: written[0] }) === "shown",
+       "a live written-to target is read instead of whatever the finder now returns");
+    const gone = boxes("Mp3bF6OD").map(b => ({ ...b, isConnected: false }));
+    ok(shown("Mp3bF6OD", boxes(""), { boxes: gone, input: gone[0] }) === "cleared",
+       "once the written-to nodes are detached, the finder's answer is used again");
+  }
+}
+
+// --- findVerifyInput: which box takes the emailed code? -------------------------------
+//
+// The finder is a heuristic over attributes and shape. These pin the properties that keep a
+// wrong guess cheap: application fields that say "code" are never candidates, separators
+// do not hide a name, and a guess never overwrites a field that already holds an answer.
+{
+  const mk = (a) => ({
+    id: a.id || "", name: "", placeholder: "", offsetParent: {}, disabled: false, readOnly: false,
+    value: a.value || "", __label: a.label || "",
+    getAttribute: (k) => k === "maxlength" ? (a.maxlength != null ? String(a.maxlength) : null)
+      : k === "autocomplete" ? (a.autocomplete || null) : null,
+  });
+  const codeAttrAt = src.indexOf("const CODE_ATTR = ");
+  const find = (els) => new Function("document", "labelFor",
+    src.slice(codeAttrAt, src.indexOf("function findVerifyInput", codeAttrAt)) + ";"
+    + extract("findVerifyInput") + "; return findVerifyInput();")(
+      { querySelectorAll: () => els }, (el) => el.__label);
+  const email = mk({ id: "email", label: "Email", maxlength: 255 });
+  const zip = mk({ id: "zip", label: "Zip Code/Postal Code", maxlength: 10 });
+  const boxes8 = "01234567".split("").map(i => mk({ id: `security-input-${i}`, maxlength: 1 }));
+
+  ok(find([zip, ...boxes8]) === boxes8[0], "the eight-box gate wins over a field named 'Zip Code'");
+  ok(find([zip]) === null, "a postal-code box is never the code box, even alone");
+  ok(find([mk({ id: "area_code", maxlength: 5 })]) === null, "nor an area code written with an underscore");
+  ok(find([mk({ label: "Referral code", maxlength: 8 })]) === null, "nor a referral code");
+  ok(find([mk({ label: "Employee code", maxlength: 8 })]) === null, "nor an employee code");
+  ok(find([email, mk({ id: "verification_code", maxlength: 255 })]) !== null,
+     "verification_code is recognized by name despite the underscore");
+  ok(find([email, mk({ autocomplete: "one-time-code", maxlength: 255 })]) !== null,
+     "the browser's own one-time-code declaration is taken outright");
+  ok(find([email, mk({ id: "x", maxlength: 8, value: "30060" })]) === null,
+     "a short field that already holds an answer is not guessed at");
+  ok(find([email, mk({ id: "x", maxlength: 8 })]) !== null,
+     "while the same field, empty, still qualifies on shape");
+  ok(find([mk({ label: "Enter the code", maxlength: 255, value: "already answered" })]) === null,
+     "a code-ish name alone does not overwrite an answered field");
+  {
+    const filled = "0123".split("").map(i => mk({ id: `security-input-${i}`, maxlength: 1, value: "x" }));
+    filled[0].__label = "Security code";
+    ok(find(filled) === filled[0], "a filled box group is still the gate, so a retry reaches it");
+  }
 }
 
 // --- submitWithRetry at the code gate: reading the mail has to END IN A CLICK ---------
@@ -1172,18 +1233,20 @@ const labelOf = (el) => (el && el._label) || "";
       "loadDeps", "currentAdapter", "matchedConfirmPhrases", "matchedRejectPhrases",
       "matchedVerifyPhrases", "confirmationVisible", "reassertChoices", "reassertText",
       "readValidationErrors", "clickSubmit", "submitRejectedText", "submitVerificationText",
-      "verifyCodeStillShown", "waitForVerifyCode", "sleep", "Date", "location",
+      "verifyCodeState", "waitForVerifyCode", "sleep", "Date", "location",
       "PANEL_STOP", "PANEL_REPORT", "traceStep", "logTrace",
       "async " + extract("submitWithRetry") + "; return submitWithRetry;")(
         async () => ({ adapters: [{}] }), () => ({ submit: {} }),
         () => [], () => [], () => [],
         () => page.confirmed,
-        () => 0, async () => 0,
+        () => { page.reasserts = (page.reasserts || 0) + 1; return 0; },
+        async () => { page.reasserts = (page.reasserts || 0) + 1; return 0; },
         () => [],
-        async () => { page.click(); return true; },
+        async () => { if (page.submitDisabled) return "disabled"; page.click(); return true; },
         () => null,
         () => (page.gate ? "enter the 8-character code" : null),
-        (code) => !!code && page.codeInBox === code,
+        (code) => (page.noBox ? "nofield"
+          : !code ? "cleared" : page.codeInBox === code ? "shown" : "cleared"),
         async () => { fetches.push(1); const c = page.mail.shift() || ""; if (c) page.codeInBox = c; return c; },
         async (ms) => { now += ms; tick(); },
         { now: () => now },
@@ -1251,6 +1314,48 @@ const labelOf = (el) => (el && el._label) || "";
     const { outcome } = await drive(page);
     ok(outcome === "needs_verification", "no code in the inbox -> Parth is told, tab left open");
     ok(page.clicks === 1, "and Submit is never clicked again without a code");
+  }
+
+  // The gate re-renders the form on each submit, so every dropdown reads empty. Re-filling
+  // them does not move the gate, and each CDP click takes focus off the code box.
+  {
+    const page = {
+      clicks: 0, gate: true, confirmed: false, codeInBox: "", answerIn: 0,
+      mail: ["Mp3bF6OD"],
+      click() { this.clicks++; if (this.codeInBox === "Mp3bF6OD") this.answerIn = 2; },
+      answer() { this.gate = false; this.confirmed = true; },
+    };
+    const { outcome } = await drive(page);
+    ok(outcome === "confirmed", "the gate still resolves once the code goes in");
+    ok(!page.reasserts, "and no field is re-applied while the gate is up");
+  }
+
+  // The mail was read, but the page has no code box holding it. The loop must stop and say
+  // so, not click Submit again and report that the code is in place.
+  {
+    const page = {
+      clicks: 0, gate: true, confirmed: false, codeInBox: "", answerIn: 0, noBox: true,
+      mail: ["Mp3bF6OD"],
+      click() { this.clicks++; },
+      answer() {},
+    };
+    const { outcome, logs } = await drive(page);
+    ok(outcome === "needs_verification", "a code that is nowhere on the page parks the run");
+    ok(!logs.some(l => /code is in place/.test(l)), "and it never claims the code is in place");
+  }
+
+  // A disabled Submit on the gate is the form's answer, not a swallowed click.
+  {
+    const page = {
+      clicks: 0, gate: true, confirmed: false, codeInBox: "", answerIn: 0,
+      submitDisabled: true, mail: ["Mp3bF6OD"],
+      click() { this.clicks++; },
+      answer() {},
+    };
+    const { outcome, logs } = await drive(page);
+    ok(outcome === "needs_verification", "a disabled Submit at the gate parks the run");
+    ok(page.clicks === 0, "and the disabled button is never counted as clicked");
+    ok(!logs.some(l => /swallowed/.test(l)), "and the browser is not blamed for it");
   }
 }
 

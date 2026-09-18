@@ -317,6 +317,7 @@ MUST_REVIEW = [
     "attestations.criminal_history",
     "attestations.previously_applied_or_interviewed",
     "affiliations.previously_employed",
+    "affiliations.current_employee",
     "affiliations.government_affiliation",
     "affiliations.external_business",
     "affiliations.related_to_employee",

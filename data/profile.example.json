@@ -141,6 +141,7 @@
   "affiliations": {
     "_note": "Prior/related-connection disclosure questions. All No assumes you are not applying to a current or former employer, or to a company where you have a relative. If you ever do, add a per-company override in taxonomy.yaml so it gets surfaced instead of auto-answered.",
     "previously_employed": false,
+    "current_employee": false,
     "government_affiliation": false,
     "external_business": false,
     "related_to_employee": false

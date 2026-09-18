@@ -1971,143 +1971,156 @@ async function runFill(autoSubmit = false, opts = {}) {
     }
 
     // 4) every other control -> classify by label
-    const controls = [...document.querySelectorAll("input, select, textarea")].filter(el => {
-      if (handled.has(el)) return false;
-      const t = (el.type || "").toLowerCase();
-      if (["hidden", "submit", "button", "file", "password", "radio"].includes(t)) return false;
-      if (el.disabled || el.offsetParent === null) return false; // skip hidden/disabled
-      if (!isRealField(el)) return false; // drop react-select proxies / invisible inputs
-      return true;
-    });
+    //
+    // Answering one question can reveal another. Greenhouse draws "Please identify your
+    // race" only after "Are you Hispanic/Latino?" is answered, so a single scan never
+    // sees it and the field is left empty and missing from the report. Scan again after
+    // each pass and fill whatever appeared. Every control a pass touches goes into
+    // `handled`, so a pass that reveals nothing collects an empty list and ends the loop.
+    // The cap bounds a form whose fields keep revealing each other.
+    for (let pass = 0; pass < 5; pass++) {
+      // A revealed control needs a moment to render before a scan can see it.
+      if (pass) await sleep(200);
+      const controls = [...document.querySelectorAll("input, select, textarea")].filter(el => {
+        if (handled.has(el)) return false;
+        const t = (el.type || "").toLowerCase();
+        if (["hidden", "submit", "button", "file", "password", "radio"].includes(t)) return false;
+        if (el.disabled || el.offsetParent === null) return false; // skip hidden/disabled
+        if (!isRealField(el)) return false; // drop react-select proxies / invisible inputs
+        return true;
+      });
 
-    for (const el of controls) {
-      const label = fieldLabel(el, adapter);
-      if (!label) { report.skipped.push({ label: "(no label)", why: "unlabeled — Tier 1" }); continue; }
-      const c = classify(label, /* company */ null, profile, tax);
-      const applyCtl = (v) => applyValue(el, v, adapter);
-      const req = isRequired(el, adapter);
-      // Options for tappable Telegram buttons. Native <select> options are in the DOM;
-      // react-select menus aren't until opened, so harvest them ONLY when escalating (lazy,
-      // so deterministic-success fills don't needlessly open dropdowns). Combobox typeaheads
-      // stay free-text. `optsFor()` is awaited only in the escalate branches below.
-      const nativeOpts = el.tagName.toLowerCase() === "select"
-        ? [...el.options].map(o => o.text.trim()).filter(t => t && !/^select\.*\.?$/i.test(t))
-        : undefined;
-      const optsFor = async () => nativeOpts || await harvestOptions(el, adapter);
-      const ctlKind = el.tagName.toLowerCase() === "select" ? "select"
-        : (el.getAttribute && el.getAttribute("role")) === "combobox" ? "combobox" : "text";
-      // Greenhouse education date rows, decided by field id BEFORE the taxonomy sees the
-      // label — see eduDateField(). Must come first: always_ask carries `start date` and is
-      // matched ahead of everything, which is exactly what parked these fields.
-      const eduDate = eduDateField(el, document);
-      if (eduDate) {
-        const parts = splitMonthYear(render(dig(profile, eduDate.profileKey)));
-        const want = parts && parts[eduDate.part];
-        if (!want) {
-          // Half a date in the profile: ask for the missing half rather than guessing a
-          // month nobody wrote down.
-          escalate("needsInput", { label, why: `profile ${eduDate.profileKey} has no ${eduDate.part}`, required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
-          continue;
-        }
-        // The report label falls back to the id when the page has not wired the label yet,
-        // which is unreadable in a fill report — name the field by what it is instead.
-        const nice = /--\d+$/.test(label) ? `${eduDate.profileKey.split(".")[1]} (${eduDate.part})` : label;
-        const r = await applyValue(el, want, adapter);
-        if (r.ok) { report.filled.push({ label: nice, value: r.value || want });
-                    poolAdd({ label: nice, kind: ctlKind, bucket: "deterministic", required: req,
-                              value: r.value || want, source: "deterministic" }, applyCtl); }
-        else escalate("flagged", { label, value: want, why: r.why || "setter failed", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
-        continue;
-      }
-
-      // A CONDITIONAL FOLLOW-UP WHOSE TRIGGER DID NOT FIRE. Live on Robinhood:
-      // the deterministic pass filled "Will you now (or in the future) require visa
-      // sponsorship? -> No", and this field ("If you answered "Yes" to the above question,
-      // please provide additional information here:") went to the drafter, which had only
-      // that label to work from and wrote a confident paragraph about being on OPT and
-      // needing H1B support — the opposite of what the same form said two fields earlier.
-      // A second one invented a non-compete with the current employer.
-      //
-      // The cure is not a better prompt. The question genuinely does not apply, so nothing
-      // should be written about it at all. Checked BEFORE the bucket dispatch so it covers
-      // the draftable, always_ask and unrecognized paths alike; deterministic is excluded
-      // deliberately, since a profile answer is correct whatever the question above said.
-      // Required ones take "N/A" (the honest human answer, and it unblocks submit); optional
-      // ones are left alone. If the parent said YES, or we cannot find it, nothing changes.
-      if (c.bucket !== "deterministic" && FOLLOW_UP.test(label)) {
-        const parent = precedingAnswer(el, adapter);
-        if (parent && isNegative(parent.value)) {
-          const why = `follow-up to "${String(parent.label).slice(0, 40)}", answered ${parent.value}`;
-          if (req) {
-            const r = await applyValue(el, "N/A", adapter);
-            (r.ok ? report.filled : report.flagged).push({ label, value: "N/A",
-              ...(r.ok ? { via: why } : { why: r.why || "setter failed" }) });
-            // Shown to the AI pass rather than hidden from it: the prompt's follow-up rule
-            // teaches it that an unfired conditional is answered "does not apply", and a
-            // field it cannot see is one it can contradict from the next field over.
-            if (r.ok) poolAdd({ label, kind: ctlKind, bucket: "deterministic", required: req,
-                                value: "N/A", source: "deterministic" }, applyCtl);
-          } else {
-            report.skipped.push({ label, why });
+      if (!controls.length) break;
+      for (const el of controls) {
+        handled.add(el);
+        const label = fieldLabel(el, adapter);
+        if (!label) { report.skipped.push({ label: "(no label)", why: "unlabeled — Tier 1" }); continue; }
+        const c = classify(label, /* company */ null, profile, tax);
+        const applyCtl = (v) => applyValue(el, v, adapter);
+        const req = isRequired(el, adapter);
+        // Options for tappable Telegram buttons. Native <select> options are in the DOM;
+        // react-select menus aren't until opened, so harvest them ONLY when escalating (lazy,
+        // so deterministic-success fills don't needlessly open dropdowns). Combobox typeaheads
+        // stay free-text. `optsFor()` is awaited only in the escalate branches below.
+        const nativeOpts = el.tagName.toLowerCase() === "select"
+          ? [...el.options].map(o => o.text.trim()).filter(t => t && !/^select\.*\.?$/i.test(t))
+          : undefined;
+        const optsFor = async () => nativeOpts || await harvestOptions(el, adapter);
+        const ctlKind = el.tagName.toLowerCase() === "select" ? "select"
+          : (el.getAttribute && el.getAttribute("role")) === "combobox" ? "combobox" : "text";
+        // Greenhouse education date rows, decided by field id BEFORE the taxonomy sees the
+        // label — see eduDateField(). Must come first: always_ask carries `start date` and is
+        // matched ahead of everything, which is exactly what parked these fields.
+        const eduDate = eduDateField(el, document);
+        if (eduDate) {
+          const parts = splitMonthYear(render(dig(profile, eduDate.profileKey)));
+          const want = parts && parts[eduDate.part];
+          if (!want) {
+            // Half a date in the profile: ask for the missing half rather than guessing a
+            // month nobody wrote down.
+            escalate("needsInput", { label, why: `profile ${eduDate.profileKey} has no ${eduDate.part}`, required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
+            continue;
           }
+          // The report label falls back to the id when the page has not wired the label yet,
+          // which is unreadable in a fill report — name the field by what it is instead.
+          const nice = /--\d+$/.test(label) ? `${eduDate.profileKey.split(".")[1]} (${eduDate.part})` : label;
+          const r = await applyValue(el, want, adapter);
+          if (r.ok) { report.filled.push({ label: nice, value: r.value || want });
+                      poolAdd({ label: nice, kind: ctlKind, bucket: "deterministic", required: req,
+                                value: r.value || want, source: "deterministic" }, applyCtl); }
+          else escalate("flagged", { label, value: want, why: r.why || "setter failed", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
           continue;
         }
-      }
-      if (c.bucket === "deterministic") {
-        if (!c.filled) { escalate("needsInput", { label, why: `profile ${c.value_key} unset`, required: req, options: await optsFor(), kind: ctlKind }, applyCtl); continue; }
-        // A value_key that is deliberately "" (links.portfolio, links.twitter — Parth has
-        // neither) used to be written anyway: setText("") returns ok, so the report logged
-        // a successful fill of an empty string and could clear a field the ATS prefilled.
-        // Skip the write, but do NOT escalate — surfacing these on every form is exactly
-        // what the empty string is there to avoid.
-        const tries = answerCandidates(c);
-        if (!tries.length) { report.skipped.push({ label, why: `profile ${c.value_key} is blank on purpose` }); continue; }
-        let r = null, used = null;
-        for (const want of tries) {
-          r = await applyValue(el, want, adapter);
-          if (r.ok) { used = want; break; }
-        }
-        if (r && r.ok) { report.filled.push({ label, value: r.value || used, ...(used !== tries[0] ? { via: used } : {}) });
-                         poolAdd({ label, kind: ctlKind, bucket: "deterministic", required: req,
-                                   options: nativeOpts, value: r.value || used,
-                                   source: "deterministic" }, applyCtl); }
-        else escalate("flagged", { label, value: c.rendered, why: (r && r.why) || "setter failed", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
-      } else if (c.bucket === "draftable") {
-        escalate("needsInput", { label, why: `draftable -> ${c.answer_key} (Tier 2)`, answer_key: c.answer_key, required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
-      } else if (c.bucket === "always_ask") {
-        escalate("needsInput", { label, bucket: "always_ask", why: "always_ask", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
-      } else if (req) {
-        // ALREADY ANSWERED ON THE PAGE. Greenhouse's resume parser fills the education
-        // block (school, degree, discipline, the end date) before we ever scan it, and none
-        // of those match a taxonomy rule, so they came through here and Parth was asked to
-        // type an answer into a box that visibly already had one. Live on Robinhood: two
-        // questions, "End date month" and "End date year", both sitting in the summary with
-        // values while the console showed them as still needing an answer.
+
+        // A CONDITIONAL FOLLOW-UP WHOSE TRIGGER DID NOT FIRE. Live on Robinhood:
+        // the deterministic pass filled "Will you now (or in the future) require visa
+        // sponsorship? -> No", and this field ("If you answered "Yes" to the above question,
+        // please provide additional information here:") went to the drafter, which had only
+        // that label to work from and wrote a confident paragraph about being on OPT and
+        // needing H1B support — the opposite of what the same form said two fields earlier.
+        // A second one invented a non-compete with the current employer.
         //
-        // An unrecognized field means we do not know what SHOULD go there — it does not
-        // mean the form is empty. When the control already holds a committed value, record
-        // it instead of asking. The value is not taken on trust: it rides into the ✅
-        // summary like every other field, which is the gate that exists for exactly this.
-        // `via` marks where it came from so the report never implies we chose it.
-        const already = currentValue(el, adapter);
-        if (already) {
-          report.filled.push({ label, value: already, via: "already on the form" });
-          poolAdd({ label, kind: ctlKind, required: true, options: nativeOpts,
-                    value: already, source: "already" }, applyCtl);
-          continue;
+        // The cure is not a better prompt. The question genuinely does not apply, so nothing
+        // should be written about it at all. Checked BEFORE the bucket dispatch so it covers
+        // the draftable, always_ask and unrecognized paths alike; deterministic is excluded
+        // deliberately, since a profile answer is correct whatever the question above said.
+        // Required ones take "N/A" (the honest human answer, and it unblocks submit); optional
+        // ones are left alone. If the parent said YES, or we cannot find it, nothing changes.
+        if (c.bucket !== "deterministic" && FOLLOW_UP.test(label)) {
+          const parent = precedingAnswer(el, adapter);
+          if (parent && isNegative(parent.value)) {
+            const why = `follow-up to "${String(parent.label).slice(0, 40)}", answered ${parent.value}`;
+            if (req) {
+              const r = await applyValue(el, "N/A", adapter);
+              (r.ok ? report.filled : report.flagged).push({ label, value: "N/A",
+                ...(r.ok ? { via: why } : { why: r.why || "setter failed" }) });
+              // Shown to the AI pass rather than hidden from it: the prompt's follow-up rule
+              // teaches it that an unfired conditional is answered "does not apply", and a
+              // field it cannot see is one it can contradict from the next field over.
+              if (r.ok) poolAdd({ label, kind: ctlKind, bucket: "deterministic", required: req,
+                                  value: "N/A", source: "deterministic" }, applyCtl);
+            } else {
+              report.skipped.push({ label, why });
+            }
+            continue;
+          }
         }
-        escalate("needsInput", { label, why: "unrecognized required field", required: true, options: await optsFor(), kind: ctlKind }, applyCtl);
-      } else if (mode === "panel") {
-        // Optional and unrecognized: the form will submit without it, but Parth is sitting
-        // right here and may want it anyway (an optional "what excites you" essay is worth
-        // answering). Collect it with its setter so the panel can offer it behind a
-        // disclosure — never opened by default, so a fill he doesn't care about is unchanged.
-        // `nativeOpts` only: harvesting a react-select's options costs a CDP menu open per
-        // field, which isn't worth paying on every optional control before he's asked to see
-        // one. He still gets a text box, and the dropdown's own options once he opens a card.
-        escalate("optional", { label, why: "optional — the form doesn't require it", required: false, options: nativeOpts, kind: ctlKind }, applyCtl);
-      } else {
-        report.skipped.push({ label, why: "no rule matched -> Tier 1" });
+        if (c.bucket === "deterministic") {
+          if (!c.filled) { escalate("needsInput", { label, why: `profile ${c.value_key} unset`, required: req, options: await optsFor(), kind: ctlKind }, applyCtl); continue; }
+          // A value_key that is deliberately "" (links.portfolio, links.twitter — Parth has
+          // neither) used to be written anyway: setText("") returns ok, so the report logged
+          // a successful fill of an empty string and could clear a field the ATS prefilled.
+          // Skip the write, but do NOT escalate — surfacing these on every form is exactly
+          // what the empty string is there to avoid.
+          const tries = answerCandidates(c);
+          if (!tries.length) { report.skipped.push({ label, why: `profile ${c.value_key} is blank on purpose` }); continue; }
+          let r = null, used = null;
+          for (const want of tries) {
+            r = await applyValue(el, want, adapter);
+            if (r.ok) { used = want; break; }
+          }
+          if (r && r.ok) { report.filled.push({ label, value: r.value || used, ...(used !== tries[0] ? { via: used } : {}) });
+                           poolAdd({ label, kind: ctlKind, bucket: "deterministic", required: req,
+                                     options: nativeOpts, value: r.value || used,
+                                     source: "deterministic" }, applyCtl); }
+          else escalate("flagged", { label, value: c.rendered, why: (r && r.why) || "setter failed", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
+        } else if (c.bucket === "draftable") {
+          escalate("needsInput", { label, why: `draftable -> ${c.answer_key} (Tier 2)`, answer_key: c.answer_key, required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
+        } else if (c.bucket === "always_ask") {
+          escalate("needsInput", { label, bucket: "always_ask", why: "always_ask", required: req, options: await optsFor(), kind: ctlKind }, applyCtl);
+        } else if (req) {
+          // ALREADY ANSWERED ON THE PAGE. Greenhouse's resume parser fills the education
+          // block (school, degree, discipline, the end date) before we ever scan it, and none
+          // of those match a taxonomy rule, so they came through here and Parth was asked to
+          // type an answer into a box that visibly already had one. Live on Robinhood: two
+          // questions, "End date month" and "End date year", both sitting in the summary with
+          // values while the console showed them as still needing an answer.
+          //
+          // An unrecognized field means we do not know what SHOULD go there — it does not
+          // mean the form is empty. When the control already holds a committed value, record
+          // it instead of asking. The value is not taken on trust: it rides into the ✅
+          // summary like every other field, which is the gate that exists for exactly this.
+          // `via` marks where it came from so the report never implies we chose it.
+          const already = currentValue(el, adapter);
+          if (already) {
+            report.filled.push({ label, value: already, via: "already on the form" });
+            poolAdd({ label, kind: ctlKind, required: true, options: nativeOpts,
+                      value: already, source: "already" }, applyCtl);
+            continue;
+          }
+          escalate("needsInput", { label, why: "unrecognized required field", required: true, options: await optsFor(), kind: ctlKind }, applyCtl);
+        } else if (mode === "panel") {
+          // Optional and unrecognized: the form will submit without it, but Parth is sitting
+          // right here and may want it anyway (an optional "what excites you" essay is worth
+          // answering). Collect it with its setter so the panel can offer it behind a
+          // disclosure — never opened by default, so a fill he doesn't care about is unchanged.
+          // `nativeOpts` only: harvesting a react-select's options costs a CDP menu open per
+          // field, which isn't worth paying on every optional control before he's asked to see
+          // one. He still gets a text box, and the dropdown's own options once he opens a card.
+          escalate("optional", { label, why: "optional — the form doesn't require it", required: false, options: nativeOpts, kind: ctlKind }, applyCtl);
+        } else {
+          report.skipped.push({ label, why: "no rule matched -> Tier 1" });
+        }
       }
     }
 
@@ -2567,15 +2580,28 @@ const CODE_ATTR = /\b(code|otp|verification|verify|confirm)\b/i;
 // was typed into the address block. Anything matching this is dropped from the candidate
 // pool before either the name test or the shape fallback runs, because a 5-character zip
 // field also passes the short-maxlength test.
-const NOT_CODE_ATTR = /\b(zip|zipcode|postal|postcode|post ?code|area ?code|country ?code|dial ?code|phone|state|province|county|city|address|promo|coupon|discount|referral|requisition|req ?id)\b/i;
+const NOT_CODE_ATTR = /\b(zip|zipcode|postal|postcode|post ?code|area ?code|country ?code|dial ?code|phone|state|province|county|city|address|promo|coupon|discount|referral|requisition|req ?id|employee|badge)\b/i;
+
+// The elements the code was last written to. verifyCodeState and a retry read these
+// instead of running findVerifyInput again. The finder is a heuristic, and after the gate
+// re-renders it can return a different element or none. Its guesses also skip a box that
+// holds a value, which is every box this loop has already written to.
+let CODE_TARGET = null;
 
 function findVerifyInput() {
   const inputs = [...document.querySelectorAll(
     'input[type="text"], input[type="tel"], input[type="number"], input:not([type])')]
     .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
   if (!inputs.length) return null;
+  // Turn separators into spaces before any pattern runs. `_` is a word character, so
+  // `\bcode\b` misses `verification_code` and `\barea ?code\b` misses `area_code`.
   const attrs = el => [el.id, el.name, el.placeholder, el.getAttribute("aria-label"),
-                       el.getAttribute("autocomplete"), labelFor(el)].filter(Boolean).join(" ");
+                       el.getAttribute("autocomplete"), labelFor(el)]
+    .filter(Boolean).join(" ").replace(/[_\-./]+/g, " ");
+  // The name test and the shape test are guesses, so they also require an empty box. A
+  // gate's code box is empty when the gate opens. A field that holds a value is an
+  // application answer, and typing a code into it destroys that answer.
+  const empty = el => !String(el.value || "").trim();
   // Drop the address and phone fields first. Every test below, the name test and the shape
   // fallback alike, then runs over candidates that cannot be a zip code.
   const pool = inputs.filter(el => !NOT_CODE_ATTR.test(attrs(el)));
@@ -2587,7 +2613,10 @@ function findVerifyInput() {
   // A code-ish name beats the shape tests: this is the signal that says "this field, not
   // the email field two rows up that is also a visible text input".
   const named = pool.filter(el => CODE_ATTR.test(attrs(el)));
-  if (named.length === 1) return named[0];
+  // The first box of a single-character group keeps its place when it holds a value,
+  // because a retry has to reach the same gate.
+  const single = named.length === 1 ? named[0] : null;
+  if (single && (empty(single) || single.getAttribute("maxlength") === "1")) return single;
   // Several code-ish names is either one group of single-character boxes, where the first
   // box is the right answer, or a genuine ambiguity. Guessing between separate fields is
   // how a live code landed in the zip box, so anything else fails closed.
@@ -2603,7 +2632,7 @@ function findVerifyInput() {
   // short is not something an ordinary application field carries.
   const short = pool.filter(el => {
     const n = parseInt(el.getAttribute("maxlength") || "0", 10);
-    return n >= 4 && n <= 10;
+    return n >= 4 && n <= 10 && empty(el);
   });
   // Only when it is UNAMBIGUOUS. Two candidates and we would be guessing which one the
   // code goes in, and a code typed into the wrong box is worse than asking him.
@@ -2642,6 +2671,51 @@ function fillCodeBoxes(boxes, code) {
   return boxes.map(b => b.value || "").join("");
 }
 
+// Type the code with trusted CDP input, one click and one character per box. Trusted typing
+// goes wherever focus is, so each box is clicked first. That also means a box that refuses
+// its character shows up in the read-back and does not shift the rest along.
+async function typeCodeTrusted(input, boxes, code) {
+  const att = await rpc({ type: "CDP_ATTACH" });
+  if (!att || !att.ok) return false;
+  try {
+    for (let i = 0; i < code.length; i++) {
+      const el = boxes ? boxes[i] : input;
+      if (!el) return false;
+      el.scrollIntoView({ block: "center", behavior: "instant" });
+      await sleep(40);
+      await rpc({ type: "CDP_CLICK", ...centerOf(el) });
+      await sleep(40);
+      // maxlength blocks a trusted insert into a box that still holds a character.
+      if (el.value) { await rpc({ type: "CDP_ERASE", times: el.value.length + 1 }); await sleep(40); }
+      await rpc({ type: "CDP_TYPE", text: boxes ? code[i] : code });
+      await sleep(60);
+      if (!boxes) break;     // a single field takes the whole code in one insert
+    }
+  } finally {
+    await rpc({ type: "CDP_DETACH" });
+  }
+  return true;
+}
+
+// Write the code and confirm it stayed. Returns whether it did.
+//
+// A read-back on the line after the write is not proof. A React-controlled gate accepts the
+// write and reverts it on its next render, so the read-back waits for the page to settle.
+// If the synthesized write did not stay, the code is typed again through CDP, because some
+// gates ignore synthesized events.
+async function writeVerifyCode(input, boxes, code) {
+  const readBack = () => (boxes ? boxes.map(b => b.value || "").join("") : (input.value || ""));
+  CODE_TARGET = { input, boxes };
+  if (boxes) fillCodeBoxes(boxes, code); else setText(input, code);
+  await sleep(250);
+  if (readBack() === code) return true;
+  if (await typeCodeTrusted(input, boxes, code)) {
+    await sleep(250);
+    return readBack() === code;
+  }
+  return false;
+}
+
 // Ask the bridge for the code belonging to THIS submit. `since` is the click.
 async function requestVerifyCode(since) {
   const r = PANEL_REPORT || {};
@@ -2661,10 +2735,13 @@ async function requestVerifyCode(since) {
 // afterwards. The gate's wording stays on the page once the code is typed — it only clears
 // when the server answers — so "is the gate still showing?" cannot distinguish "not
 // answered yet" from "that code was rejected". Whether OUR code is still sitting in the box
-// can. See verifyCodeStillShown.
+// can. See verifyCodeState.
 async function autoFillVerifyCode(log, since, tried, opts = {}) {
   const quiet = !!opts.quiet;                 // suppress the repeat lines while polling
-  const input = findVerifyInput();
+  // On a retry, reuse the box the last code went into while it is still on the page.
+  const prior = CODE_TARGET && CODE_TARGET.input && CODE_TARGET.input.isConnected
+    ? CODE_TARGET.input : null;
+  const input = prior || findVerifyInput();
   if (!input) { log("couldn't find the code box on this page — enter it yourself", "warn"); return { status: "nofield" }; }
   const res = await requestVerifyCode(since);
   if (!res || !res.ok || !res.code) {
@@ -2685,20 +2762,13 @@ async function autoFillVerifyCode(log, since, tried, opts = {}) {
   tried.add(res.code);
 
   const boxes = codeBoxGroup(input);
-  if (boxes) {
-    if (boxes.length < res.code.length) {
-      log(`🔐 ${boxes.length} code boxes but a ${res.code.length}-character code — enter it yourself`, "warn");
-      return { status: "mismatch" };
-    }
-    const landed = fillCodeBoxes(boxes, res.code);
-    // Read back rather than trust the write: one char per box is a stronger claim than
-    // "we typed something", and a React group that rejects a character fails silently.
-    if (landed !== res.code) {
-      log("🔐 the code didn't land cleanly across the boxes — check it before submitting", "warn");
-      return { status: "mismatch" };
-    }
-  } else {
-    setText(input, res.code);
+  if (boxes && boxes.length < res.code.length) {
+    log(`🔐 ${boxes.length} code boxes but a ${res.code.length}-character code — enter it yourself`, "warn");
+    return { status: "mismatch" };
+  }
+  if (!await writeVerifyCode(input, boxes, res.code)) {
+    log("🔐 the code did not stay in the box — enter it yourself, then submit", "warn");
+    return { status: "mismatch" };
   }
   // Never log the code itself: it is a live credential for this submit, and fill reports
   // are written to disk and read back for debugging.
@@ -2719,13 +2789,22 @@ async function autoFillVerifyCode(log, since, tried, opts = {}) {
 //
 // Fails towards WAITING: if the field cannot be found at all, that is not evidence the code
 // was rejected, and re-fetching on no evidence is what burned the retry budget before.
-function verifyCodeStillShown(code) {
-  if (!code) return false;
-  const input = findVerifyInput();
-  if (!input) return true;
-  const boxes = codeBoxGroup(input);
+//
+// Returns one of three states, so the caller can report which one it saw:
+//   "shown"   — our code is in the box. The page has not answered yet.
+//   "cleared" — the box is empty or holds something else. That is how these gates reject.
+//   "nofield" — no code box is on the page. The loop still waits, but must not report
+//               that the code is in place.
+function verifyCodeState(code) {
+  if (!code) return "cleared";
+  // Read the elements the code was written to while they are still on the page.
+  const t = CODE_TARGET;
+  const live = t && (t.boxes ? t.boxes.every(b => b.isConnected) : t.input && t.input.isConnected);
+  const input = live ? t.input : findVerifyInput();
+  const boxes = live ? t.boxes : (input ? codeBoxGroup(input) : null);
+  if (!input && !boxes) return "nofield";
   const shown = boxes ? boxes.map(b => b.value || "").join("") : (input.value || "");
-  return shown === code;
+  return shown === code ? "shown" : "cleared";
 }
 
 
@@ -2741,7 +2820,7 @@ function verifyCodeStillShown(code) {
 // (X-GM-RAW, see mailcode.ImapReader._narrow) took that to ~1.6s.
 // Returns THE CODE it filled, or "" — truthy either way for a caller that only wants to
 // know whether to press on, and the value itself for the submit loop, which has to
-// recognize its own code on the next pass (verifyCodeStillShown).
+// recognize its own code on the next pass (verifyCodeState).
 async function waitForVerifyCode(log, since, tried, budgetMs = 90000) {
   const deadline = Date.now() + budgetMs;
   let announced = false;
@@ -2760,9 +2839,17 @@ async function waitForVerifyCode(log, since, tried, budgetMs = 90000) {
 }
 
 // Click the submit button (trusted CDP click when the adapter needs it, else synthesized).
+// Returns true after a click, false if no button was found, and "disabled" if the button
+// refused the click.
 async function clickSubmit(adapter, log) {
   const btn = findSubmitButton(adapter.submit || {});
   if (!btn) { log("submit button not found", "err"); return false; }
+  // A disabled button means the form is not ready, and a click on it does nothing.
+  // `aria-disabled` counts too, because a React button often stays enabled in the DOM.
+  if (btn.disabled === true || btn.getAttribute("aria-disabled") === "true") {
+    log("Submit is disabled — the form is not accepting it yet", "warn");
+    return "disabled";
+  }
   btn.scrollIntoView({ block: "center", behavior: "instant" });
   await sleep(60);
   if ((adapter.submit || {}).needsCDP) {
@@ -2891,9 +2978,10 @@ async function submitWithRetry(log) {
   // submit — see autoFillVerifyCode and bridge/mailcode.py.
   const submitStartedAt = Date.now();
   const codesTried = new Set();
+  CODE_TARGET = null;   // a previous submit's code box says nothing about this one
   let codeAttempts = 0;
   // The code this loop last typed into the gate, so a still-visible gate on a later pass
-  // can be read correctly — see verifyCodeStillShown and handleVerifyGate.
+  // can be read correctly — see verifyCodeState and handleVerifyGate.
   let codeFilled = "";
   // Each attempt is a full ~90s polling window (waitForVerifyCode), not a single shot.
   const MAX_CODE_ATTEMPTS = 2; // a code the form rejects twice is not going to start working
@@ -2912,8 +3000,12 @@ async function submitWithRetry(log) {
   // the code correctly, and never once clicked Submit with it. Two rules come out of that:
   // a filled code must always lead to another click, and a gate still showing while our own
   // code sits in its box is not evidence that any mail is missing.
+  // The verifyCodeState answer that last returned "wait". The give-up message uses it, so a
+  // run with no code box on the page does not report that the code is in place.
+  let waitedBecause = "";
   const handleVerifyGate = async () => {
-    if (verifyCodeStillShown(codeFilled)) return "wait";
+    const state = verifyCodeState(codeFilled);
+    if (state === "shown" || state === "nofield") { waitedBecause = state; return "wait"; }
     if (codeAttempts < MAX_CODE_ATTEMPTS) {
       codeAttempts++;
       // He clicked Submit, so fetching the code finishes what he started.
@@ -2932,10 +3024,16 @@ async function submitWithRetry(log) {
     // Re-apply any choice answer Ashby's post-resume re-init wiped since fill (idempotent —
     // skips groups that still hold their selection). Catches optional wiped fields too,
     // which never surface as validation errors.
+    //
+    // Skip this while a verification gate is up. The gate re-renders the form on every
+    // submit attempt, so the dropdowns read empty on each pass and all of them get
+    // re-opened. The gate is waiting on a code, not on the form, and each re-fill is a CDP
+    // click that moves focus off the code box.
     const wrote = [];
     const note = (m, kind) => { wrote.push(m); log(m, kind); };
-    const reasserted = reassertChoices(adapter, PANEL_REPORT, note)
-                     + await reassertText(adapter, PANEL_REPORT, note);
+    const gateUp = !!submitVerificationText(verifyBase);
+    const reasserted = gateUp ? 0
+      : reassertChoices(adapter, PANEL_REPORT, note) + await reassertText(adapter, PANEL_REPORT, note);
     traceStep(`submit ${pass}: recheck`, wrote);
     if (reasserted) { log(`re-asserted ${reasserted} wiped field(s)`, "warn"); await sleep(400); }
     log(`Pass ${pass}: submitting…`);
@@ -2946,7 +3044,15 @@ async function submitWithRetry(log) {
     const errsBefore = readValidationErrors().sort().join("|");
     traceStep(`submit ${pass}: click`, []);
     logTrace(`before submit click ${pass}`);
-    await clickSubmit(adapter, log);
+    // If the click did not happen, do not poll for its response. A disabled Submit on a
+    // code gate means the gate wants the code first.
+    if (await clickSubmit(adapter, log) === "disabled") {
+      if (gateUp) {
+        log("🔐 Submit stays disabled until the code is in — enter it in the browser, then submit", "warn");
+        return "needs_verification";
+      }
+      return "unknown";
+    }
     // Ashby validates on the SERVER: the error banner (or the confirmation) renders
     // 2–8s after the click (measured live on a real board). The old fixed 1.6s wait
     // read the page too early → "no errors and no confirmation". Poll up to 15s.
@@ -2983,6 +3089,12 @@ async function submitWithRetry(log) {
         // Most likely the same swallowed click handled below, so click again — bounded by
         // the same `ambiguous` counter, and reported as the code gate it actually is
         // rather than as a generic unknown.
+        // If no code box is on the page, nothing was typed anywhere and another click
+        // cannot help. Say that instead of reporting that the code is in place.
+        if (waitedBecause === "nofield") {
+          log("🔐 the gate is up but its code box isn't on the page — enter the code yourself, then submit", "warn");
+          return "needs_verification";
+        }
         if (++ambiguous >= 2) {
           log("🔐 the code is filled but the form hasn't accepted it — check the page and submit yourself", "warn");
           return "needs_verification";

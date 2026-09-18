@@ -106,6 +106,20 @@ buckets:
     # a per-company override would have been tighter, but overrides key on an exact company
     # string and the reports spell this one both "SpaceX" and "Spacex".
     - {pattern: '\S+\s*(&|and|/|,)\s*\S+\s+employment history', value_key: affiliations.previously_employed}  # SpaceX
+    # "Are you currently an employee or contractor at Abnormal? (if Yes, please add your
+    # Abnormal email in the email section of the application page)" is a Yes/No dropdown.
+    # Its parenthetical contains "email", so the generic identity.email rule matched it and
+    # the fill offered your address to a list of Yes and No. This rule sits above the
+    # identity block so it is tested first. It covers the employee and contractor wording
+    # only. "Are you currently employed" asks about your own job and has a different answer,
+    # and "former employee" belongs to previously_employed.
+    #
+    # Because it sits this high, it is also tested before the government and
+    # external-business rules. The lookaheads decline the wordings those rules own:
+    #   "Are you an employee referral?"                         -> a referral source
+    #   "Are you currently an employee of a government agency?" -> government_affiliation
+    # test_taxonomy_routing.py pins these pairs.
+    - {pattern: '\bare you (currently |presently )?(an?|the )?\s*(current |existing )?(employee|contractor|intern|consultant)\b(?!\s+referral)(?!.{0,30}\b(government|public official|state-owned|politically exposed|competing business|outside business)\b)|\bare you (currently |presently )?employed (by|at|with)\b(?!.{0,30}\b(government|customer|partner|client|vendor|supplier|competitor)\b)', value_key: affiliations.current_employee}  # Abnormal Security
     # ── end observed phrasings ───────────────────────────────────────────────────
 
     - {pattern: '\bfirst name\b',                                   value_key: identity.first_name}

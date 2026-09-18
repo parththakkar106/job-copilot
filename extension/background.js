@@ -12,15 +12,40 @@
 const attached = new Set(); // tabIds we currently hold a debugger session on
 let stopRequested = false;  // set by the popup Stop button or a Telegram /stop; runQueue halts between jobs
 
-function attach(tabId) {
-  return new Promise((resolve, reject) => {
-    if (attached.has(tabId)) return resolve();
-    chrome.debugger.attach({ tabId }, "1.3", () => {
-      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-      attached.add(tabId);
-      resolve();
-    });
+const rawAttach = (tabId) => new Promise((resolve, reject) => {
+  chrome.debugger.attach({ tabId }, "1.3", () => {
+    if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+    resolve();
   });
+});
+
+// Detach without consulting `attached`. The recovery in attach() drops a session that the
+// set does not list.
+const rawDetach = (tabId) => new Promise((resolve, reject) => {
+  chrome.debugger.detach({ tabId }, () => {
+    if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+    resolve();
+  });
+});
+
+// Take a debugger session on `tabId`, and recover one this worker has forgotten.
+//
+// MV3 evicts the service worker after about 30 seconds idle, and `attached` goes with it.
+// Chrome keeps the debugger session, so the next attach fails with "Another debugger is
+// already attached" and every trusted click on the form is refused. A fill that ended
+// without its CDP_DETACH leaves the same state. Detaching first clears it. If DevTools
+// holds the tab instead, the detach fails and the original error is re-thrown, so the
+// report names the case you have to fix by hand.
+async function attach(tabId) {
+  if (attached.has(tabId)) return;
+  try {
+    await rawAttach(tabId);
+  } catch (e) {
+    if (!/already attached/i.test(e.message || "")) throw e;
+    try { await rawDetach(tabId); } catch (_) { throw e; }
+    await rawAttach(tabId);
+  }
+  attached.add(tabId);
 }
 
 function detach(tabId) {
