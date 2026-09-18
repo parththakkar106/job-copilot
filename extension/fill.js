@@ -1051,6 +1051,8 @@ function fieldLabel(el, adapter) {
 // inspect the enclosing question container's title.
 function isRequired(el, adapter) {
   if (el.required || el.getAttribute("aria-required") === "true") return true;
+  // Greenhouse marks a required upload on the group around the hidden file input.
+  if (el.closest && el.closest('[role="group"][aria-required="true"]')) return true;
   if (/\*|✱/.test(labelFor(el))) return true;
   const sel = (adapter && adapter.questionContainerSelectors || []).join(",");
   const container = (sel && el.closest) ? el.closest(sel) : null;
@@ -1078,6 +1080,14 @@ function isRequiredByTitle(el, adapter) {
   if (/\*|✱/.test(title.textContent || "")) return true;
   try { if ((getComputedStyle(title, "::after").content || "").includes("*")) return true; } catch (_) { /* ignore */ }
   return false;
+}
+
+// Title of the upload group around a file input. Greenhouse labels the hidden input
+// "Attach", and the real title ("Cover Letter*") sits on the group's aria-labelledby node.
+function uploadTitle(el) {
+  const group = el.closest && el.closest('[role="group"][aria-labelledby]');
+  const title = group && document.getElementById(group.getAttribute("aria-labelledby"));
+  return title ? cleanText(title).replace(/[✱*]/g, "").trim() : "";
 }
 
 // intl-tel-input (the Greenhouse React phone widget) renders a SEPARATE country-code
@@ -1472,7 +1482,7 @@ function emptyRequiredLabels(adapter) {
   // uploaders hide the real input behind a dropzone, so hidden IS the normal state.
   for (const el of document.querySelectorAll('input[type="file"]')) {
     if (!isRequired(el, adapter)) continue;
-    if (!(el.files && el.files.length)) add(fieldLabel(el, adapter) || "File upload");
+    if (!(el.files && el.files.length)) add(uploadTitle(el) || fieldLabel(el, adapter) || "File upload");
   }
   // Ashby Yes/No widgets: required but no active button
   for (const g of collectYesNoGroups(adapter)) {
@@ -1551,7 +1561,7 @@ async function runFill(autoSubmit = false, opts = {}) {
   // `optional` = fields the form does NOT require and no rule recognized. Collected in panel
   // mode only, so Parth can open them on demand; the queue modes still skip them silently
   // (they'd be noise on Telegram and would drag every unattended fill into a human wait).
-  const report = { filled: [], skipped: [], needsInput: [], flagged: [], optional: [], errors: [], mode };
+  const report = { filled: [], skipped: [], needsInput: [], flagged: [], optional: [], errors: [], missingUploads: [], mode };
   // Fields the deterministic pass couldn't resolve, to send to Telegram at the page
   // boundary. Each carries an `apply(value)` closure that writes Parth's answer back to
   // its own control. Items are ALSO pushed to a report bucket so the popup shows them even
@@ -1668,9 +1678,11 @@ async function runFill(autoSubmit = false, opts = {}) {
         if (f.attach !== "resume") {
           const fileEl = firstMatch(f.selectors);
           if (fileEl && !(fileEl.files && fileEl.files.length)) {
-            report.skipped.push({ key: f.key, why: isRequired(fileEl, adapter)
+            const required = isRequired(fileEl, adapter);
+            report.skipped.push({ key: f.key, why: required
               ? "file upload REQUIRED — attach it by hand before submitting"
               : "file upload not automated — attach by hand if you want one" });
+            if (required) report.missingUploads.push(uploadTitle(fileEl) || f.key);
           }
         }
         continue;
@@ -2183,7 +2195,10 @@ async function runFill(autoSubmit = false, opts = {}) {
           report.mismatch = diffApproved(opts.approved, summary);
           // A bad resume override is a hard hold even when every value matches — the
           // resume just isn't attached, and that must never go out unattended.
-          report.reviewed = (report.mismatch.length || report.resumeOverrideBad) ? "hold" : "ok";
+          // A required upload the fill cannot attach fails the submit, so hold before clicking.
+          for (const u of report.missingUploads) report.errors.push(`${u} upload is required. Attach it by hand`);
+          report.reviewed = (report.mismatch.length || report.resumeOverrideBad || report.missingUploads.length)
+            ? "hold" : "ok";
         } else if (mode === "panel") {
           // Parth is sitting in front of the form: he reviews it on screen and clicks the
           // panel's own Submit, so there's nothing to send anywhere. The summary still rides

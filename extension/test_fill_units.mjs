@@ -1377,4 +1377,32 @@ ok(fieldKey("") === "" && fieldKey(null) === "", "an absent label yields no key 
   ok(r.count === 1, "only the empty field counts, so the recheck loop can stop");
 }
 
+// --- a required Greenhouse upload is required, and named by its group title -----------
+//
+// Greenhouse puts aria-required and the "Cover Letter*" title on the group around the
+// hidden file input, whose own label reads "Attach". Reading only the input marked the
+// cover letter optional, so an approved job went to submit and the form refused it.
+{
+  const title = { textContent: "Cover Letter*" };
+  const mkGroup = (required) => ({
+    getAttribute: (k) => (k === "aria-labelledby" ? "upload-label-cover_letter" : null),
+    required,
+  });
+  const mkFile = (group) => ({
+    required: false, getAttribute: () => null,
+    closest: (sel) => (!group ? null
+      : sel.includes('aria-required="true"') ? (group.required ? group : null) : group),
+  });
+  globalThis.document = { getElementById: (id) => (id === "upload-label-cover_letter" ? title : null) };
+  try {
+    const fns = new Function("document", "labelFor", "cleanText",
+      extract("isRequired") + ";" + extract("uploadTitle") + "; return { isRequired, uploadTitle };")(
+      globalThis.document, () => "Attach", (el) => el.textContent.replace(/\s+/g, " ").trim());
+    ok(fns.isRequired(mkFile(mkGroup(true)), {}) === true, "an upload in a required group is required");
+    ok(fns.isRequired(mkFile(mkGroup(false)), {}) === false, "an upload in an optional group is not");
+    ok(fns.isRequired(mkFile(null), {}) === false, "a bare file input labeled Attach is not");
+    ok(fns.uploadTitle(mkFile(mkGroup(true))) === "Cover Letter", "the title comes from the group, without the asterisk");
+  } finally { delete globalThis.document; }
+}
+
 console.log(`fill units: ${n}/${n} checks passed`);
