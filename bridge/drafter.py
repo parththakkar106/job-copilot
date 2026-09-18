@@ -180,7 +180,8 @@ def _load_facts() -> list[str]:
     contact = [
         ("identity", "email", "Application email (use exactly this; ignore any other address you know)"),
         ("identity", "phone", "Phone"),
-        ("identity", "location_display", "Location"),
+        ("identity", "location_display", "Current home (not a preference)"),
+        ("preferences", "work_arrangement", "Work arrangement"),
         ("links", "linkedin", "LinkedIn"),
         ("links", "github", "GitHub"),
     ]
@@ -188,6 +189,16 @@ def _load_facts() -> list[str]:
         v = txt(block, key)
         if v:
             out.append(f"{phrasing}: {v}")
+    # Without the ranked list, "where will you work from" got his home state every time.
+    ranked = [x for x in (p.get("answer_alternates") or {}).get("preferences.locations") or []
+              if isinstance(x, str) and x != "FILL_ME"]
+    if ranked:
+        out.append("Preferred work locations, most preferred first: " + ", ".join(ranked)
+                   + ". For a question about where he will work, go through this list in "
+                   "order and answer with the FIRST entry the role offers (an office, or "
+                   "Remote); if the role names no location, answer with the first entry. "
+                   "Answer with just that location, not a sentence, and never his current "
+                   "home unless the question asks where he lives now")
     return out
 
 

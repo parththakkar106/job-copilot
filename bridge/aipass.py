@@ -163,6 +163,32 @@ def _describe(field: dict, n: int) -> str:
     return "\n".join(bits)
 
 
+def _bank_block(company: str) -> str:
+    """Every active answer in his bank that applies here: common ones and this company's.
+
+    The bridge already seeds a bank answer into a field whose label the taxonomy
+    recognizes. A question in new wording gets no seed, so the model wrote a fresh answer
+    where he already had one. The bank is small (a few rows), so it is sent whole.
+    """
+    try:
+        from core import bank
+        rows = bank.load()
+    except Exception:
+        return ""
+    lines = []
+    for r in rows:
+        if r.get("status") != "active" or not str(r.get("answer") or "").strip():
+            continue
+        if r.get("scope") != "common" and (r.get("company") or "").casefold() != company.casefold():
+            continue
+        lines.append(f"[{r.get('key')}] {str(r['answer']).strip()}")
+    if not lines:
+        return ""
+    return ("His own saved answers, in his words. When a question asks the same thing in "
+            "any wording, use the matching answer as it is; adapt it only to name this "
+            "company or role:\n" + "\n".join(lines) + "\n\n")
+
+
 def build_prompt(fields: list[dict], context: dict | None) -> str:
     """The whole instruction for the one call. Self-contained on purpose: `_run_claude`
     runs in a throwaway directory with no tools, so anything not written here does not
@@ -191,6 +217,7 @@ def build_prompt(fields: list[dict], context: dict | None) -> str:
         f"{drafter.ABOUT}"
         f"{drafter.FACTS_BLOCK}"
         f"{drafter.work_block(ctx.get('track'))}"
+        f"{_bank_block(company)}"
         f"{where_block}"
         "Below is EVERY field on the form, with what is in it right now. Most values were "
         "filled by a rule engine that matches question wording to his profile. It is right "
