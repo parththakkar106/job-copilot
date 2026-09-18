@@ -364,6 +364,17 @@ buckets:
     - {pattern: 'greatest strength|biggest strength|your strength', answer_key: biggest_strength}
     - {pattern: 'weakness|area.*improv|area.*develop',              answer_key: biggest_weakness}
     - {pattern: 'tell us about yourself|about you\b|introduce yourself', answer_key: about_you}
+    # Specific behavioral themes, each with its own bank row. These sit above the generic
+    # behavioral catch-all so "tell us about a time you led..." lands on leadership, not
+    # on the generic story.
+    - {pattern: 'time you led|leadership (experience|example|style)|led a (team|project|piece)|mentor(ed|ing)|managed (a team|people)|develop(ed|ing) (others|a junior)', answer_key: leadership}
+    - {pattern: 'non-?technical (stakeholder|audience|people)|explain.{0,30}(technical|complex).{0,30}(non-?technical|stakeholder|business)|stakeholder (management|alignment)|business (partner|stakeholder)s?', answer_key: stakeholders}
+    - {pattern: 'under pressure|tight deadline|high[- ]pressure|stressful (situation|project)|work(ing)? (well )?under (stress|pressure)', answer_key: pressure}
+    - {pattern: 'unrealistic (timeline|deadline|expectation)|(competing|conflicting) (priorities|demands)|prioriti[sz]e.{0,30}(work|tasks|demands)|too much (work|on your plate)', answer_key: priorities}
+    - {pattern: '(use|integrate|leverage|apply).{0,20}\b(ai|llms?|copilot|claude|chatgpt|generative)\b.{0,40}(workflow|work|day|process)|how do you (use|work with) (ai|llms?)|ai (tools?|assistants?) in your', answer_key: ai_workflow}
+    - {pattern: 'why (are you )?(leaving|looking to leave|moving on)|reason for leaving|why (are you )?looking (for|to)|what.{0,20}prompt(ed|s) (your|this) (search|move)', answer_key: why_leaving}
+    - {pattern: 'why should we hire|why (are )?you (the )?(right|best|good) (fit|candidate|person)|what (sets you apart|makes you (stand out|unique|different))|what (would|do) you bring', answer_key: why_hire_you}
+    - {pattern: '(complex|hard|difficult|technical) (problem|challenge).{0,30}(solved|overcame|tackled)|(solved|overcame|tackled).{0,30}(complex|hard|difficult|technical) (problem|challenge)', answer_key: complex_problem}
     # Behavioral / "walk us through a..." prompts — proudest achievement, a challenging
     # project, a time you did X. Draftable so Claude drafts from the bank + Parth approves.
     - {pattern: 'proudest|greatest (achievement|accomplishment)|most (proud|significant|impressive|challenging).{0,30}(achievement|accomplishment|project|work|problem)|walk us through.{0,30}(achievement|accomplishment|project|time)|describe a (time|project|situation|challenge)|tell (us|me) about a (time|project|challenge|situation)', answer_key: behavioral}
