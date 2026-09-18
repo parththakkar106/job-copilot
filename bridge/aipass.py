@@ -30,9 +30,10 @@ WHAT IT MAY AND MAY NOT DO (Parth's rules, 2026-09-17)
 - A field that ALREADY holds a value is overwritten only at REPLACE_MIN confidence or
   above, and every overwrite carries the old value so the review reads "was X, now Y".
   Below that bar the model's disagreement is recorded as a flag and nothing is written.
-- A saved answer-bank reply is used VERBATIM unless the question asks something that
-  answer does not address. That is a rewrite the model must justify, and it goes through
-  the same REPLACE_MIN gate as any other overwrite.
+- A saved answer-bank reply is the base for its question. The model may tailor it to
+  the company, role, or exact wording, but it keeps the story, the facts, and most of the
+  wording. A tailored reply is an overwrite, so it goes through the same REPLACE_MIN gate
+  as any other.
 
 Identity and contact facts are NOT locked (Parth's call, asked and reaffirmed): the model
 may overwrite a name, phone or graduation date at high confidence like anything else. The
@@ -185,8 +186,9 @@ def _bank_block(company: str) -> str:
     if not lines:
         return ""
     return ("His own saved answers, in his words. When a question asks the same thing in "
-            "any wording, use the matching answer as it is; adapt it only to name this "
-            "company or role:\n" + "\n".join(lines) + "\n\n")
+            "any wording, start from the matching answer. You may tailor it to this company, "
+            "role, or exact question, but keep its story, its facts, and most of its "
+            "wording:\n" + "\n".join(lines) + "\n\n")
 
 
 def build_prompt(fields: list[dict], context: dict | None) -> str:
@@ -238,9 +240,11 @@ def build_prompt(fields: list[dict], context: dict | None) -> str:
         "a false statement on a real application.\n"
         "- A field that says 'choose exactly one of' must be answered with one of those "
         "options, copied exactly. Never invent an option.\n"
-        "- A CURRENT VALUE that is Parth's own saved answer is his confirmed wording: keep "
-        "it as it is. Rewrite it ONLY if the question asks something that answer does not "
-        "address, and say that in your reason.\n"
+        "- A CURRENT VALUE that is Parth's own saved answer is his confirmed wording. If a "
+        "light edit makes it fit this company, role, or exact question better, return the "
+        "edited version: keep its story, its facts, about the same length, and most of its "
+        "wording, and say what you tailored in your reason. If it already fits, leave it "
+        "out of your reply.\n"
         "- A question that only makes sense as a follow-up to another one ('if you answered "
         "yes above...') must be read against the answer actually given above it. If that "
         "answer was no, the honest reply is that it does not apply.\n"

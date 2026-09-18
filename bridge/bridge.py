@@ -562,7 +562,9 @@ def bank_draft(item: dict, company: str | None) -> tuple[str | None, str | None]
     degrades to asking Parth cold, which is the pre-bank behaviour.
     """
     if item.get("draft"):
-        return str(item["draft"]), None
+        # A draft tailored from a bank answer keeps that row's id, so accepting it still
+        # counts as a use of the row.
+        return str(item["draft"]), item.get("draft_bank_id")
     key = item.get("answer_key")
     if not key:
         return None, None
@@ -577,9 +579,10 @@ def bank_draft(item: dict, company: str | None) -> tuple[str | None, str | None]
 
 
 async def resolve_draft(item: dict, context: dict | None, force: bool = False) -> tuple[str | None, str | None]:
-    """The draft to offer, bank first then Claude. A saved bank answer always wins (it's
-    Parth's own confirmed wording); only when the bank has nothing AND the item is a
-    draftable essay do we spend a Claude Code call to write one. `force` is Parth explicitly
+    """The draft to offer, bank first then Claude. A saved bank answer is served as it is
+    (it's Parth's own confirmed wording); when the bank has nothing AND the item is a
+    draftable essay, a Claude Code call writes one. A forced draft of a bank-backed item
+    sends the bank answer to Claude to tailor to this job. `force` is Parth explicitly
     asking for a draft from the panel: it waives the answer_key requirement (the taxonomy
     only tags question shapes it has SEEN, so a one-off prompt reaches us untagged) but not
     the essay shape — a multiple-choice item is a pick and drafting prose for it is useless.
@@ -590,17 +593,23 @@ async def resolve_draft(item: dict, context: dict | None, force: bool = False) -
     caller falls back to asking cold, the pre-drafting behaviour."""
     draft, bank_id = bank_draft(item, (context or {}).get("company"))
     wanted = drafter_mod.is_draftable(item) or (force and drafter_mod.drafts_on_request(item))
-    if draft or not drafter_mod.available() or not wanted:
+    # A bank answer is served as it is, at no cost. Only a forced draft spends a call on
+    # it, and then the call tailors the bank answer to this job instead of starting over.
+    tailor = bool(draft and bank_id and force)
+    if (draft and not tailor) or not drafter_mod.available() or not wanted:
         return draft, bank_id
+    ask = {**item, "bank_answer": draft} if tailor else item
     try:
-        text = await asyncio.to_thread(drafter_mod.draft_answer, item, context or {}, force)
+        text = await asyncio.to_thread(drafter_mod.draft_answer, ask, context or {}, force)
     except Exception as e:
         dlog(f"[draft] claude draft for {item.get('id')!r} failed ({e}) — asking cold")
-        return None, None
+        return draft, bank_id
     if text:
         item["draft"] = text  # cache on the item so downstream reads reuse it
-        return text, None
-    return None, None
+        if bank_id:
+            item["draft_bank_id"] = bank_id
+        return text, bank_id
+    return draft, bank_id
 
 
 async def handle_ask(msg, ws):
@@ -2185,7 +2194,17 @@ async def _predraft_record(dedup_key: str, context: dict) -> None:
                 if not q.get("draft") and q.get("answer") is None and drafter_mod.is_draftable(q)]
         if not todo:
             return
-        drafts = await asyncio.to_thread(drafter_mod.draft_answers, todo, context)
+        # Hand each question's bank answer to the model, so it tailors his own wording to
+        # this job instead of writing a new answer. The copies keep `bank_answer` off the
+        # saved record.
+        bank_ids: dict = {}
+        asks = []
+        for q in todo:
+            base, bid = bank_draft(q, context.get("company"))
+            if bid:
+                bank_ids[q.get("id")] = bid
+            asks.append({**q, "bank_answer": base} if bid else q)
+        drafts = await asyncio.to_thread(drafter_mod.draft_answers, asks, context)
         if not drafts:
             return
         fresh = await asyncio.to_thread(pending_mod.load, dedup_key)  # re-read: minimize clobber
@@ -2196,6 +2215,8 @@ async def _predraft_record(dedup_key: str, context: dict) -> None:
             t = drafts.get(q.get("id"))
             if t and not q.get("draft") and q.get("answer") is None:
                 q["draft"] = t
+                if q.get("id") in bank_ids:
+                    q["draft_bank_id"] = bank_ids[q["id"]]
                 changed = True
         if changed:
             await asyncio.to_thread(pending_mod.save, fresh)

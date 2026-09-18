@@ -226,11 +226,40 @@ async def scenario_panel():
                                "items": [{"id": "qx", "label": "What does our purpose mean to you?"}]}, ws)
         assert ws.sent[0]["answers"] == {}, ws.sent[0]
         checks += 1
-        # A bank hit still beats Claude even when forced — his own wording wins.
+        # A forced draft of a bank hit sends the bank answer to Claude to tailor, and the
+        # tailored draft keeps the row's id so accepting it still counts as a use.
+        prompts = []
+        B.drafter_mod._run_claude = lambda prompt: prompts.append(prompt) or "a tailored answer"
         ws = FakeWS()
         await B.handle_drafts({"reqId": "d5", "context": {"company": "Ramp"}, "force": True,
                                "items": [{"id": "q1", "answer_key": "why_company", "label": "Why us?"}]}, ws)
-        assert ws.sent[0]["answers"]["q1"]["bank_id"] == "why_company_ramp", ws.sent[0]
+        assert ws.sent[0]["answers"]["q1"] == {"draft": "a tailored answer",
+                                               "bank_id": "why_company_ramp"}, ws.sent[0]
+        assert "Ramp-specific answer." in prompts[0], prompts
+        checks += 1
+        # Without the tap, a bank hit is served as it is and no call is made.
+        prompts.clear()
+        ws = FakeWS()
+        await B.handle_drafts({"reqId": "d6", "context": {"company": "Ramp"},
+                               "items": [{"id": "q1", "answer_key": "why_company", "label": "Why us?"}]}, ws)
+        assert ws.sent[0]["answers"]["q1"]["draft"] == "Ramp-specific answer." and not prompts
+        checks += 1
+        # Background predrafting also tailors from the bank, and stamps the row's id.
+        rec = {"dedup_key": "k1", "company": "Ramp", "questions": [
+            {"id": "q1", "answer_key": "why_company", "label": "Why us?", "answer": None}]}
+        saved = {}
+        orig_load, orig_save = B.pending_mod.load, B.pending_mod.save
+        B.pending_mod.load = lambda key: json.loads(json.dumps(saved.get("rec", rec)))
+        B.pending_mod.save = lambda r: saved.__setitem__("rec", r)
+        try:
+            prompts.clear()
+            await B._predraft_record("k1", {"company": "Ramp", "role": "Quant"})
+        finally:
+            B.pending_mod.load, B.pending_mod.save = orig_load, orig_save
+        q = saved["rec"]["questions"][0]
+        assert q["draft"] == "a tailored answer" and q["draft_bank_id"] == "why_company_ramp", q
+        assert "bank_answer" not in q and "Ramp-specific answer." in prompts[0]
+        assert B.bank_draft(q, "Ramp") == ("a tailored answer", "why_company_ramp")
         checks += 1
     finally:
         B.drafter_mod._run_claude, B.drafter_mod._ENABLED = orig_run, orig_enabled

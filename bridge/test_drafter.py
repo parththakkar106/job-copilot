@@ -50,7 +50,7 @@ def main():
     ok &= check("sanitize keeps hyphenated words",
                 "data-science" in drafter.sanitize("I love data-science work"))
     ok &= check("sanitize caps very long output",
-                len(drafter.sanitize("x " * 1000)) <= 700)
+                len(drafter.sanitize("x " * 1000)) <= 900)
     ok &= check("sanitize empty -> empty", drafter.sanitize("   ") == "")
 
     # --- draft_answer: stub the CLI so no real call happens ---

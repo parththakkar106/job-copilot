@@ -297,6 +297,16 @@ def drafts_on_request(item: dict) -> bool:
     return bool(str(item.get("label") or "").strip()) and not item.get("options")
 
 
+# A question with a saved bank answer is not drafted from scratch. The bank answer is his
+# own wording and his real story, so the model starts from it and only tailors it to the
+# job. The caller puts that answer on the item as `bank_answer`.
+SAVED_RULE = ("Start from his saved answer. Keep its story, its facts, and most of its "
+              "wording. Change it only where that makes it fit this company, role, or exact "
+              "question better. If it already fits, return it unchanged. Keep about the same "
+              "length, and if it already has a small typo, keep that one instead of adding "
+              "another.")
+
+
 def build_prompt(item: dict, context: dict | None) -> str:
     """The full self-contained instruction handed to `claude -p`. Everything the draft
     needs is inline (no tools, no file reads) so the CLI answers from this text alone."""
@@ -305,6 +315,8 @@ def build_prompt(item: dict, context: dict | None) -> str:
     role = (ctx.get("role") or ctx.get("title") or "").strip()
     label = str(item.get("label") or "").strip()
     key = str(item.get("answer_key") or "").strip()
+    base = str(item.get("bank_answer") or "").strip()
+    saved = f"His saved answer to this question:\n{base}\n\n{SAVED_RULE}\n\n" if base else ""
 
     where = []
     if company:
@@ -321,6 +333,7 @@ def build_prompt(item: dict, context: dict | None) -> str:
         f"{where_block}"
         f"Question to answer: {label}\n"
         f"(internal category: {key or 'general'})\n\n"
+        f"{saved}"
         "Rules for the answer, follow them exactly:\n"
         "- Sound like a real person wrote it in a hurry, not polished or AI-generated.\n"
         "- Keep it short: 3 to 4 lines maximum.\n"
@@ -351,8 +364,14 @@ def build_batch_prompt(items: list[dict], context: dict | None) -> str:
         where.append(f"Role: {role}")
     where_block = ("\n".join(where) + "\n\n") if where else ""
 
-    numbered = "\n".join(f"{i}. {str(it.get('label') or '').strip()}"
-                         for i, it in enumerate(items, 1))
+    def entry(i: int, it: dict) -> str:
+        line = f"{i}. {str(it.get('label') or '').strip()}"
+        base = str(it.get("bank_answer") or "").strip()
+        return f"{line}\n   His saved answer: {base}" if base else line
+
+    numbered = "\n".join(entry(i, it) for i, it in enumerate(items, 1))
+    saved = (f"For a question that shows his saved answer: {SAVED_RULE}\n\n"
+             if any(str(it.get("bank_answer") or "").strip() for it in items) else "")
 
     return (
         f"You are drafting several job-application answers that {NAME} will submit as their own. "
@@ -362,6 +381,7 @@ def build_batch_prompt(items: list[dict], context: dict | None) -> str:
         f"{where_block}"
         "Answer EVERY question in the numbered list below.\n\n"
         f"Questions:\n{numbered}\n\n"
+        f"{saved}"
         "Rules for EACH answer, follow them exactly:\n"
         "- Sound like a real person wrote it in a hurry, not polished or AI-generated.\n"
         "- Keep it short: 3 to 4 lines maximum.\n"
@@ -445,9 +465,10 @@ def sanitize(text: str) -> str:
     while "  " in t:
         t = t.replace("  ", " ")
     t = t.replace(", ,", ",").replace(" ,", ",")
-    # Hard length guard (well past 4 lines) so a misbehaving draft can't flood the card.
-    if len(t) > 700:
-        t = t[:700].rstrip()
+    # Hard length guard so a misbehaving draft can't flood the card. It sits above the
+    # longest bank answer (about 700 characters), so a tailored one is never cut off.
+    if len(t) > 900:
+        t = t[:900].rstrip()
     return t.strip()
 
 
