@@ -184,6 +184,17 @@ def _load_facts() -> list[str]:
         ("preferences", "work_arrangement", "Work arrangement"),
         ("links", "linkedin", "LinkedIn"),
         ("links", "github", "GitHub"),
+        # Voluntary self-identification answers, so the pass verifies these fields
+        # against his own choices instead of flagging or guessing them.
+        ("eeo", "gender", "Gender"),
+        ("eeo", "gender_identity", "Gender identity"),
+        ("eeo", "transgender", "Transgender"),
+        ("eeo", "sexual_orientation", "Sexual orientation"),
+        ("eeo", "pronouns", "Pronouns"),
+        ("eeo", "race_ethnicity", "Race/ethnicity"),
+        ("eeo", "hispanic_latino", "Hispanic or Latino"),
+        ("eeo", "veteran_status", "Veteran status"),
+        ("eeo", "disability_status", "Disability status"),
     ]
     for block, key, phrasing in contact:
         v = txt(block, key)
