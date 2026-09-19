@@ -674,6 +674,21 @@ kbd {
 .draft-chip:hover { background: rgba(124,108,255,.22); }
 .qa-value { font-size: 13px; color: var(--text); background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; white-space: pre-wrap; word-break: break-word; }
 .qa-filled .qa-label { font-weight: 600; color: var(--muted); }
+/* AI pass rows in the job drawer: what the model did, and how sure it was. */
+.qa-label { flex-wrap: wrap; }
+.ai-badge, .ai-conf {
+  font-size: 10px; text-transform: uppercase; padding: 2px 6px; border-radius: 4px;
+  letter-spacing: .4px; font-weight: 800;
+}
+.ai-wrote { color: var(--violet); background: color-mix(in srgb, var(--violet) 15%, transparent); }
+.ai-kept  { color: var(--muted); background: var(--bg-3); }
+.ai-hot   { color: var(--red); background: color-mix(in srgb, var(--red) 15%, transparent); }
+.ai-conf-high { color: var(--green); background: color-mix(in srgb, var(--green) 15%, transparent); }
+.ai-conf-mid  { color: var(--amber); background: color-mix(in srgb, var(--amber) 15%, transparent); }
+.ai-conf-low  { color: var(--red); background: color-mix(in srgb, var(--red) 15%, transparent); }
+.ai-note { margin-top: 5px; }
+.filled-row { display: flex; gap: 6px; align-items: flex-start; }
+.filled-row > .qa-value, .filled-row > select, .filled-row > textarea { flex: 1; min-width: 0; }
 .drawer-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; position: sticky; bottom: 0; background: var(--bg); padding-top: 13px; border-top: 1px solid var(--line); }
 .spacer { flex: 1; }
 

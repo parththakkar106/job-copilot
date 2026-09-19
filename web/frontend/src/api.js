@@ -24,6 +24,7 @@ export const api = {
   status: () => req('GET', '/status'),
   job: (key) => req('GET', `/jobs/${key}`),
   saveAnswers: (key, answers) => req('PUT', `/jobs/${key}/answers`, { answers }),
+  editFilled: (key, label, value) => req('PUT', `/jobs/${key}/filled`, { label, value }),
   setResume: (key, tag, display) => req('PUT', `/jobs/${key}/resume`, { tag, display }),
   setState: (key, target, reason, meta) =>
     req('POST', `/jobs/${key}/state`, { target, reason, meta }),

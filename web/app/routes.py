@@ -17,6 +17,7 @@ from .models import (
     BankRow,
     CompanyTier,
     DraftPref,
+    FilledEdit,
     ProfileUpdate,
     ResumeOverride,
     StateChange,
@@ -60,6 +61,14 @@ def _for_display(rec: dict) -> dict:
     # Also carries a draft for any question the form has already answered — see
     # draft_from_form. It relabels too, so this is the one pass over the questions.
     rec["questions"] = pending_mod.draft_from_form(rec)
+    # The form's own options for each filled row, so the drawer's edit offers a dropdown.
+    opts = {pending_mod._warn_key(f.get("label")): f.get("options") or []
+            for f in rec.get("fields") or []}
+    edited = {pending_mod._warn_key(e.get("label")) for e in rec.get("edits") or []}
+    for f in rec.get("filled") or []:
+        k = pending_mod._warn_key(f.get("label"))
+        f["options"] = opts.get(k, [])
+        f["edited"] = k in edited
     return rec
 
 
@@ -100,6 +109,16 @@ def _resume_display(tag: str) -> str | None:
     if track is None:
         return None
     return f"{profile_mod.resume_filename(track, profile)} ({tag} track)"
+
+
+@router.put("/jobs/{dedup_key}/filled")
+def edit_filled(dedup_key: str, body: FilledEdit):
+    """Override one filled field. Phase 3 writes the new value onto the form."""
+    rec = pending_mod.set_edit(dedup_key, body.label, body.value)
+    if rec is None:
+        raise HTTPException(404, "no such job or field")
+    svc.ping_activity()
+    return _for_display(rec)
 
 
 @router.put("/jobs/{dedup_key}/resume")

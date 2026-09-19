@@ -15,6 +15,11 @@ class AnswersUpdate(BaseModel):
     answers: list[AnswerEdit]
 
 
+class FilledEdit(BaseModel):
+    label: str                   # the filled row's label, as the drawer shows it
+    value: str
+
+
 class ResumeOverride(BaseModel):
     tag: str                     # quant | ds | tech | ai
     display: Optional[str] = None

@@ -437,11 +437,39 @@ def test_serving_order():
     return n
 
 
+def test_set_edit():
+    """An edit must reach phase 3 (edits, by field id) AND the drift baseline (filled),
+    or the job is held for the change he asked for."""
+    d, n = tmp(), 0
+    P.put({"dedup_key": "eeeeeeeeeeeeeee1"},
+          [], [{"label": "Preferred Office", "value": "Austin"},
+               {"label": "Resume", "value": "a.pdf"}], base=d,
+          fields=[{"id": "f9", "label": "Preferred Office*", "kind": "dropdown",
+                   "options": ["Boston", "Austin"]}])
+    P.approve("eeeeeeeeeeeeeee1", base=d)
+    r = P.set_edit("eeeeeeeeeeeeeee1", "Preferred Office", "Boston", base=d)
+    assert r["filled"][0]["value"] == "Boston", r["filled"]
+    n += 1
+    assert r["edits"] == [{"id": "f9", "label": "Preferred Office", "value": "Boston"}], r["edits"]
+    n += 1
+    assert r["status"] == P.AWAITING, "he approved the old value, so the job reopens"
+    n += 1
+    r = P.set_edit("eeeeeeeeeeeeeee1", "Preferred Office", "Austin", base=d)
+    assert len(r["edits"]) == 1 and r["edits"][0]["value"] == "Austin", "a re-edit replaces"
+    n += 1
+    assert P.set_edit("eeeeeeeeeeeeeee1", "Resume", "x.pdf", base=d) is None, "resume is a file"
+    n += 1
+    assert P.set_edit("eeeeeeeeeeeeeee1", "Nope", "x", base=d) is None
+    n += 1
+    return n
+
+
 if __name__ == "__main__":
     n = (test_roundtrip() + test_no_clobber() + test_answers_and_completion()
          + test_approve_gate() + test_listing_and_counts() + test_restore_from_archive()
          + test_corrupt_file_is_survivable() + test_open_warnings()
          + test_readable_label()
          + test_draft_from_form()
-         + test_serving_order())
+         + test_serving_order()
+         + test_set_edit())
     print(f"pending: {n}/{n} checks passed")

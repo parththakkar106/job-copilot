@@ -4,6 +4,49 @@ import { useToast } from '../toast.jsx'
 
 const RESUME_TAGS = ['quant', 'ds', 'tech', 'ai']
 
+// The AI pass's actions (bridge/aipass.py decide()). Only fill and replace write to the form.
+const AI_VERB = { fill: 'AI filled', replace: 'AI replaced', flag: 'flagged, not written', propose: 'suggested, not written' }
+const WRITES = new Set(['fill', 'replace'])
+// Tiers match aipass.py: below LOW_CONF (0.6) the bridge sets `low`. At REPLACE_MIN (0.8)
+// the model may overwrite a value, so 0.8 and up counts as high.
+const confTier = (d) => (d.low ? 'low' : (Number(d.confidence) >= 0.8 ? 'high' : 'mid'))
+// A label reduced to what names the field, as pending.py's _warn_key does.
+const labelKey = (s) => String(s || '').replace(/[✱*]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+
+// A filled value with an edit control. Phase 3 writes the saved value onto the form.
+function FilledValue({ row, onSave }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const opts = row?.options || []
+  if (!row) return null
+  if (!editing) {
+    return (
+      <div className="filled-row">
+        <div className="qa-value">{row.value === '' ? <span className="hint">— blank —</span> : String(row.value)}</div>
+        {/* The resume is a file attached by track; change it with the picker above. */}
+        {labelKey(row.label) !== 'resume' && (
+          <button className="btn btn-sm btn-ghost" onClick={() => { setDraft(String(row.value ?? '')); setEditing(true) }}>Edit</button>
+        )}
+      </div>
+    )
+  }
+  const save = async () => { if (await onSave(row.label, draft)) setEditing(false) }
+  return (
+    <div className="filled-row">
+      {opts.length > 0 ? (
+        <select value={draft} onChange={(e) => setDraft(e.target.value)} aria-label={`New value for ${row.label}`}>
+          {!opts.includes(draft) && <option value={draft}>{draft || '— choose —'}</option>}
+          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      ) : (
+        <textarea rows={2} value={draft} onChange={(e) => setDraft(e.target.value)} aria-label={`New value for ${row.label}`} />
+      )}
+      <button className="btn btn-sm btn-primary" onClick={save}>Save</button>
+      <button className="btn btn-sm btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
+    </div>
+  )
+}
+
 // Greenhouse forms are often embedded on the company's own careers site (asana.com,
 // careers.roblox.com, ...), where the form lives in a cross-origin iframe — the extension
 // panel can't float and its dropdown clicks misfire. The legacy embed endpoint serves the
@@ -75,6 +118,23 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
 
   const complete = rec._complete
   const pinned = rec.resume_override
+  const aiDecisions = rec.ai_decisions || []
+  // `filled` is phase 1's read-back of the whole form, so it also holds every value the AI
+  // wrote. Those are listed under the AI pass with their confidence, so leave them out here.
+  const aiWrote = new Set(aiDecisions
+    .filter((d) => WRITES.has(d.action) && d.applied !== false).map((d) => labelKey(d.label)))
+  const filledByKey = new Map((rec.filled || []).map((f) => [labelKey(f.label), f]))
+  const filled = (rec.filled || []).filter((f) => !aiWrote.has(labelKey(f.label)))
+
+  const editFilled = async (label, value) => {
+    try {
+      const r = await api.editFilled(dedupKey, label, value)
+      setRec(r)
+      notify(rec.status === 'approved' ? 'Saved. Approve the job again to send it.' : 'Saved', 'success')
+      onChanged?.()
+      return true
+    } catch (e) { notify(e.message, 'error', 6000); return false }
+  }
 
   return (
     <div className="drawer-scrim" onClick={onClose}>
@@ -143,16 +203,58 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
           ))}
         </div>
 
-        {(rec.filled || []).length > 0 && (
+        {aiDecisions.length > 0 && (
           <div className="drawer-section">
-            <div className="section-label">Auto-filled ({rec.filled.length})</div>
+            <div className="section-label">AI pass ({aiDecisions.length})</div>
             <div className="hint" style={{ marginBottom: 8 }}>
-              Deterministic answers the extension filled from your profile. Read-only here.
+              What the AI fill + verify pass did on this form, least certain first.
             </div>
-            {rec.filled.map((f, i) => (
+            {aiDecisions.map((d, i) => {
+              const written = WRITES.has(d.action) && d.applied !== false
+              return (
+                <div key={d.id || i} className="qa qa-filled">
+                  <div className="qa-label">
+                    {d.label || d.id}
+                    <span className={`ai-badge ai-${written ? 'wrote' : 'kept'}`}>
+                      {written ? AI_VERB[d.action] : (WRITES.has(d.action) ? 'not written' : AI_VERB[d.action])}
+                    </span>
+                    <span className={`ai-conf ai-conf-${confTier(d)}`}
+                      title="The model's own confidence in this value">
+                      {Math.round((Number(d.confidence) || 0) * 100)}% confident
+                    </span>
+                    {d.hot && <span className="ai-badge ai-hot">check this</span>}
+                  </div>
+                  {written && filledByKey.has(labelKey(d.label))
+                    ? <FilledValue row={filledByKey.get(labelKey(d.label))} onSave={editFilled} />
+                    : <div className="qa-value">{d.value === '' ? <span className="hint">— blank —</span> : String(d.value)}</div>}
+                  {d.was && (d.action === 'replace' || d.action === 'flag') && (
+                    <div className="hint ai-note">
+                      {d.action === 'replace' ? 'Was: ' : 'Form kept: '}{d.was}
+                    </div>
+                  )}
+                  {d.why && <div className="hint ai-note">Reason: {d.why}</div>}
+                  {WRITES.has(d.action) && d.applied === false && d.why_not && (
+                    <div className="hint ai-note">Not written: {d.why_not}</div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {filled.length > 0 && (
+          <div className="drawer-section">
+            <div className="section-label">Auto-filled ({filled.length})</div>
+            <div className="hint" style={{ marginBottom: 8 }}>
+              Answers the extension filled from your profile. An edit is written onto the form when the job is sent.
+            </div>
+            {filled.map((f, i) => (
               <div key={i} className="qa qa-filled">
-                <div className="qa-label">{f.label}</div>
-                <div className="qa-value">{f.value === '' ? <span className="hint">— blank —</span> : String(f.value)}</div>
+                <div className="qa-label">
+                  {f.label}
+                  {f.edited && <span className="ai-badge ai-wrote">your edit</span>}
+                </div>
+                <FilledValue row={f} onSave={editFilled} />
               </div>
             ))}
           </div>

@@ -166,6 +166,18 @@ async def test_resume_override_callback_sets_tag():
     return n
 
 
+async def test_resume_override_rewrites_drift_row():
+    # The phase-1 read-back holds a "Resume" row that phase 3 diffs. A new track must
+    # rewrite it, or the drift guard holds the job for the change he asked for.
+    setup(Path(tempfile.mkdtemp()))
+    P.put(job("aaa"), [], FILLED + [{"label": "Resume", "value": "Parth_t.pdf"}])
+    P.set_resume_override("aaa", "ai", "Parth_a.pdf (ai track)")
+    rows = P.load("aaa")["filled"]
+    assert {"label": "Resume", "value": "Parth_a.pdf"} in rows, rows
+    assert FILLED[0] in rows, rows
+    return 1
+
+
 async def test_resume_override_unknown_track_noop():
     setup(Path(tempfile.mkdtemp()))
     n = 0
@@ -416,6 +428,7 @@ async def main():
               test_edit_rejects_bad_number, test_edit_no_questions_points_to_resume,
               test_edit_nothing_pending, test_resume_shows_track_buttons,
               test_resume_override_callback_sets_tag, test_resume_override_unknown_track_noop,
+              test_resume_override_rewrites_drift_row,
               test_resume_override_refused_after_approve, test_resume_override_stale_button_no_crash,
               test_myresume_lists_tracks, test_myresume_arg_sends_the_named_track,
               test_myresume_button_sends_the_pdf, test_myresume_unknown_track_says_so,

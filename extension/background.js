@@ -811,7 +811,9 @@ async function runFlush() {
             // What the AI pass decided back in phase 1, already reflected in the summary he
             // approved. Replayed, never recomputed: a second call could answer differently
             // and the drift guard would (rightly) refuse to submit its own fill.
-            aiDecisions: rec.ai_decisions || [] });
+            // His console edits go last, so they win over both the profile and the AI.
+            aiDecisions: [...(rec.ai_decisions || []),
+              ...(rec.edits || []).map(e => ({ ...e, action: "replace", by: "you" }))] });
 
         if (report.reviewed !== "ok") {
           summary.parked++;
@@ -952,6 +954,7 @@ async function runApplyUrl(url) {
       filled: report.summary || report.filled || [],
       warnings: report.warnings || [],
       ai_decisions: report.aiDecisions || [],
+      fields: report.fields || [],
     });
     await notify(
       `📋 <b>${escHtml(report.company || "This role")}</b> — filled what I can.\n`
@@ -1044,6 +1047,7 @@ async function runQueue(opts = {}) {
           questions,
           filled: report.summary || report.filled || [],
           ai_decisions: report.aiDecisions || [],
+          fields: report.fields || [],
           warnings: report.warnings || [],
         });
         summary.collected++;

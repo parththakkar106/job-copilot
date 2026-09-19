@@ -176,7 +176,7 @@ def load_archived(dedup_key: str, base: Path | str | None = None) -> dict | None
 
 def put(job: dict, questions: list[dict], filled: list[dict],
         base: Path | str | None = None, warnings: list | None = None,
-        ai_decisions: list | None = None) -> dict | None:
+        ai_decisions: list | None = None, fields: list | None = None) -> dict | None:
     """Record what phase 1 found for one job. Returns the new record, or None if this
     job is already pending — never clobbers a record Parth has partly answered, which
     is what a re-run of phase 1 would otherwise do.
@@ -214,6 +214,9 @@ def put(job: dict, questions: list[dict], filled: list[dict],
         "questions": [{**q, "answer": q.get("answer")} for q in questions],
         "warnings": list(warnings or []),
         "ai_decisions": list(ai_decisions or []),
+        # Each form field's id, label, kind and options: what the console needs to offer an
+        # edit with the form's own options, and what phase 3 replays that edit by.
+        "fields": list(fields or []),
         "status": AWAITING,
         "created": _now(),
     }
@@ -245,8 +248,12 @@ def set_resume_override(dedup_key: str, tag: str, display: str | None = None,
 
     `tag` is the track id (quant/ds/tech/ai) fill.js will attach; `display` is the
     human string shown on the Telegram summary (rec["resume"]). Returns the updated
-    record, or None if the job is gone. Resume never participates in the drift guard
-    (it lives only here, not in `filled`), so overriding it can't wrongly block a submit.
+    record, or None if the job is gone.
+
+    Phase 1's read-back stores the attached file as a "Resume" row in `filled`, and the
+    phase-3 drift guard compares that row. So the override rewrites the row to the new
+    file. Otherwise the new track reads as drift and holds the job. With no display, the
+    row is dropped: fill.js holds an unknown tag on its own.
     """
     rec = load(dedup_key, base)
     if rec is None:
@@ -254,6 +261,47 @@ def set_resume_override(dedup_key: str, tag: str, display: str | None = None,
     rec["resume_override"] = tag
     if display is not None:
         rec["resume"] = display
+    new_file = display.split(" (")[0].strip() if display else ""
+    rows = []
+    for f in rec.get("filled") or []:
+        if str(f.get("label", "")).strip().lower() == "resume":
+            if not new_file:
+                continue
+            f = {**f, "value": new_file}
+        rows.append(f)
+    rec["filled"] = rows
+    save(rec, base)
+    return rec
+
+
+def set_edit(dedup_key: str, label: str, value: str,
+             base: Path | str | None = None) -> dict | None:
+    """Override one filled field with Parth's own value. Returns the record, or None if
+    the job or the field is unknown.
+
+    Phase 3 fills these fields from the profile, so changing only the shown value would
+    change nothing on the form. The edit goes to `edits`, which phase 3 writes after the
+    profile and the AI pass. The `filled` row changes too, because the drift guard
+    compares against it. A job already approved is reopened to awaiting, because he
+    approved the old value.
+    """
+    rec = load(dedup_key, base)
+    if rec is None:
+        return None
+    k = _warn_key(label)
+    if k == "resume":
+        return None                 # a file, changed by track with set_resume_override
+    rows = [f for f in rec.get("filled") or [] if _warn_key(f.get("label")) == k]
+    if not rows:
+        return None
+    for f in rows:
+        f["value"] = value
+    field = next((f for f in rec.get("fields") or [] if _warn_key(f.get("label")) == k), {})
+    edits = [e for e in rec.get("edits") or [] if _warn_key(e.get("label")) != k]
+    edits.append({"id": field.get("id", ""), "label": rows[0].get("label", label), "value": value})
+    rec["edits"] = edits
+    if rec.get("status") == APPROVED:
+        rec["status"] = AWAITING
     save(rec, base)
     return rec
 

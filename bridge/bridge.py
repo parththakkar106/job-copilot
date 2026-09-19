@@ -2242,7 +2242,7 @@ async def handle_collect(msg, ws):
         rec = await asyncio.to_thread(
             pending_mod.put, job, msg.get("questions") or [],
             msg.get("filled") or [], None, msg.get("warnings") or [],
-            msg.get("ai_decisions") or [])
+            msg.get("ai_decisions") or [], msg.get("fields") or [])
         answers = {"ok": True, "added": rec is not None}
         # Kick off Claude drafting in the background so the push finds ready drafts. Context
         # is the job's own facts; the tab has already closed, so nobody is waiting on this.

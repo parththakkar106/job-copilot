@@ -876,13 +876,52 @@ async function pickReactSelect(control, value, dd, field) {
   // latent flush bug: phase 1 stored our wording, phase 3 re-read the form's wording, and
   // diffApproved saw drift on a field nobody had touched.
   chose = chose || cleanText(hit) || "";
-  bringIntoView(hit);
-  await sleep(50);
-  res = await rpc({ type: "CDP_CLICK", ...centerOf(hit) });
-  if (!res || !res.ok) return { ok: false, why: `option click failed: ${res && res.error}` };
-  await sleep(90);
-  refresh();   // the pick can re-render the row too; read the commit off the live node
-  const ok = rsCommitted(control, dd);
+  // The click lands by screen position. If the menu list scrolls between reading a row's
+  // rect and the click, the neighbouring row commits: live EEO dropdowns stored the option
+  // next to the one asked for, on about half of one company's forms. So wait for the
+  // rect to stop moving, then read back WHICH option committed, and retry on a wrong one.
+  const settledCenter = async (el) => {
+    let c = centerOf(el);
+    for (let i = 0; i < 6; i++) {
+      await sleep(40);
+      const n = centerOf(el);
+      if (n.x === c.x && n.y === c.y) return n;
+      c = n;
+    }
+    return c;
+  };
+  const chips = () => [...control.querySelectorAll(dd.committed || ".select__single-value, .select__multi-value")];
+  const isChosen = (el) => norm(cleanText(el)) === norm(chose);
+  const before = new Set(chips());
+  let ok = false;
+  for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+    if (attempt) {
+      // Take back a wrong multi-select chip this call added. A single-select needs no
+      // removal: picking the right row replaces the wrong one.
+      for (const c of chips()) {
+        if (before.has(c) || isChosen(c)) continue;
+        const x = c.querySelector(".select__multi-value__remove");
+        if (x) { await rpc({ type: "CDP_CLICK", ...centerOf(x) }); await sleep(120); }
+      }
+      refresh();
+      if (!await ensureOpen()) break;
+      await sleep(120);
+      hit = readOpts().find(isChosen);
+      if (!hit) break;
+    }
+    bringIntoView(hit);
+    res = await rpc({ type: "CDP_CLICK", ...await settledCenter(hit) });
+    if (!res || !res.ok) return { ok: false, why: `option click failed: ${res && res.error}` };
+    await sleep(90);
+    refresh();   // the pick can re-render the row too; read the commit off the live node
+    const now = chips();
+    ok = now.some(isChosen) && now.every(c => before.has(c) || isChosen(c));
+  }
+  if (!ok && rsCommitted(control, dd)) {
+    const got = chips().map(cleanText).join(", ");
+    if (document.querySelector(dd.menu || ".select__menu")) await rpc({ type: "CDP_CLICK", ...centerOf(control) });
+    return { ok: false, why: `clicked "${chose}" but "${got}" committed` };
+  }
   // Multi-select keeps its menu open after a pick; close it so it doesn't cover the next
   // field (single-select closes itself). A second click on the control toggles it shut.
   if (ok && document.querySelector(dd.menu || ".select__menu")) { await rpc({ type: "CDP_CLICK", ...centerOf(control) }); await sleep(40); }
@@ -1556,7 +1595,10 @@ async function applyAiDecisions(decisions, pool, report, asks) {
   const byId = new Map(pool.map(e => [e.id, e]));
   const wrote = [];
   for (const d of decisions) {
-    const entry = byId.get(d.id);
+    // Parth's own edit from the console may name a field only by label: records collected
+    // before field ids were stored have none. An exact label match is his field, not a guess.
+    const entry = byId.get(d.id)
+      || (d.by === "you" ? pool.find(e => fieldKey(e.label) === fieldKey(d.label || "")) : null);
     if (!entry) {
       // Phase 3 re-fills a form that can genuinely come out different (Ashby's re-render
       // race, a posting edited overnight). A decision with nowhere to land is recorded as
@@ -1588,7 +1630,7 @@ async function applyAiDecisions(decisions, pool, report, asks) {
       if (at >= 0) report[bucket].splice(at, 1);
     }
     report.filled.push({ label: entry.label, value: written,
-                         via: `AI ${d.action}${d.low ? ", low confidence" : ""}` });
+                         via: d.by === "you" ? "your edit" : `AI ${d.action}${d.low ? ", low confidence" : ""}` });
     // Answered by the pass, so it is no longer a question for Parth. Removing it here
     // (before the escalation step) is what keeps it off Telegram and out of the panel.
     const ai = asks.findIndex(a => a.id === d.id);
@@ -2183,7 +2225,11 @@ async function runFill(autoSubmit = false, opts = {}) {
     }
     // Rides on the report either way: phase 1 sends these to the bridge to store on the
     // pending record, and the review renders them as its own section.
-    report.aiDecisions = aiDecisions;
+    report.aiDecisions = aiDecisions.filter(d => d.by !== "you");
+    // Every field's id, label and options, so the console can offer an edit with the
+    // form's own options and phase 3 can replay that edit onto the same control.
+    report.fields = aiPool.map(e => ({ id: e.id, label: e.meta.label, kind: e.meta.kind,
+                                       options: e.meta.options }));
 
     // 5) page-boundary escalation — send every unresolved field to Telegram and apply the
     // answers. Runs INSIDE the try so a Greenhouse react-select answer can still use the
