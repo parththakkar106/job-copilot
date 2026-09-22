@@ -1510,4 +1510,15 @@ ok(fieldKey("") === "" && fieldKey(null) === "", "an absent label yields no key 
   } finally { delete globalThis.document; }
 }
 
+// Greenhouse's phone country picker commits "United States +1" as a "+1" chip.
+{
+  const { chipIsOption } = new Function(`${extractConsts()}
+${extract("chipIsOption")}
+return { chipIsOption };`)();
+  ok(chipIsOption("+1", "United States +1"), "a dial-code chip is the option it came from");
+  ok(chipIsOption("Yes", "yes"), "an exact chip still matches");
+  ok(!chipIsOption("+44", "United States +1"), "a different dial code is not the option");
+  ok(!chipIsOption("+1", "+11"), "a dial code must be the option's last word");
+}
+
 console.log(`fill units: ${n}/${n} checks passed`);

@@ -891,7 +891,7 @@ async function pickReactSelect(control, value, dd, field) {
     return c;
   };
   const chips = () => [...control.querySelectorAll(dd.committed || ".select__single-value, .select__multi-value")];
-  const isChosen = (el) => norm(cleanText(el)) === norm(chose);
+  const isChosen = (el) => chipIsOption(cleanText(el), chose);
   const before = new Set(chips());
   let ok = false;
   for (let attempt = 0; attempt < 3 && !ok; attempt++) {
@@ -1141,6 +1141,14 @@ function normalizePhone(el, phone) {
   // Require a separator after the code so an ambiguous "+1678…" is left alone, not mangled;
   // A stored number like "+1 555-…" strips cleanly to the national part.
   return String(phone).replace(/^\s*\+\d{1,3}[\s\-.]+/, "").trim();
+}
+
+// True when a committed react-select chip shows the option that was clicked. Greenhouse's
+// phone country picker lists "United States +1" but its chip shows only "+1". A chip that
+// is exactly the option's trailing dial code is that option.
+function chipIsOption(chip, option) {
+  const got = norm(chip), want = norm(option);
+  return got === want || (/^\+\d{1,4}$/.test(got) && want.endsWith(" " + got));
 }
 
 // A single checkbox (consent / boolean question). Click only if the desired state
@@ -1866,7 +1874,7 @@ async function runFill(autoSubmit = false, opts = {}) {
       poolAdd({ label: labelFor(el) || f.key, kind: "core", bucket: "deterministic",
                 required: !f.optional && isRequired(el, adapter),
                 value: r.ok ? (r.value || value) : "", source: r.ok ? "deterministic" : "" },
-              (v) => applyValue(el, v, adapter));
+              (v) => applyValue(el, f.key === "phone" ? normalizePhone(el, v) : v, adapter));
     }
 
     // 2) resume attach — pick best-of-4 from the role title

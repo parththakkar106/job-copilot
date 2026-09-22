@@ -225,6 +225,11 @@ def test_decide():
 
     # An answer for a field we never sent is ignored rather than guessed at.
     assert aipass.decide(fields, {"ghost": {"value": "x", "confidence": 1}}) == []; checks += 1
+
+    # Adding "+1" to a phone number is the same number, so it is not a change.
+    got = aipass.decide([field("ph", "Phone*", value="555-000-1111", source="deterministic")],
+                        {"ph": {"value": "+1 555-000-1111", "confidence": 0.9}})
+    assert got == [], got; checks += 1
     return checks
 
 

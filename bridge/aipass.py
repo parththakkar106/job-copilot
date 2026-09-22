@@ -301,6 +301,16 @@ _HOT = re.compile(
     r"sponsor|visa|authoriz|work authorization)\b", re.IGNORECASE)
 
 
+def _same_phone(a: str, b: str) -> bool:
+    """True when both strings are the same phone number. Punctuation and a leading US
+    country code are ignored. On a form with a separate country-code picker, the phone
+    input holds the number without "+1", and the model kept proposing to add it back."""
+    if not all(re.fullmatch(r"[+()\-.\s\d]+", s.strip()) for s in (a, b)):
+        return False
+    da, db = (re.sub(r"^1(?=\d{10}$)", "", re.sub(r"\D", "", s)) for s in (a, b))
+    return len(da) >= 7 and da == db
+
+
 def decide(fields: list[dict], answers: dict) -> list[dict]:
     """Turn the model's raw answers into the four things the extension may do with them.
 
@@ -332,7 +342,7 @@ def decide(fields: list[dict], answers: dict) -> list[dict]:
             action = "propose"
         elif not current:
             action = "fill"
-        elif value.strip() == current:
+        elif value.strip() == current or _same_phone(value, current):
             continue                       # agreeing with what is already there is not news
         elif conf >= REPLACE_MIN:
             action = "replace"
