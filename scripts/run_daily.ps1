@@ -31,12 +31,44 @@ $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
-function Log($msg) { Write-Host "[$(Get-Date -Format HH:mm:ss)] $msg" }
-
 # out/queue.json is DATA, so it lives in JOBCOPILOT_HOME - a different repo from this one
 # once the two halves were split. Unset, it is the repo root, which is the pre-split layout.
 $dataHome = $env:JOBCOPILOT_HOME
 if (-not $dataHome) { $dataHome = $repo }
+
+# Task Scheduler runs this in a hidden window, so console output is lost. Write every line
+# to a file as well. The previous run is kept as run_daily.prev.log, the same scheme the
+# bridge log uses.
+$logDir = Join-Path $dataHome 'logs'
+New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+$logFile = Join-Path $logDir 'run_daily.log'
+if (Test-Path $logFile) { Move-Item $logFile (Join-Path $logDir 'run_daily.prev.log') -Force }
+
+function Log($msg) {
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $msg"
+    Write-Host $line
+    Add-Content -Path $logFile -Value $line
+}
+
+# --- 0. Wait for the network ------------------------------------------------------------
+# The task has WakeToRun and StartWhenAvailable, so it often starts in the first seconds
+# after the machine wakes, before DNS works. From 2026-09-22 to 2026-09-25 every fetch
+# failed that way, and each run collected against the same four-day-old queue with nothing
+# reporting it. Retry the fetch for up to five minutes. If it never succeeds, stop: a run
+# on yesterday's queue repeats work that is already done.
+$fetched = $false
+for ($try = 1; $try -le 20; $try++) {
+    $out = git -C $dataHome fetch --quiet origin main 2>&1
+    if ($LASTEXITCODE -eq 0) { $fetched = $true; break }
+    if ($try -eq 1) { Log "Fetch failed, waiting for the network: $out" }
+    Start-Sleep -Seconds 15
+}
+if (-not $fetched) {
+    Log "ERROR: could not fetch origin after 5 minutes. Last error: $out"
+    Log "       Stopping so the run does not collect against a stale queue."
+    exit 1
+}
+Log "Fetched origin/main (attempt $try)."
 
 # --- 1. Sync with origin, publish applied.json, refresh today's queue -------------------
 # Three things against the DATA repo, which is what the Action commits the queue back to.
@@ -50,7 +82,6 @@ if (-not $dataHome) { $dataHome = $repo }
 # applied to. Publishing it here is the half of that fix which cannot live in the repo.
 try {
     Push-Location $dataHome
-    git fetch --quiet origin main 2>&1 | Out-Null
 
     # Every step below assumes the checkout is on main: the fast-forward, the ledger commit,
     # and `git push origin main`. From 2026-08-26 to 2026-09-14 this clone sat on a merged

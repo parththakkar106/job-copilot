@@ -31,9 +31,12 @@ $trigger = New-ScheduledTaskTrigger -Daily -At $At
 
 # WakeToRun: pull the machine out of sleep for the run. StartWhenAvailable: if it was off
 # or asleep past the trigger, run as soon as it's back rather than skipping the day.
+# RunOnlyIfNetworkAvailable: delay the start until Windows reports a connection. This is a
+# coarse check, so run_daily.ps1 also retries its fetch until origin is reachable.
 $settings = New-ScheduledTaskSettingsSet `
     -WakeToRun `
     -StartWhenAvailable `
+    -RunOnlyIfNetworkAvailable `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Hours 2)
