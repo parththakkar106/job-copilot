@@ -885,6 +885,31 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
   ok(!needsSignIn(WORKDAY), "a normal advert is not a wall");
   globalThis.document = doc([]);
   ok(!needsSignIn(WORKDAY), "no Apply button and no marker is a different failure, not this one");
+
+  // advertState: null means "still rendering", which is what the entry wait loops on.
+  globalThis.needsSignIn = needsSignIn;
+  const advertState = eval(`(${extract("advertState")})`);
+  const CLOSED = WORKDAY.entry.closedMarker;
+  globalThis.document = doc([]);
+  eq(advertState(WORKDAY), null, "an empty page is still rendering, not a failure");
+  globalThis.document = doc([CLOSED]);
+  eq(advertState(WORKDAY), "closed", "Workday's error message means the posting is gone");
+  globalThis.document = doc([MARKER]);
+  eq(advertState(WORKDAY), "signin", "a sign-in marker alone is a wall");
+  globalThis.document = doc([APPLY, CLOSED, MARKER]);
+  eq(advertState(WORKDAY), "apply", "the Apply button wins over everything else");
+
+  // The account step: detected by the form AND a password box, and the clone route signs
+  // in first because the account must already exist there.
+  const onAccountPage = eval(`(${extract("onAccountPage")})`);
+  const ACC = WORKDAY.entry.account;
+  globalThis.document = doc([ACC.form, ACC.password]);
+  ok(onAccountPage(WORKDAY), "the account form with a password box is the account step");
+  globalThis.document = doc([ACC.form]);
+  ok(!onAccountPage(WORKDAY), "a form without a password box is not the account step");
+  const accountOrder = eval(`(${extract("accountOrder")})`);
+  eq(accountOrder("useMyLastApplication")[0], "signin", "the clone route signs in first");
+  eq(accountOrder("autofillWithResume")[0], "create", "a cold tenant creates first");
 }
 
 // ── the virtualised prompt list: finding the scroller, and failing usefully ──

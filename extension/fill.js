@@ -1802,6 +1802,9 @@ async function runFill(autoSubmit = false, opts = {}) {
         // pressed, so anything captured up front is false forever.
         shouldStop: () => PANEL_STOP,
         profile: streamed, track, company,
+        // Set from the popup. Read on use, so a password saved mid-run is picked up.
+        accountPassword: async () =>
+          (await chrome.storage.local.get("workdayPassword")).workdayPassword || null,
         tenant: (location.hostname.match(/^([a-z0-9-]+)\.wd\d+\./i) || [])[1] || null,
       });
       Object.assign(report, wd);

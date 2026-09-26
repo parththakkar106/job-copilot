@@ -156,4 +156,19 @@ $("stopqueue").addEventListener("click", async () => {
   catch (_) {}
 });
 
+// The one password the Workday driver types into every tenant's account form. It stays in
+// this browser profile's extension storage and never reaches the bridge or the repo.
+async function showWdState() {
+  const { workdayPassword } = await chrome.storage.local.get("workdayPassword");
+  $("wdstate").textContent = workdayPassword ? "saved" : "not set";
+}
+$("wdsave").addEventListener("click", async () => {
+  const v = $("wdpw").value;
+  if (!v) return;
+  await chrome.storage.local.set({ workdayPassword: v });
+  $("wdpw").value = "";
+  showWdState();
+});
+showWdState();
+
 load();

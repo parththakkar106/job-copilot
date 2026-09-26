@@ -1991,6 +1991,16 @@ export function needsSignIn(adapter) {
   return s.markers.some(m => document.querySelector(m));
 }
 
+// What the advert is showing: "apply", "closed", "signin", or null while Workday is still
+// rendering it. The Apply button wins over the other two, for the reason in needsSignIn.
+export function advertState(adapter) {
+  const e = adapter.entry;
+  if (document.querySelector(e.applyButton)) return "apply";
+  if (e.closedMarker && document.querySelector(e.closedMarker)) return "closed";
+  if (needsSignIn(adapter)) return "signin";
+  return null;
+}
+
 // The autofill route wants the PDF before it will build anything. Attach the track's file
 // through the SAME helper the other three adapters use, then wait for the parse: it
 // rebuilds the form when it lands, so anything written before that is discarded.
@@ -2030,6 +2040,16 @@ export async function enterApplyFlow(ctx) {
   const { adapter, rpc, track } = ctx;
   const e = adapter.entry;
 
+  // Wait for a page we recognize before reading any of it. Workday renders the advert
+  // client-side after the load event: live on Micron, load fired at 2.0s and Apply
+  // appeared at 4.7s. The queue run starts 1.5-3s after load, so a single read here
+  // failed every collect with "no Apply button".
+  const t0 = Date.now();
+  while (Date.now() - t0 < 15000 && !currentStep(adapter) && !currentRoutePage(adapter)
+         && !advertState(adapter)) {
+    await sleep(300);
+  }
+
   // Already inside the wizard (he clicked Apply himself, or a re-fill). Nothing to do —
   // and clicking Apply again from in here would be a different button entirely.
   if (currentStep(adapter)) return { ok: true, route: "already-in-flow", entered: false };
@@ -2053,17 +2073,22 @@ export async function enterApplyFlow(ctx) {
                        error: `parked on the '${parked}' page and no step marker appeared` };
   }
 
-  if (needsSignIn(adapter)) {
+  const state = advertState(adapter);
+  if (state === "closed") {
+    return { ok: false, stage: "closed",
+             error: "this posting is closed: Workday says the page doesn't exist." };
+  }
+  if (state === "signin") {
     return { ok: false, stage: "signin",
-             error: "this tenant wants an account before it will show the form. Sign in " +
-                    "on the tab, then press Fill again — signing in is deliberately not " +
-                    "automated." };
+             error: "this tenant shows a sign-in wall on the advert itself. Sign in on " +
+                    "the tab, then press Fill again. Only the wizard's own account step " +
+                    "is automated." };
   }
 
   const apply = document.querySelector(e.applyButton);
   if (!apply) {
     return { ok: false, stage: "apply-button",
-             error: "no Apply button on this page. If the form is already open this is a " +
+             error: "no Apply button after 15s. If the form is already open this is a " +
                     "step-detection problem, not an entry one." };
   }
   apply.click();
@@ -2111,6 +2136,116 @@ export async function enterApplyFlow(ctx) {
   if (await waitForWizard(ctx)) return entry;
   return { ...entry, ok: false, stage: "wizard",
            error: `took the '${pick.route}' route but no step marker ever appeared` };
+}
+
+// ── account: Create Account / Sign In ────────────────────────────────────────
+
+// True when the wizard's current step is the account form rather than a form to fill.
+export function onAccountPage(adapter) {
+  const a = adapter.entry.account;
+  return !!(a && document.querySelector(a.form) && document.querySelector(a.password));
+}
+
+// Which mode to try first. The clone route means an earlier application on this tenant,
+// so the account already exists and a create can only fail. Elsewhere, create first.
+export function accountOrder(route) {
+  return route === "useMyLastApplication" ? ["signin", "create"] : ["create", "signin"];
+}
+
+// Trusted keystrokes, not a value setter. React only keeps a value it saw typed, and
+// Chrome only offers to save a password it saw typed.
+async function typeTrusted(rpc, el, text) {
+  el.focus();
+  await sleep(120);
+  if (document.activeElement !== el) return false;
+  if (el.value) await rpc({ type: "CDP_ERASE", times: el.value.length });
+  await rpc({ type: "CDP_TYPE", text });
+  await sleep(250);
+  return el.value === text;
+}
+
+// Workday lays a `click_filter` div over its submit buttons, so a trusted click at the
+// button's center reaches the handler and el.click() on the button may not.
+async function clickCenter(rpc, el) {
+  el.scrollIntoView({ block: "center" });
+  await sleep(200);
+  const r = el.getBoundingClientRect();
+  await rpc({ type: "CDP_CLICK", x: Math.round(r.left + r.width / 2),
+              y: Math.round(r.top + r.height / 2) });
+}
+
+function accountErrors() {
+  return [...document.querySelectorAll('[role="alert"], [data-automation-id="errorMessage"], ' +
+                                       '[data-automation-id="inputAlert"]')]
+    .map(e => (e.innerText || "").replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+
+async function tryAccount(ctx, mode, email, password) {
+  const { adapter, rpc } = ctx;
+  const a = adapter.entry.account;
+  const wantCreate = mode === "create";
+  const inCreate = () => !!document.querySelector(a.verifyPassword);
+
+  if (wantCreate !== inCreate()) {
+    const toggle = document.querySelector(wantCreate ? a.toCreate : a.toSignIn);
+    if (!toggle) return { ok: false, error: `no ${mode} link on the account form` };
+    toggle.click();
+    for (let i = 0; i < 20 && wantCreate !== inCreate(); i++) await sleep(250);
+    if (wantCreate !== inCreate()) {
+      return { ok: false, error: `the account form never switched to ${mode}` };
+    }
+  }
+
+  // Error text names the field, never the value: these strings go to fill_reports.jsonl.
+  const fields = [["email", a.email, email], ["password", a.password, password]];
+  if (wantCreate) fields.push(["verify password", a.verifyPassword, password]);
+  for (const [name, sel, text] of fields) {
+    const el = document.querySelector(sel);
+    if (!el || !await typeTrusted(rpc, el, text)) {
+      return { ok: false, error: `could not type the ${name}` };
+    }
+  }
+
+  if (wantCreate) {
+    const box = document.querySelector(a.consent);
+    if (box && !(box.checked || box.getAttribute("aria-checked") === "true")) {
+      await clickCenter(rpc, box);
+    }
+  }
+
+  const submit = document.querySelector(wantCreate ? a.createSubmit : a.signInSubmit);
+  if (!submit) return { ok: false, error: `no ${mode} button` };
+  await clickCenter(rpc, submit);
+
+  // Success is the form going away. Errors read in the first 2s can be leftovers from
+  // typing (a field validates on blur), so they only count after that.
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000) {
+    await sleep(500);
+    if (!onAccountPage(adapter)) return { ok: true };
+    const errs = accountErrors();
+    if (errs.length && Date.now() - t0 > 2000) return { ok: false, error: errs.join("; ") };
+  }
+  return { ok: false, error: `the form was still showing 20s after ${mode}` };
+}
+
+// Sign in or create the tenant account with the one Workday password the popup stores.
+// Each tenant is a separate account, so both modes are tried before giving up.
+export async function signInOrCreate(ctx, route) {
+  const email = ctx.profile && ctx.profile.identity && ctx.profile.identity.email;
+  if (!email) return { ok: false, error: "the profile has no identity.email" };
+  const password = ctx.accountPassword ? await ctx.accountPassword() : null;
+  if (!password) {
+    return { ok: false, error: "no Workday password saved. Set one in the extension " +
+                               "popup, then press Fill again." };
+  }
+  const tried = [];
+  for (const mode of accountOrder(route)) {
+    const r = await tryAccount(ctx, mode, email, password);
+    if (r.ok) return { ok: true, action: mode === "create" ? "created an account" : "signed in" };
+    tried.push(`${mode}: ${r.error}`);
+  }
+  return { ok: false, error: tried.join(" | ") };
 }
 
 // ── the loop ─────────────────────────────────────────────────────────────────
@@ -2175,6 +2310,36 @@ export async function runWorkday(ctx) {
         steps.push({ n: step.n, name: step.name, action: "stopped" });
         return { ok: true, adapter: "workday", stoppedAt: step, report, needsInput, steps,
                  note: "Reached Review. Submitting is deliberately left to you." };
+      }
+
+      // The account form is not a step to fill. Handle it, then read the next step fresh.
+      if (onAccountPage(adapter)) {
+        const acc = await signInOrCreate(ctx, entry.route);
+        if (!acc.ok) {
+          steps.push({ n: step.n, name: step.name, action: "account failed" });
+          return { ok: false, adapter: "workday", stage: "account", blockedAt: step,
+                   error: `Workday account: ${acc.error}`, report, needsInput, steps };
+        }
+        report.push(["account", acc.action]);
+        // A new account can land on an email-verification page instead of step 2. Compare
+        // names too: after sign-in Workday may drop the account step and renumber, so
+        // My Information can arrive as step 1.
+        let moved = null;
+        for (let i = 0; i < 80; i++) {
+          moved = currentStep(adapter);
+          if (moved && moved.name !== step.name) break;
+          await sleep(300);
+        }
+        if (!moved || moved.name === step.name) {
+          steps.push({ n: step.n, name: step.name, action: "account done, wizard stuck" });
+          return { ok: false, adapter: "workday", stage: "account", blockedAt: step,
+                   error: `${acc.action}, but the wizard did not move on. Check the tab: ` +
+                          `the tenant may want the email verified first.`,
+                   report, needsInput, steps };
+        }
+        steps.push({ n: step.n, name: step.name, action: acc.action });
+        lastSignature = null;
+        continue;
       }
 
       const before = needsInput.length;

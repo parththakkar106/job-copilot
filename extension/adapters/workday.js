@@ -58,6 +58,10 @@ export const WORKDAY = {
   // tenant and cloning the rest is far cheaper than filling 143 six-step wizards.
   entry: {
     applyButton: '[data-automation-id="adventureButton"]',
+    // VERIFIED LIVE 2026-09-27 on Cox and Northrop Grumman. A closed or removed posting
+    // keeps its URL and renders "The page you are looking for doesn't exist." in place of
+    // the advert, with no Apply button.
+    closedMarker: '[data-automation-id="errorMessage"]',
     modal: '[data-automation-id="wd-popup-content"]',
     routes: {
       manual: '[data-automation-id="applyManually"]',
@@ -96,6 +100,24 @@ export const WORKDAY = {
                 '[data-automation-id="createAccountLink"]',
                 '[data-automation-id="signInSubmitButton"]',
                 '[data-automation-id="createAccountSubmitButton"]'],
+    },
+
+    // VERIFIED LIVE 2026-09-27 on ghr (Lateral-US). A tenant without a session shows this
+    // form as wizard step 1, "Create Account/Sign In", after a route is chosen. One form
+    // toggles between the two modes. The password comes from the popup's Workday password
+    // box (chrome.storage.local), never from profile.json, which is committed.
+    // `consent` is UNVERIFIED: ghr has no terms checkbox, other tenants reportedly do.
+    // The form also carries a hidden honeypot input (`beecatcher`), which must stay empty.
+    account: {
+      form: '[data-automation-id="signInFormo"]',
+      email: '[data-automation-id="email"]',
+      password: '[data-automation-id="password"]',
+      verifyPassword: '[data-automation-id="verifyPassword"]',
+      consent: '[data-automation-id="createAccountCheckbox"]',
+      createSubmit: '[data-automation-id="createAccountSubmitButton"]',
+      signInSubmit: '[data-automation-id="signInSubmitButton"]',
+      toSignIn: '[data-automation-id="signInLink"]',
+      toCreate: '[data-automation-id="createAccountLink"]',
     },
 
     // UNVERIFIED. The autofill route asks for the PDF before it will build the form. The
