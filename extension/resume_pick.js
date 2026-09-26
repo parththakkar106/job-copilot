@@ -1,48 +1,55 @@
-// resume_pick.js — static best-of-4 resume selection for the Apply engine.
+// resume_pick.js — static resume track selection for the Apply engine.
 //
-// Faithful JS port of profile.py `pick_resume`. Same scoring so the extension and
-// the backend never disagree on which track to attach:
-//   - each keyword found in the ROLE TITLE scores 2; in the JD BODY scores 1.
-//   - tiebreak by "specificity" = total chars of matched phrases (title 2x, jd 1x),
-//     so a longer/more-specific phrase match wins over several short ones.
-//   - if nothing matches (best score <= 0), fall back to profile.default_resume_tag.
+// Faithful JS port of profile.py `pick_resume`. Same rules so the extension and the
+// backend never disagree on which track to attach:
+//   1. `field`, the scraper's classification of the role (queue.json `field`), wins when
+//      it names a track. filters.yaml curates that list, so it is the strongest signal.
+//   2. Otherwise the FIRST track, in profile order, with a keyword in the ROLE TITLE wins.
+//      Profile order is the priority: list specialist tracks (quant, ai, ds) before the
+//      generic one (tech). Scoring by match count used to send "AI Engineer" to tech,
+//      because "engineer" matched tech as often as "ai" matched ai and was longer.
+//   3. Otherwise the track with the most keywords in the JD BODY wins.
+//   4. If nothing matches, fall back to profile.default_resume_tag.
+// Keywords match as whole words, with an optional plural "s", so "ai" never matches
+// inside "email" or "AIaaS".
 //
 // `profile` is the bundled profile.json object (resume_tracks + default_resume_tag).
 // Returns { tag, local_path, current_file, score } — mirrors the Python return.
 
-export function pickResume(fieldText, jdText, profile) {
+function hasWord(text, kw) {
+  const k = kw.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${k}s?\\b`).test(text);
+}
+
+export function pickResume(fieldText, jdText, profile, field) {
   const title = (fieldText || "").toLowerCase();
   const jd = (jdText || "").toLowerCase();
+  const tracks = profile.resume_tracks;
 
-  let best = null;
-  let bestKey = [-1, -1]; // [score, specificity]
-
-  for (const track of profile.resume_tracks) {
-    let score = 0;
-    let spec = 0;
-    for (const kRaw of track.keywords) {
-      const k = kRaw.toLowerCase();
-      if (title.includes(k)) { score += 2; spec += 2 * k.length; }
-      if (jd.includes(k))    { score += 1; spec += k.length; }
-    }
-    if (score > bestKey[0] || (score === bestKey[0] && spec > bestKey[1])) {
-      best = track;
-      bestKey = [score, spec];
-    }
+  let best = tracks.find(t => field && t.tag === field) || null;
+  let score = best ? 3 : 0;
+  if (!best) {
+    best = tracks.find(t => t.keywords.some(k => hasWord(title, k))) || null;
+    if (best) score = 2;
   }
-
-  let bestScore = bestKey[0];
-  if (bestScore <= 0) { // nothing matched -> configured default track
-    const tag = profile.default_resume_tag;
-    best = profile.resume_tracks.find(t => t.tag === tag) || best;
-    bestScore = 0;
+  if (!best && jd) {
+    let most = 0;
+    for (const t of tracks) {
+      const n = t.keywords.filter(k => hasWord(jd, k)).length;
+      if (n > most) { best = t; most = n; }
+    }
+    if (best) score = 1;
+  }
+  if (!best) { // nothing matched -> configured default track
+    best = tracks.find(t => t.tag === profile.default_resume_tag) || tracks[0];
+    score = 0;
   }
 
   return {
     tag: best.tag,
     local_path: best.local_path,
     current_file: best.current_file,
-    score: bestScore,
+    score,
   };
 }
 

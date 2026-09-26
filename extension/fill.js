@@ -1665,6 +1665,23 @@ async function runAiPass(pool, context) {
   }
 }
 
+// Pick the resume track: the rules first, then the AI check when the AI pass is on.
+// A human override (opts.resumeTag) never reaches here. Phase 3 never asks the model
+// either: it re-attaches the track phase 1 chose (background passes it as resumeTag), or
+// the approved summary would read as drift.
+async function chooseResume(pickResume, profile, opts, mode, context) {
+  const picked = pickResume(context.role, "", profile, opts.jobField || "");
+  if (mode === "apply") return { track: picked, ai: null };
+  try {
+    const res = await rpc({ type: "RESUME_PICK", context: { ...context, current: picked.tag } });
+    const alt = res && res.track && (profile.resume_tracks || []).find(t => t.tag === res.track);
+    if (alt) return { track: alt, ai: { was: picked.tag, why: res.why || "", confidence: res.confidence } };
+  } catch (e) {
+    console.warn("[fill] AI resume check unavailable:", e);
+  }
+  return { track: picked, ai: null };
+}
+
 /**
  * @param {boolean} autoSubmit  background will submit after a ✅ (live queue path)
  * @param {object}  opts
@@ -1786,7 +1803,12 @@ async function runFill(autoSubmit = false, opts = {}) {
       // Carry the outgoing filename ON the track: the Workday driver attaches through
       // the same `track` object several steps later, and one resolved name keeps the
       // attach, the report and the Telegram summary all saying the same thing.
-      const picked = pickResume(opts.field || report.company || "", opts.jd || "", profile);
+      const wdOverride = opts.resumeTag
+        && (profile.resume_tracks || []).find(t => t.tag === opts.resumeTag);
+      const choice = wdOverride ? { track: wdOverride, ai: null }
+        : await chooseResume(pickResume, profile, opts, mode,
+                             { company, role: opts.title || pageRole(), url: location.href });
+      const picked = choice.track;
       const track = { ...picked, send_as: resumeFilename(picked, profile) };
       // Bind the bridge into the attach helper once. The Workday driver attaches from
       // several places and must not have to know where the bytes come from.
@@ -1805,7 +1827,8 @@ async function runFill(autoSubmit = false, opts = {}) {
       // The SAME key the single-page path uses (see resumeChoice below). One name for one
       // fact: logApplied reads exactly one place to record which CV an application used,
       // and a Workday-only alias would be the one it silently missed.
-      report.resumeChoice = { tag: track.tag, file: track.send_as, overridden: false };
+      report.resumeChoice = { tag: track.tag, file: track.send_as, overridden: !!wdOverride,
+                              ...(choice.ai ? { ai: choice.ai } : {}) };
 
       // Log here too. The single LOG_REPORT at the bottom of runFill is past the early
       // return above, so without this the Workday path writes NOTHING to
@@ -1895,12 +1918,17 @@ async function runFill(autoSubmit = false, opts = {}) {
           report.errors.push(`resume override "${opts.resumeTag}" is not a known track — attached nothing, holding`);
         }
       }
-      if (!track && !opts.resumeTag) track = pickResume(roleTitle, "", profile);
+      let aiPick = null;
+      if (!track && !opts.resumeTag) {
+        ({ track, ai: aiPick } = await chooseResume(pickResume, profile, opts, mode,
+                                                    { company, role: roleTitle, url: location.href }));
+      }
       if (track) {
         track = { ...track, send_as: resumeFilename(track, profile) };
         // Surface which resume is going out (name + track) in the end-of-form review.
         report.resumeChoice = { tag: track.tag, file: track.send_as,
-                                overridden: !!opts.resumeTag && track.tag === opts.resumeTag };
+                                overridden: !!opts.resumeTag && track.tag === opts.resumeTag,
+                                ...(aiPick ? { ai: aiPick } : {}) };
         try {
           const { attached, source } = await attachResume(resumeInput, track, { rpc, profile });
           handled.add(resumeInput);

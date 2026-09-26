@@ -152,7 +152,7 @@
     "base_dir": "FILL_ME"
   },
 
-  "_resume_tracks_note": "One resume per specialisation; the scraper picks a track per role by keyword overlap against the job title and description (title weighted 2x). Keep 1 track if you only have one resume — set its keywords to [] and make it default_resume_tag. The keyword lists below are generic and safe to keep as-is. drive_id is optional and only used by the Google Drive sync path.",
+  "_resume_tracks_note": "One resume per specialisation; core.profile.pick_resume picks a track per role: the scraper's `field` first, then the FIRST track in this list with a keyword in the job title, then the most keywords in the description. List specialist tracks before generic ones. Keep 1 track if you only have one resume — set its keywords to [] and make it default_resume_tag. The keyword lists below are generic and safe to keep as-is. drive_id is optional and only used by the Google Drive sync path.",
   "resume_tracks": [
     {
       "tag": "quant",
@@ -161,25 +161,7 @@
       "current_file": "FILL_ME",
       "local_source": "FILL_ME",
       "local_path": "resumes/quant.pdf",
-      "keywords": ["quant", "quantitative", "trading", "trader", "researcher", "hft", "systematic", "alpha", "derivatives"]
-    },
-    {
-      "tag": "ds",
-      "title_prefix": "Resume_ds_",
-      "drive_id": "",
-      "current_file": "FILL_ME",
-      "local_source": "FILL_ME",
-      "local_path": "resumes/ds.pdf",
-      "keywords": ["data scientist", "data science", "analytics", "statistician", "experimentation", "ml scientist"]
-    },
-    {
-      "tag": "tech",
-      "title_prefix": "Resume_tech_",
-      "drive_id": "",
-      "current_file": "FILL_ME",
-      "local_source": "FILL_ME",
-      "local_path": "resumes/tech.pdf",
-      "keywords": ["software", "engineer", "backend", "full stack", "fullstack", "platform", "infrastructure", "swe", "developer"]
+      "keywords": ["quant", "quantitative", "trading", "trader", "hft", "systematic", "alpha", "derivatives"]
     },
     {
       "tag": "ai",
@@ -188,7 +170,25 @@
       "current_file": "FILL_ME",
       "local_source": "FILL_ME",
       "local_path": "resumes/ai.pdf",
-      "keywords": ["machine learning", "ml engineer", "ai", "deep learning", "nlp", "llm", "mlops", "applied scientist", "research engineer"]
+      "keywords": ["machine learning", "ml", "ai", "artificial intelligence", "ai/ml", "deep learning", "nlp", "llm", "genai", "generative ai", "agentic", "computer vision", "mlops", "inference", "applied scientist", "research engineer", "research scientist", "forward deployed"]
+    },
+    {
+      "tag": "ds",
+      "title_prefix": "Resume_ds_",
+      "drive_id": "",
+      "current_file": "FILL_ME",
+      "local_source": "FILL_ME",
+      "local_path": "resumes/ds.pdf",
+      "keywords": ["data scientist", "data science", "decision scientist", "analytics", "data analyst", "analyst", "statistician", "statistics", "experimentation", "data engineer"]
+    },
+    {
+      "tag": "tech",
+      "title_prefix": "Resume_tech_",
+      "drive_id": "",
+      "current_file": "FILL_ME",
+      "local_source": "FILL_ME",
+      "local_path": "resumes/tech.pdf",
+      "keywords": ["software", "engineer", "developer", "backend", "frontend", "full stack", "fullstack", "platform", "infrastructure", "swe", "sde", "devops", "sre", "site reliability", "distributed systems", "member of technical staff", "new grad"]
     }
   ],
   "default_resume_tag": "ds",

@@ -291,6 +291,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
   }
+  // The AI resume check (bridge/aipass.py pick_track). {track:null} means keep the rule pick.
+  if (msg.type === "RESUME_PICK") {
+    (async () => {
+      try { sendResponse(await requestBridge({ type: "resume_pick", context: msg.context || null })); }
+      catch (_) { sendResponse({ track: null }); }
+    })();
+    return true; // async sendResponse
+  }
   // The on-page panel asking for the answers Parth already saved for THIS job (a parked
   // form he's re-filling by hand), so it can restore them instead of making him re-type.
   if (msg.type === "PENDING_ANSWERS") {
@@ -806,7 +814,12 @@ async function runFlush() {
         // resumeTag: Parth's per-job /resume override, if any. fill.js attaches that
         // track instead of its best-of-4 pick; unset => the auto pick stands.
         const report = await fillTab(tab.id, /* autoSubmit */ true,
-          { mode: "apply", answers, approved, resumeTag: rec.resume_override || null,
+          { mode: "apply", answers, approved,
+            // Phase 1 recorded its track in rec.resume as "<file> (<tag> track...)". Replay
+            // that track: a fresh pick could differ (the AI check is not re-run here), and
+            // the drift guard would then hold the job.
+            resumeTag: rec.resume_override
+              || ((rec.resume || "").match(/\((\w+) track/) || [])[1] || null,
             company: rec.company || "",
             // What the AI pass decided back in phase 1, already reflected in the summary he
             // approved. Replayed, never recomputed: a second call could answer differently
@@ -1017,7 +1030,10 @@ async function runQueue(opts = {}) {
         // closes right after — parking it waiting on a human is what MV3 eviction (which
         // detaches chrome.debugger after ~30s idle) makes impossible.
         const report = await fillTab(tab.id, /* autoSubmit */ false,
-          { mode: "collect", company: job.company || "" });
+          { mode: "collect", company: job.company || "",
+            // The scraper's field (quant/ai/ds/tech) is the strongest signal for the
+            // resume track, so the pick starts from it rather than from the page title.
+            jobField: job.field || "", title: job.title || "" });
         if ((report.errors || []).length && !report.filled.length) {
           summary.failed++;
           await notify(`⚠️ <b>${escHtml(job.company)}</b>: ${escHtml((report.errors || []).join("; "))}`);
@@ -1042,7 +1058,8 @@ async function runQueue(opts = {}) {
             compensation: (report.jobInfo && report.jobInfo.compensation) || job.compensation || "",
             employment_type: (report.jobInfo && report.jobInfo.employment_type) || "",
             resume: report.resumeChoice
-              ? `${report.resumeChoice.file} (${report.resumeChoice.tag} track)` : "",
+              ? `${report.resumeChoice.file} (${report.resumeChoice.tag} track`
+                + `${report.resumeChoice.ai ? `, AI pick, rules said ${report.resumeChoice.ai.was}` : ""})` : "",
           },
           questions,
           filled: report.summary || report.filled || [],

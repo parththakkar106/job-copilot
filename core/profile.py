@@ -185,24 +185,44 @@ def resume_filename(track: dict, profile: dict | None = None) -> str:
     return f"{stem}{ext}"
 
 
-def pick_resume(field_text: str, jd_text: str = "", profile: dict | None = None) -> dict:
-    """Static best-of-4 pick by keyword overlap (role title weighted 2x over JD body)."""
+def _has_word(text: str, kw: str) -> bool:
+    return re.search(rf"\b{re.escape(kw.lower())}s?\b", text) is not None
+
+
+def pick_resume(field_text: str, jd_text: str = "", profile: dict | None = None,
+                field: str | None = None) -> dict:
+    """Pick the resume track for a role. extension/resume_pick.js ports these rules.
+
+    1. `field`, the scraper's classification (queue.json `field`), wins when it names a
+       track. filters.yaml curates that list, so it is the strongest signal.
+    2. Otherwise the first track, in profile order, with a keyword in the title wins.
+       Profile order is the priority: list specialist tracks before the generic one.
+       Scoring by match count sent "AI Engineer" to tech, because "engineer" matched tech
+       as often as "ai" matched ai and was the longer word.
+    3. Otherwise the track with the most keywords in the JD wins.
+    4. Otherwise the configured default.
+
+    Keywords match as whole words with an optional plural "s", so "ai" never matches
+    inside "email" or "AIaaS".
+    """
     profile = profile if profile is not None else load_profile()
+    tracks = profile["resume_tracks"]
     title = (field_text or "").lower()
     jd = (jd_text or "").lower()
-    best, best_key = None, (-1, -1)
-    for track in profile["resume_tracks"]:
-        score = sum(2 for k in track["keywords"] if k in title)
-        score += sum(1 for k in track["keywords"] if k in jd)
-        # tiebreak by specificity: total chars of matched phrases (title 2x)
-        spec = sum(2 * len(k) for k in track["keywords"] if k in title)
-        spec += sum(len(k) for k in track["keywords"] if k in jd)
-        if (score, spec) > best_key:
-            best, best_key = track, (score, spec)
-    best_score = best_key[0]
-    if best_score <= 0:  # nothing matched -> fall back to the configured default
+
+    best = next((t for t in tracks if field and t["tag"] == field), None)
+    best_score = 3 if best else 0
+    if best is None:
+        best = next((t for t in tracks if any(_has_word(title, k) for k in t["keywords"])), None)
+        best_score = 2 if best else 0
+    if best is None and jd:
+        counts = [(sum(_has_word(jd, k) for k in t["keywords"]), -i) for i, t in enumerate(tracks)]
+        n, neg_i = max(counts)
+        if n:
+            best, best_score = tracks[-neg_i], 1
+    if best is None:
         tag = profile.get("default_resume_tag")
-        best = next((t for t in profile["resume_tracks"] if t["tag"] == tag), best)
+        best = next((t for t in tracks if t["tag"] == tag), tracks[0])
         best_score = 0
     return {"tag": best["tag"], "local_path": best["local_path"],
             "current_file": best["current_file"], "score": best_score,
@@ -545,6 +565,17 @@ def selftest():
         fails += 1; print("FAIL: resume pick ai")
     if pick_resume("Barista")["tag"] != profile["default_resume_tag"]:
         fails += 1; print("FAIL: resume default fallback")
+    # Titles that used to go to tech because "engineer" matched it too.
+    for title, want in [("AI Engineer", "ai"), ("Forward Deployed Engineer", "ai"),
+                        ("Software Engineer, GenAI Platform", "ai"),
+                        ("Senior Data Scientist", "ds"), ("Product Analyst", "ds"),
+                        ("Quantitative Analyst", "quant"),
+                        ("Senior Software Engineer (Backend, AIaaS)", "tech")]:
+        got = pick_resume(title, profile=profile)["tag"]
+        if got != want:
+            fails += 1; print(f"FAIL: resume pick {title!r} -> {got} (wanted {want})")
+    if pick_resume("Software Engineer", profile=profile, field="ai")["tag"] != "ai":
+        fails += 1; print("FAIL: the scraper field must beat the title")
 
     # Outgoing filename: built from identity, never from the PDF's own name.
     named = dict(profile, identity=dict(profile.get("identity") or {},
