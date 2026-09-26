@@ -49,9 +49,6 @@ Protocol over the WebSocket (JSON per message):
         # Reply answers = {enabled, decisions:[{id, action, value, was, confidence, why,
         # low, hot, answer_key?}]} where action is fill | replace | flag | propose. A
         # disabled flag answers {enabled:false, decisions:[]} without spending a call.
-    {type:"resume_pick", reqId, context:{company?, role?, url?}}
-        # the AI resume check, gated on the same flag. Reply answers = {track, confidence,
-        # why}, or {track:null} when the flag is off or the model is unsure.
     {type:"verify_code", reqId, since, company?, role?, key?}
         # a board is asking for an emailed verification code and Parth has ALREADY acted
         # (clicked Submit, or tapped the panel's code button). `since` = that click, epoch
@@ -2613,28 +2610,6 @@ async def handle_ai_pass(msg, ws):
     await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
 
 
-async def handle_resume_pick(msg, ws):
-    """The AI resume check: which track fits this role, when the AI pass is on.
-
-    Answers {"track": None} when the pass is off or unsure, and fill.js then keeps its
-    rule pick. The job description is fetched here, the same way the form pass gets it.
-    """
-    req_id = msg.get("reqId")
-    ctx = dict(msg.get("context") or {})
-    out = {"track": None}
-    if aipass_mod.available():
-        try:
-            if not ctx.get("description"):
-                ctx["description"] = await asyncio.to_thread(_posting_text, ctx.get("url") or "")
-            _, tracks = await asyncio.to_thread(_resume_tracks)
-            got = await asyncio.to_thread(aipass_mod.pick_track, ctx, tracks)
-            if got:
-                out = got
-        except Exception as e:
-            print(f"[resume_pick] failed: {redact(e)}", file=sys.stderr)
-    await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
-
-
 def _posting_text(url: str) -> str:
     """The job description for the AI pass, "" when it cannot be fetched.
 
@@ -3092,7 +3067,6 @@ async def ws_handler(ws):
                 "collect": handle_collect, "approved": handle_approved,
                 "drafts": handle_drafts, "bank_touch": handle_bank_touch,
                 "ai_pass": handle_ai_pass,
-                "resume_pick": handle_resume_pick,
                 "hold_job": handle_hold_job, "pending_answers": handle_pending_answers,
                 "list_all": handle_list_all, "set_state": handle_set_state,
                 "workday_route": handle_workday_route,

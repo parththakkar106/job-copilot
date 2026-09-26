@@ -368,56 +368,6 @@ def decide(fields: list[dict], answers: dict) -> list[dict]:
     return out
 
 
-# The resume check is a short classification, so it gets a cheap model of its own.
-RESUME_MODEL = os.environ.get("AI_RESUME_MODEL", "haiku").strip()
-
-
-def pick_track(context: dict | None, tracks: list[dict]) -> dict | None:
-    """Ask the model which resume track fits this role best.
-
-    Runs as its own small call BEFORE the resume is attached. It cannot ride on the form
-    pass: that pass runs after the attach, and a second attach re-triggers the ATS resume
-    parser (Ashby rewrites fields from it) on a form that is already filled.
-
-    Returns {"track", "confidence", "why"}, or None when the pass is off, the reply is
-    unreadable, the track is unknown, or confidence is below LOW_CONF. None means the rule
-    pick stands. Never raises.
-    """
-    if not available() or not tracks:
-        return None
-    ctx = context or {}
-    tags = [str(t.get("tag")) for t in tracks if t.get("tag")]
-    menu = "\n".join(f"- {t['tag']}: resume for {', '.join(t.get('keywords') or [])} roles"
-                     for t in tracks if t.get("tag"))
-    jd = str(ctx.get("description") or "").strip()[:6000]
-    prompt = (
-        f"{drafter.NAME} has one resume per job family. Pick the ONE that best fits this role. "
-        "Judge by what the job actually does day to day, not by the word 'engineer' in the "
-        "title: a forward deployed engineer at an AI company, an ML platform role and an "
-        "applied AI role are AI roles, and an analytics or experimentation role is data "
-        "science.\n\n"
-        f"Resumes:\n{menu}\n\n"
-        f"Company: {ctx.get('company') or '?'}\nRole: {ctx.get('role') or '?'}\n"
-        + (f"Job description:\n{jd}\n" if jd else "")
-        + "\nOutput ONLY a JSON object: "
-        '{"track": "<one of: ' + ", ".join(tags) + '>", "confidence": 0.0 to 1.0, '
-        '"why": "one short clause"}. No preamble, no code fences.'
-    )
-    try:
-        raw = drafter._run_claude(prompt, model=RESUME_MODEL, timeout=60) or ""
-        a, b = raw.find("{"), raw.rfind("}")
-        obj = json.loads(raw[a:b + 1]) if a != -1 and b > a else {}
-    except Exception as e:
-        print(f"[aipass] resume pick failed ({e}); the rule pick stands", file=sys.stderr)
-        return None
-    track = str(obj.get("track") or "").strip().lower() if isinstance(obj, dict) else ""
-    conf = _conf(obj.get("confidence")) if isinstance(obj, dict) else 0.0
-    if track not in tags or conf < LOW_CONF:
-        return None
-    return {"track": track, "confidence": round(conf, 2),
-            "why": _clean(str(obj.get("why") or ""))[:200]}
-
-
 def run(fields: list[dict], context: dict | None = None) -> list[dict]:
     """The whole pass: one call, decisions out. [] when the flag is off, the binary is
     missing, there is nothing to ask about, or anything at all goes wrong — every one of

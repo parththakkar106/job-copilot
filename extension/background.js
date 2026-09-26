@@ -291,14 +291,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
   }
-  // The AI resume check (bridge/aipass.py pick_track). {track:null} means keep the rule pick.
-  if (msg.type === "RESUME_PICK") {
-    (async () => {
-      try { sendResponse(await requestBridge({ type: "resume_pick", context: msg.context || null })); }
-      catch (_) { sendResponse({ track: null }); }
-    })();
-    return true; // async sendResponse
-  }
   // The on-page panel asking for the answers Parth already saved for THIS job (a parked
   // form he's re-filling by hand), so it can restore them instead of making him re-type.
   if (msg.type === "PENDING_ANSWERS") {
@@ -815,9 +807,9 @@ async function runFlush() {
         // track instead of its best-of-4 pick; unset => the auto pick stands.
         const report = await fillTab(tab.id, /* autoSubmit */ true,
           { mode: "apply", answers, approved,
-            // Phase 1 recorded its track in rec.resume as "<file> (<tag> track...)". Replay
-            // that track: a fresh pick could differ (the AI check is not re-run here), and
-            // the drift guard would then hold the job.
+            // Phase 1 recorded its track in rec.resume as "<file> (<tag> track)". Replay
+            // that track: phase 1 picked it from the scraper's field, which phase 3 does
+            // not have, and a different pick would read as drift and hold the job.
             resumeTag: rec.resume_override
               || ((rec.resume || "").match(/\((\w+) track/) || [])[1] || null,
             company: rec.company || "",
@@ -1058,8 +1050,7 @@ async function runQueue(opts = {}) {
             compensation: (report.jobInfo && report.jobInfo.compensation) || job.compensation || "",
             employment_type: (report.jobInfo && report.jobInfo.employment_type) || "",
             resume: report.resumeChoice
-              ? `${report.resumeChoice.file} (${report.resumeChoice.tag} track`
-                + `${report.resumeChoice.ai ? `, AI pick, rules said ${report.resumeChoice.ai.was}` : ""})` : "",
+              ? `${report.resumeChoice.file} (${report.resumeChoice.tag} track)` : "",
           },
           questions,
           filled: report.summary || report.filled || [],
