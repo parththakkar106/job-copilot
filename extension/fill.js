@@ -3257,9 +3257,12 @@ function mountPanel() {
       *{box-sizing:border-box;font-family:-apple-system,Segoe UI,Roboto,sans-serif}
       .fab{width:48px;height:48px;border-radius:50%;background:#4f46e5;color:#fff;font-size:22px;
         display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.3);margin-left:auto}
+      /* One scroll area (.body) under the fixed header and buttons. Nested scroll boxes
+         left two short windows that each hid most of their cards. */
       .panel{width:320px;background:#fff;color:#111;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.35);
-        overflow:hidden;margin-bottom:10px}
+        overflow:hidden;margin-bottom:10px;display:flex;flex-direction:column;max-height:calc(100vh - 100px)}
       .panel.hidden{display:none}
+      .body{overflow:auto;min-height:0;flex:1 1 auto}
       .hd{background:#4f46e5;color:#fff;padding:10px 12px;font-weight:600;font-size:13px;display:flex;justify-content:space-between;align-items:center}
       .hd .x{cursor:pointer;opacity:.85}
       .btns{display:flex;gap:6px;padding:10px 12px}
@@ -3270,11 +3273,11 @@ function mountPanel() {
       .alt{display:flex;padding:0 12px 10px}
       .alt button{background:#6b7280;font-size:12px;font-weight:600;padding:6px}
       .alt button.arm{background:#b45309}
-      .log{max-height:220px;overflow:auto;padding:6px 12px 12px;font-size:12px;line-height:1.5;border-top:1px solid #eee}
+      .log{padding:6px 12px 12px;font-size:12px;line-height:1.5;border-top:1px solid #eee}
       .line{white-space:pre-wrap}.line.err{color:#dc2626}.line.ok{color:#16a34a}.line.warn{color:#b45309}
       .empty{color:#888}
       /* question cards — the manual answer path; nothing here goes to Telegram */
-      .qs{max-height:320px;overflow:auto;border-top:1px solid #eee}
+      .qs{border-top:1px solid #eee}
       .qs:empty{display:none}
       .ai:empty{display:none}
       .qhd{padding:8px 12px 2px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#6b7280}
@@ -3284,6 +3287,7 @@ function mountPanel() {
       .qlabel{font-size:12px;font-weight:600;line-height:1.35;display:flex;gap:6px;align-items:baseline}
       .badge{font-size:9px;font-weight:700;padding:1px 5px;border-radius:99px;flex:0 0 auto}
       .badge.req{background:#fee2e2;color:#b91c1c}.badge.opt{background:#e5e7eb;color:#4b5563}
+      .badge.conf{background:#dcfce7;color:#166534}.badge.conf.low{background:#fef3c7;color:#92400e}
       .qwhy{font-size:11px;color:#6b7280;margin-top:2px}
       .qin{width:100%;margin-top:6px;padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;
         font-family:inherit;resize:vertical;min-height:34px;background:#fff;color:#111}
@@ -3296,7 +3300,6 @@ function mountPanel() {
       .more{padding:8px 12px;font-size:11px;font-weight:600;color:#4f46e5;cursor:pointer;
         border-top:1px solid #eee;user-select:none}
       .more:hover{background:#f5f3ff}
-      .optqs{max-height:320px;overflow:auto}
       .qstate{font-size:11px;margin-top:4px}
       .qstate.ok{color:#16a34a}.qstate.err{color:#dc2626}
       @media (prefers-color-scheme:dark){
@@ -3305,16 +3308,19 @@ function mountPanel() {
         .more{border-top-color:#374151;color:#a5b4fc}.more:hover{background:#111827}
         .qin{background:#111827;color:#e5e7eb;border-color:#4b5563}
         .badge.opt{background:#374151;color:#d1d5db}.badge.req{background:#7f1d1d;color:#fecaca}
+        .badge.conf{background:#14532d;color:#bbf7d0}.badge.conf.low{background:#78350f;color:#fde68a}
       }
     </style>
     <div class="panel hidden">
       <div class="hd"><span>💼 Job Autofill</span><span class="x">✕</span></div>
       <div class="btns"><button id="fill">▶ Fill</button><button id="submit">✓ Submit</button><button id="code" title="Fetch the emailed verification code for this form">🔐 Code</button><button id="stop">⏹ Stop</button></div>
       <div class="alt"><button id="manual">✋ I submitted this by hand</button></div>
-      <div class="ai"></div>
-      <div class="qs"></div>
-      <div class="opts"></div>
-      <div class="log"><div class="line empty">Fill the form, then Submit — I'll fix any rejected fields and retry.</div></div>
+      <div class="body">
+        <div class="qs"></div>
+        <div class="ai"></div>
+        <div class="opts"></div>
+        <div class="log"><div class="line empty">Fill the form, then Submit — I'll fix any rejected fields and retry.</div></div>
+      </div>
     </div>
     <div class="fab" title="Job Autofill">💼</div>`;
   (document.body || document.documentElement).appendChild(host);
@@ -3325,7 +3331,7 @@ function mountPanel() {
   const log = (msg, cls = "") => {
     const first = logEl.querySelector(".empty"); if (first) first.remove();
     const d = document.createElement("div"); d.className = "line " + cls; d.textContent = msg;
-    logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+    logEl.appendChild(d);
   };
   const setBusy = (b) => { $("#fill").disabled = b; $("#submit").disabled = b; };
   fab.onclick = () => panel.classList.toggle("hidden");
@@ -3460,25 +3466,25 @@ function mountPanel() {
     }
   }
 
-  // What the AI pass did, above the questions. It is the only part of a panel fill Parth
-  // cannot check by looking at the form: a value it REPLACED looks exactly as settled as
-  // one the rules wrote, so the old value is printed next to it and a revert is one tap.
-  // Flags and always_ask proposals are listed as what they are — nothing was written.
+  // The fields the AI pass wrote, below the questions. A value it REPLACED looks exactly
+  // as settled as one the rules wrote, so the old value is printed next to it and a revert
+  // is one tap. Lowest confidence first, since those need the closest check. Flags and
+  // proposals wrote nothing: a proposal is already the draft on its question card.
   function renderAi(decisions) {
     aiEl.textContent = "";
-    const rows = (decisions || []).filter(d => d.action !== "fill" || d.applied);
+    const rows = (decisions || []).filter(d => d.applied && (d.action === "fill" || d.action === "replace"))
+      .sort((x, y) => (x.confidence ?? 1) - (y.confidence ?? 1));
     if (!rows.length) return;
-    const head = el("div", "more", `🧠 AI pass — ${rows.length} thing${rows.length > 1 ? "s" : ""} to check`);
-    const list = el("div", "optqs");
+    aiEl.appendChild(el("div", "qhd", `${rows.length} filled by AI`));
     for (const d of rows) {
       const card = el("div", "q");
-      const verb = { fill: "filled", replace: "REPLACED", flag: "flagged", propose: "suggested (not filled)" }[d.action] || d.action;
-      const mark = d.hot ? "🔴 " : (d.low ? "🟡 " : "");
-      card.appendChild(el("div", "qlabel", `${mark}${d.label} — ${verb}`));
-      card.appendChild(el("div", "qwhy", d.action === "flag"
-        ? `left as "${d.was}"; AI would have said: ${d.value}`
-        : d.value));
-      if (d.action === "replace" && d.was) card.appendChild(el("div", "qwhy", `was: ${d.was}`));
+      const head = el("div", "qlabel");
+      head.appendChild(el("span", "", `${d.hot ? "🔴 " : ""}${d.label}`));
+      if (typeof d.confidence === "number") {
+        head.appendChild(el("span", "badge conf" + (d.low ? " low" : ""), `${Math.round(d.confidence * 100)}%`));
+      }
+      card.appendChild(head);
+      card.appendChild(el("div", "qwhy", d.action === "replace" && d.was ? `${d.value} (was: ${d.was})` : d.value));
       if (d.why) card.appendChild(el("div", "qwhy", d.why));
       if (d.action === "replace" && d.was) {
         const undo = el("button", "skipq", "↩ Put the old value back");
@@ -3492,11 +3498,8 @@ function mountPanel() {
         };
         card.appendChild(undo);
       }
-      list.appendChild(card);
+      aiEl.appendChild(card);
     }
-    head.onclick = () => { list.style.display = list.style.display === "none" ? "" : "none"; };
-    aiEl.appendChild(head);
-    aiEl.appendChild(list);
   }
 
   // The optional pile: one line by default, cards once he asks. Rendering them expanded
@@ -3589,7 +3592,7 @@ function mountPanel() {
           if (!res || !res.ok) log("No saved answers (bridge is off) — answer these cold.", "warn");
         }
         renderQuestions(qs, drafts);
-        log(`${qs.length} question(s) need you — answer them above.`, "warn");
+        log(`${qs.length} question(s) need you — answer them at the top.`, "warn");
       }
       // Whatever the form doesn't require, offered but not pushed. Drafts aren't fetched for
       // these — most carry no answer_key, and pre-drafting a pile he may never open would
