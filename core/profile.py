@@ -532,7 +532,11 @@ def selftest():
         fails += 1; print("FAIL: pronouns not offered as an alternate to gender")
     if render(dig(profile, "attestations.sms_consent")) not in alts("Phone Number"):
         fails += 1; print("FAIL: sms_consent not offered as an alternate to phone")
-    if "Yes" not in alts("Are you willing to work from the office(s) listed on the job description?"):
+    # A taxonomy rule now answers this question with in_office_acknowledgment directly.
+    # Alternates never repeat the first answer, so accept "Yes" in either place.
+    q = classify("Are you willing to work from the office(s) listed on the job description?",
+                 None, profile, tax)
+    if "Yes" != q.get("rendered") and "Yes" not in (q.get("alternates") or []):
         fails += 1; print("FAIL: in-office acknowledgment not offered for a Yes/No office question")
     # ORDER IS THE MEANING of the list: the profile's own value is never in it (it is
     # tried first by the caller), and rule alternates precede answer_alternates.

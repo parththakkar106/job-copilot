@@ -14,7 +14,9 @@
  *
  * Run: node extension/test_workday_units.mjs
  */
-import { readFileSync } from "fs";
+import { readFileSync as readRaw } from "fs";
+// Strip CR so the "\n}\n" function-end slices below also work on a Windows CRLF checkout.
+const readFileSync = (...a) => readRaw(...a).replace(/\r\n/g, "\n");
 import { WORKDAY } from "./adapters/workday.js";
 
 let pass = 0, fail = 0;
