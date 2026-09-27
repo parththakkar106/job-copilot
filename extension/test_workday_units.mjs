@@ -1226,7 +1226,7 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
   const ctx = (h) => ({ adapter: WORKDAY, rpc: h.rpc, bringIntoView: () => {} });
 
   // Panel already ours and open: do not touch the toggle.
-  let h = openerFor("true", [{ innerText: "Python" }]);
+  let h = openerFor("true", [{ innerText: "Python", querySelector: () => ({}) }]);
   await pick(ctx(h), "#skills", [["Nothing"]]);
   eq(h.clicks(), 0, "an already-open panel is not toggled shut");
 
@@ -1247,6 +1247,16 @@ ok(!WORKDAY.customQuestion.knownCoreIds.includes("formField-candidateIsPreviousW
   h = openerFor(null, []);
   await pick(ctx(h), "#skills", [["Nothing"]]);
   eq(h.clicks(), 1, "a clear screen is opened as before");
+
+  // BofA's Field of Study opens on category rows with no radio, so the caller searches.
+  // Adobe's opens on radio leaves, so it does not.
+  const row = (t, radio) => ({ innerText: t, querySelector: () => (radio ? {} : null) });
+  h = openerFor("true", [row("Partial List (First 500 Entries)", false), row("All", false)]);
+  ok((await pick(ctx(h), "#f", [["Computer Science"]])).categoriesOnly,
+     "a radio-less top level is flagged for search");
+  h = openerFor("true", [row("Risk Management", true), row("Russian", true)]);
+  ok(!(await pick(ctx(h), "#f", [["Computer Science"]])).categoriesOnly,
+     "a top level of radio leaves is walked, not searched");
 }
 
 // ── "No Items." is an empty state, not an option ─────────────────────────────

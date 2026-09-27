@@ -598,13 +598,29 @@ async function waitForComplete(tabId, timeoutMs = 45000) {
 }
 
 // Ask the content script to fill this tab; resolve with its report (or an error report).
-function fillTab(tabId, autoSubmit, opts) {
+function fillTabOnce(tabId, autoSubmit, opts) {
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, { type: "FILL", autoSubmit, opts: opts || {} }, (report) => {
-      if (chrome.runtime.lastError) resolve({ errors: [chrome.runtime.lastError.message], filled: [] });
+      if (chrome.runtime.lastError) resolve({ errors: [chrome.runtime.lastError.message], filled: [], lost: true });
       else resolve(report || { errors: ["no report from content script"], filled: [] });
     });
   });
+}
+
+// If a Workday route click reloads the page, send FILL again once. On a fresh advert, the
+// route click (Autofill with Resume, Use My Last Application) loads /apply/<route> as a new
+// document. That unloads the content script mid-fill, so the queue got "message channel
+// closed" and wrote no report. The new page's content script resumes from the route page
+// (see enterApplyFlow's `parked` branch).
+async function fillTab(tabId, autoSubmit, opts) {
+  const report = await fillTabOnce(tabId, autoSubmit, opts);
+  if (!report.lost) return report;
+  let tab; try { tab = await chrome.tabs.get(tabId); } catch (_) { return report; }
+  if (!/\.myworkdayjobs\.com\/.*\/apply\//i.test(tab.pendingUrl || tab.url || "")) return report;
+  await sleepBg(1000);
+  if (!(await waitForComplete(tabId))) return report;
+  await sleepBg(1500); // the content script loads at document_idle, after `complete`
+  return fillTabOnce(tabId, autoSubmit, opts);
 }
 
 // Screenshot + full field-value dump, captured right before the submit click (Fable's

@@ -78,8 +78,27 @@ buckets:
     # "Do you live in the US…?" and "Are you based in a US equivalent timezone?" are
     # Yes/No, so the country rules above would answer "United States" and match nothing.
     - {pattern: '(live|living|reside|residing|based) in the (us\b|u\.s\.|usa|united states)|u\.?s\.? equivalent time ?zone', value_key: identity.based_in_us}  # SentiLink / Nova Talent
+    # Military-spouse questions are Yes/No. BofA also asks "veterans and military spouses/
+    # domestic partners ... disclose your status" with Yes / No / decline. The veteran rule
+    # answered both with "I am not a veteran", which matches none of those options. This
+    # rule sits above the veteran rules so it wins on both labels.
+    # BofA puts the spouse preamble directly above "Have you ever served ... in the United
+    # States military?", so that label can carry "military spouses". This rule sits above
+    # the spouse rule so the served question still answers No.
+    - {pattern: '(served|serving) in (the )?(united states |u\.s\. |us )?(military|armed forces)', value_key: eeo.served_military}   # Bank of America 2026-09-27
+    - {pattern: 'military spouse', value_key: eeo.military_spouse}   # Bank of America 2026-09-27
     # "Military status" never contains the word "veteran", so the veteran rule missed it.
     - {pattern: 'military status|military service', value_key: eeo.veteran_status}   # Robinhood
+    # Yes/No residence questions for one city. The bare \bcity\b rule below answered
+    # "Do you reside in one of the five boroughs of New York City?" with the profile's home city.
+    - {pattern: 'five boroughs|(live|living|reside|residing) in (new york city|nyc)\b', value_key: identity.resides_in_nyc}   # Bank of America 2026-09-27
+    # The school rule below answered "Have you ever attended a community college?" with
+    # the university name.
+    - {pattern: 'community college', value_key: education.attended_community_college}   # Bank of America 2026-09-27
+    # Auditor-independence and contractor disclosures. The general affiliation rules need
+    # "us"/"this company" or "are you a current contractor", so these two missed.
+    - {pattern: 'independent auditor', value_key: affiliations.previously_employed}   # Bank of America 2026-09-27
+    - {pattern: '\bactive contractor\b', value_key: affiliations.current_employee}   # Bank of America 2026-09-27
     # The general previously_employed rule needs "us"/"this company"/"before" within 25
     # chars of the verb; a board that names itself ("worked for Robinhood as an…") blows
     # that budget, and we cannot know the company name at pattern-write time.

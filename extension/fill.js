@@ -3521,10 +3521,35 @@ function mountPanel() {
     optEl.appendChild(list);
   }
 
+  function logWorkday(r) {
+    const rows = r.report || [];
+    const asks = (r.needsInput || []).map(q => String(q.label || ""));
+    const set = rows.filter(([, v]) => /^set\b/.test(String(v))).length;
+    // A question in needsInput also has a FAILED row. List it once, as a question.
+    const failed = rows.filter(([k, v]) => /^FAILED\b/.test(String(v))
+      && !asks.some(a => a.startsWith(String(k))));
+    log(`Set ${set} field(s)${failed.length ? `, ${failed.length} failed` : ""}.`, failed.length ? "warn" : "ok");
+    for (const [k, v] of failed) log(`${k}: ${String(v).replace(/^FAILED\s*/, "").slice(0, 160)}`, "err");
+    if (r.error) log(`Workday: ${r.error}`, "err");
+    for (const e of r.errors || []) log(String(e), "err");
+    if (r.pausedAt) {
+      log(`Paused on "${r.pausedAt.name}". Answer these on the page, then press Fill again:`, "warn");
+      for (const a of asks) log(`• ${a}`, "warn");
+    } else if (r.blockedAt) {
+      log(`Blocked on "${r.blockedAt.name}". Fix the fields above, then press Fill again.`, "err");
+    } else if (r.note) {
+      log(r.note, r.ok ? "ok" : "warn");
+    }
+  }
+
   $("#fill").onclick = async () => {
     setBusy(true); PANEL_STOP = false; qsEl.textContent = ""; optEl.textContent = ""; aiEl.textContent = ""; log("Filling…");
     try {
       const r = await runFill(false, { mode: "panel" });
+      // The Workday driver reports per step in `report` and leaves `filled` and `questions`
+      // empty. The generic lines below would print "Filled 0 ... Nothing else needed" on a
+      // run that paused for input, so summarize the driver's own result.
+      if (r.adapter === "workday") { logWorkday(r); setBusy(false); return; }
       if (r.stopped) log(`Stopped. ${r.filled.length} field(s) were filled before that.`, "warn");
       else log(`Filled ${r.filled.length}.`, "ok");
       // Ashby wipes freshly-clicked radios a few seconds after fill (the resume-parse
@@ -3727,7 +3752,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "FILL") {
     // opts carries the batch modes: {mode:"collect"} for phase 1, or
     // {mode:"apply", answers, approved} for phase 3. Absent => the live single-pass path.
-    runFill(!!msg.autoSubmit, msg.opts || {}).then(sendResponse);
+    // Answer on a throw too. Without the catch the port closes with no message, and the
+    // queue reports a generic channel error instead of the exception.
+    runFill(!!msg.autoSubmit, msg.opts || {}).then(sendResponse)
+      .catch(e => sendResponse({ errors: [`fill crashed: ${(e && e.message) || e}`], filled: [] }));
     return true; // async response
   }
   if (msg && msg.type === "SUBMIT") {

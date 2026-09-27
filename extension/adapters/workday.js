@@ -262,7 +262,9 @@ export const WORKDAY = {
       selectors: ['#name--legalName--firstName'] },
     { key: "last_name", profilePath: "identity.last_name", control: "text",
       selectors: ['#name--legalName--lastName'] },
-    { key: "email", profilePath: "identity.email", control: "text",
+    // A signed-in application uses the account's email and shows no email field on My
+    // Information (BofA 2026-09-27), so a missing control is expected there.
+    { key: "email", profilePath: "identity.email", control: "text", mayBeAbsent: true,
       selectors: ['[data-automation-id="formField-emailAddress"] input'] },
 
     { key: "address_line1", profilePath: "identity.address.line1", control: "text",
@@ -587,6 +589,8 @@ export const WORKDAY = {
   workdaySourceMap: {
     _note: "Per-tenant. Key is the tenant slug, value is the [category, leaf] path.",
     adobe: ["Adobe Source", "Adobe.com"],
+    // Bank of America. Verified live 2026-09-27. The list has no "Job Board" category.
+    ghr: ["Bank of America Careers Site", "Bank of America Careers Site"],
   },
 
   // ── date: the other widget that needs CDP ───────────────────────────────────

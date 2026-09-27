@@ -394,7 +394,12 @@ export async function pickPromptTree(ctx, wrapperSel, path) {
       if (list.scrollTop === before) break;         // bottom reached
     }
     if (!hit) {
-      return { ok: false, reason: `no row matched at depth ${depth}`,
+      // A top level with no radio on any row holds only category rows. BofA's Field of
+      // Study opens on "Partial List (First 500 Entries)" and "All", with ~1,350 leaves
+      // under "All". The caller searches such a tree in place of walking it.
+      const categoriesOnly = depth === 0 && rows().length > 0
+        && !rows().some(r => r.querySelector(pt.rowControl));
+      return { ok: false, reason: `no row matched at depth ${depth}`, categoriesOnly,
                wanted: wants, sawCount: seen.length, near: nearest(wants, seen) };
     }
 
@@ -742,7 +747,7 @@ async function fillMyInformation(ctx, report) {
       report.push([f.key, res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
     } else {
       const el = document.querySelector(f.selectors.join(",")) ;
-      if (!el) { report.push([f.key, "FAILED control not found"]); continue; }
+      if (!el) { report.push([f.key, f.mayBeAbsent ? "SKIPPED not on this form" : "FAILED control not found"]); continue; }
       setTextNative(el, String(value));
       report.push([f.key, "set"]);
     }
@@ -849,7 +854,10 @@ async function fillEducationField(ctx, report, key, sel, value, alternates = [])
   if (!kind) { report.push([label, "FAILED unrecognised control"]); return; }
 
   const current = readFieldValue(ctx, { control: kind, selectors: [sel] });
-  const d = reconcileDecision(kind, current, value, adapter);
+  // An alternate already on the form is a match. Without this check, a form that holds
+  // "Bachelors" gets rewritten each run because the first candidate is "B.Eng".
+  const d = alternates.some(a => sameValue(kind, current, a, adapter))
+    ? { action: "keep" } : reconcileDecision(kind, current, value, adapter);
   if (d.action !== "write") {
     report.push([label, d.action === "keep" ? `kept "${String(current).trim().slice(0, 30)}"`
                                             : `skipped: ${d.why}`]);
@@ -857,8 +865,9 @@ async function fillEducationField(ctx, report, key, sel, value, alternates = [])
   }
 
   if (kind === "listbox") {
-    const res = await pickListbox(ctx, sel, value);
-    report.push([label, res.ok ? `set ${res.value}` : `FAILED ${res.reason}`]);
+    const res = await pickListbox(ctx, sel, value, alternates);
+    report.push([label, res.ok ? `set ${res.value}`
+      : `FAILED ${res.reason}` + (res.sample ? ` — offered: ${res.sample.join(" / ")}` : "")]);
   } else if (kind === "promptTree") {
     // ONE attempt, and it scrolls. Measured on the live control: the list is a virtualised
     // alphabetical menu, and its input does NOT accept typed text — after typing, the box
@@ -875,7 +884,18 @@ async function fillEducationField(ctx, report, key, sel, value, alternates = [])
     // perfectly ordinary answer — Adobe's 320-option Field of Study list contains no
     // "Computer Science" — but which substitute is TRUE is a fact about the applicant, so
     // it is read from the profile and never inferred here.
-    const res = await pickPromptTree(ctx, sel, [[String(value), ...alternates]]);
+    let res = await pickPromptTree(ctx, sel, [[String(value), ...alternates]]);
+    // The one exception to a single strategy: a category-only top level. The walker has
+    // not scrolled or typed, and the panel is still open, so searching starts clean. BofA's
+    // box does search on Enter, unlike Adobe's, whose top level holds radio leaves.
+    if (res.categoriesOnly) {
+      for (const term of [String(value), ...alternates]) {
+        const s = await pickBySearch(ctx, sel, term);
+        if (s.ok) { res = s; break; }
+        res = { ...res, reason: `searched "${term}": ${s.reason || "no results"}` +
+                                (s.sample ? ` — offered: ${s.sample.join(" / ")}` : "") };
+      }
+    }
     report.push([label, res.ok ? `set ${res.value}` : `FAILED ${res.reason}` +
       (res.near && res.near.length ? ` — closest of ${res.sawCount} options: ${res.near.join(", ")}`
                                    : res.sawCount ? ` (saw ${res.sawCount} options, none similar)` : "") +
@@ -1256,8 +1276,11 @@ async function fillMyExperience(ctx, report) {
   const year = (v) => { const m = String(v == null ? "" : v).match(/\b(19|20)\d{2}\b/); return m ? m[0] : null; };
 
   await fillEducationField(ctx, report, "school", ed.school, dig(profile, "education.school"));
-  // degree_level matches the listbox options verbatim ("Bachelors", NOT "Bachelor's Degree").
-  await fillEducationField(ctx, report, "degree", ed.degree, dig(profile, "education.degree_level"));
+  // Try the specific degree names before degree_level. Adobe's list has only "Bachelors",
+  // but a list that also offers "B.Eng" should get "B.Eng".
+  const degrees = [...(dig(profile, "education.degree_alternates") || []),
+                   dig(profile, "education.degree_level")].filter(Boolean);
+  await fillEducationField(ctx, report, "degree", ed.degree, degrees[0], degrees.slice(1));
   await fillEducationField(ctx, report, "fieldOfStudy", ed.fieldOfStudy,
                            dig(profile, "education.major"),
                            dig(profile, "education.major_alternates") || []);
