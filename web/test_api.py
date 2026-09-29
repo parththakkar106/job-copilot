@@ -293,10 +293,20 @@ def main() -> None:
         rs = next(s for s in c.get("/api/setup/status").json()["steps"] if s["id"] == "resumes")
         assert rs["done"] and any(t["tag"] == tag and t["cached"] for t in rs["tracks"]), rs; checks += 1
         # Resume-source fields are not "your details": an uploader never fills them in.
-        holes = next(s for s in c.get("/api/setup/status").json()["steps"]
-                     if s["id"] == "profile")["unfilled"]
+        prof_step = next(s for s in c.get("/api/setup/status").json()["steps"]
+                         if s["id"] == "profile")
+        holes = prof_step["unfilled"]
         assert not any("local_source" in h or "_local_resume_source" in h for h in holes), holes
         checks += 1
+        # The list and the count in the detail line must agree, checked on the template,
+        # which has more unset fields than any display cap would allow.
+        real = (tmp / "profile.json").read_bytes()
+        shutil.copy(Path(__file__).resolve().parents[1] / "data" / "profile.example.json",
+                    tmp / "profile.json")
+        tpl = next(s for s in c.get("/api/setup/status").json()["steps"] if s["id"] == "profile")
+        (tmp / "profile.json").write_bytes(real)
+        assert len(tpl["unfilled"]) > 40, tpl; checks += 1
+        assert tpl["detail"] == f"{len(tpl['unfilled'])} field(s) still unset.", tpl; checks += 1
 
         # 8e. Search picks: the catalog comes back with the defaults marked, bad picks are
         # refused, and a save narrows the profile's resume tracks to the chosen fields.

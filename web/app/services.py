@@ -712,7 +712,8 @@ def setup_status() -> dict:
         "detail": ("Not created yet - saving the Profile page once creates it."
                    if not configured else
                    (f"{len(holes)} field(s) still unset." if holes else "Complete.")),
-        "unfilled": holes[:40],
+        # The whole list: the page scrolls it, and a shorter list contradicts the count.
+        "unfilled": holes,
         "link": "/profile",
     })
 
