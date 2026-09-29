@@ -15,12 +15,97 @@ function titleize(k) {
   return k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+// A blank item shaped like `sample`, for the Add button of a list. Notes keep their text,
+// because they explain the fields, and everything else is emptied.
+function blank(sample, key = '') {
+  if (key.startsWith('_')) return sample
+  if (Array.isArray(sample)) return []
+  if (sample && typeof sample === 'object') {
+    return Object.fromEntries(Object.entries(sample).map(([k, v]) => [k, blank(v, k)]))
+  }
+  if (typeof sample === 'boolean') return false
+  if (typeof sample === 'number') return 0
+  return ''
+}
+
+// A short name for one list item, from the first identifying field it has.
+function itemName(item, i) {
+  const name = ['employer', 'company', 'school', 'name', 'title', 'tag']
+    .map((k) => item[k]).find((v) => typeof v === 'string' && v && v !== 'FILL_ME')
+  return name || `Item ${i + 1}`
+}
+
+// A variable-length list. Records get a card each, and plain values get one input each.
+// Every item can be removed, and records can be moved, because order is priority in some
+// lists (resume_tracks picks the first track whose keywords match).
+function ListField({ path, k, value, onChange }) {
+  const label = titleize(k)
+  const move = (i, d) => {
+    const next = [...value]
+    ;[next[i], next[i + d]] = [next[i + d], next[i]]
+    onChange(path, next)
+  }
+  const remove = (i) => onChange(path, value.filter((_, j) => j !== i))
+  const add = () => onChange(path, [...value, value.length ? blank(value[0]) : ''])
+  const records = value.some((v) => v && typeof v === 'object')
+
+  return (
+    <div className="pf-subsection full">
+      <div className="pf-subtitle">{label}</div>
+      {records ? value.map((item, i) => (
+        <div key={i} className="pf-item">
+          <div className="pf-item-head">
+            <b>{itemName(item, i)}</b>
+            <span className="pf-item-actions">
+              <button type="button" className="btn" disabled={i === 0} onClick={() => move(i, -1)}
+                      aria-label={`Move ${itemName(item, i)} up`}>↑</button>
+              <button type="button" className="btn" disabled={i === value.length - 1}
+                      onClick={() => move(i, 1)} aria-label={`Move ${itemName(item, i)} down`}>↓</button>
+              <button type="button" className="btn" onClick={() => remove(i)}
+                      aria-label={`Remove ${itemName(item, i)}`}>Remove</button>
+            </span>
+          </div>
+          <div className="pf-grid">
+            {Object.entries(item).map(([kk, vv]) => (
+              <Field key={kk} path={[...path, i, kk]} k={kk} value={vv} onChange={onChange} />
+            ))}
+          </div>
+        </div>
+      )) : (
+        <div className="pf-values">
+          {value.map((v, i) => (
+            <span key={i} className="pf-value">
+              <input value={v ?? ''} aria-label={`${label} ${i + 1}`}
+                     onChange={(e) => onChange([...path, i], e.target.value)} />
+              <button type="button" className="btn" onClick={() => remove(i)}
+                      aria-label={`Remove ${label} ${i + 1}`}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <button type="button" className="btn pf-add" onClick={add}>+ Add {records ? 'entry' : 'value'}</button>
+    </div>
+  )
+}
+
 function Field({ path, k, value, onChange }) {
-  if (k.startsWith('_')) {
+  if (typeof k === 'string' && k.startsWith('_')) {
     // Notes / metadata — show as a caption, not editable, so we never mangle them.
     return <div className="note-caption">{typeof value === 'string' ? value : k}</div>
   }
-  const id = path.join('.')
+  if (Array.isArray(value)) return <ListField path={path} k={k} value={value} onChange={onChange} />
+  if (value && typeof value === 'object') {
+    return (
+      <div className="pf-subsection full">
+        <div className="pf-subtitle">{titleize(k)}</div>
+        <div className="pf-grid">
+          {Object.entries(value).map(([kk, vv]) => (
+            <Field key={kk} path={[...path, kk]} k={kk} value={vv} onChange={onChange} />
+          ))}
+        </div>
+      </div>
+    )
+  }
   if (typeof value === 'boolean') {
     return (
       <label className="pf-field">
@@ -40,31 +125,17 @@ function Field({ path, k, value, onChange }) {
       </label>
     )
   }
-  if (typeof value === 'string') {
-    const long = value.length > 60
-    return (
-      <label className={`pf-field ${long ? 'full' : ''}`}>
-        <span>{titleize(k)}</span>
-        {long
-          ? <textarea rows={2} value={value} onChange={(e) => onChange(path, e.target.value)} />
-          : <input value={value} onChange={(e) => onChange(path, e.target.value)} />}
-      </label>
-    )
-  }
-  if (Array.isArray(value)) {
-    // Complex arrays (e.g. resume_tracks) — edit as JSON to avoid a bespoke editor.
-    return (
-      <label className="pf-field full" htmlFor={id}>
-        <span>{titleize(k)} (JSON)</span>
-        <textarea id={id} rows={Math.min(14, value.length * 4 + 2)}
-          defaultValue={JSON.stringify(value, null, 2)}
-          onBlur={(e) => {
-            try { onChange(path, JSON.parse(e.target.value)) } catch { /* keep old on invalid */ }
-          }} />
-      </label>
-    )
-  }
-  return null
+  // A string, or null for "not set" (work_history `end` is null while `current` is true).
+  const text = value ?? ''
+  const long = text.length > 60
+  return (
+    <label className={`pf-field ${long ? 'full' : ''}`}>
+      <span>{titleize(k)}</span>
+      {long
+        ? <textarea rows={2} value={text} onChange={(e) => onChange(path, e.target.value)} />
+        : <input value={text} onChange={(e) => onChange(path, e.target.value)} />}
+    </label>
+  )
 }
 
 function Section({ path, name, obj, onChange }) {
@@ -72,20 +143,9 @@ function Section({ path, name, obj, onChange }) {
     <div className="card pf-section">
       <div className="section-label">{titleize(name)}</div>
       <div className="pf-grid">
-        {Object.entries(obj).map(([k, v]) =>
-          (v && typeof v === 'object' && !Array.isArray(v)) ? (
-            <div key={k} className="pf-subsection full">
-              <div className="pf-subtitle">{titleize(k)}</div>
-              <div className="pf-grid">
-                {Object.entries(v).map(([kk, vv]) => (
-                  <Field key={kk} path={[...path, k, kk]} k={kk} value={vv} onChange={onChange} />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <Field key={k} path={[...path, k]} k={k} value={v} onChange={onChange} />
-          )
-        )}
+        {Object.entries(obj).map(([k, v]) => (
+          <Field key={k} path={[...path, name, k]} k={k} value={v} onChange={onChange} />
+        ))}
       </div>
     </div>
   )

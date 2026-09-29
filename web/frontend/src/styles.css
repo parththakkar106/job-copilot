@@ -876,3 +876,14 @@ select { cursor: pointer; }
 .search-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-wrap: wrap; }
 .search-foot p { margin: 0; }
+
+/* Profile lists: a card per record, an input per plain value. */
+.pf-item { border: 1px solid var(--line); border-radius: 9px; padding: 10px; margin-bottom: 10px; }
+.pf-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 8px; flex-wrap: wrap; }
+.pf-item-actions { display: flex; gap: 6px; }
+.pf-values { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.pf-value { display: flex; align-items: center; gap: 4px; }
+.pf-value input { width: 170px; }
+.pf-add { margin-top: 2px; }
+.pf-value .btn { padding: 4px 9px; }
