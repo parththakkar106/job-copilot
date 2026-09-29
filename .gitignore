@@ -65,6 +65,6 @@ extension/profile.json
 extension/taxonomy.json
 extension/resumes/
 
-# web console: node deps + built SPA bundle (rebuilt with `npm run build`)
+# web console: node deps. The built UI in web/frontend/dist/ is committed, so users
+# need no Node to run the console.
 web/frontend/node_modules/
-web/frontend/dist/

@@ -12,8 +12,8 @@ fifteen shell commands reads as harder than it is. Everything here is something 
 do by hand from docs/guide.md; nothing is hidden or magic, and each step prints what it did.
 
 What this deliberately does NOT do:
-  - install Python or Node (you already have Python if this is running; Node is only
-    needed to build the console UI, and we say so rather than failing cryptically)
+  - install Python (you already have it if this is running). Node is not needed: the
+    console UI ships prebuilt, and Node only matters if you change it
   - load the Chrome extension. Chrome requires a human for unpacked extensions, by design
   - talk to Telegram. BotFather is a conversation, and the bot is optional anyway
   - ask Google for a mail credential, which is the same kind of conversation. Optional
@@ -105,14 +105,18 @@ def hooks() -> None:
                      "       git config core.hooksPath .githooks")
 
 
-def ui() -> None:
-    """Node is optional-ish: without it the console cannot be built, but the scraper and
-    every CLI still work. Say so plainly instead of failing at an npm error."""
-    if shutil.which("npm"):
-        say("ui", "Node found; start.py will build the console UI on first run")
-        return
-    say("ui", "Node/npm not found. The console UI needs it - install Node 18+ from "
-              "nodejs.org, then re-run. The scraper and CLI tools work without it.")
+def extension() -> None:
+    """Stage your config into extension/, so the folder is ready to load in Chrome.
+
+    The extension reads its own copy of profile.json and taxonomy.json, and those copies
+    are gitignored. Without this step, Chrome would load an extension with no profile.
+    """
+    try:
+        subprocess.run([sys.executable, str(ROOT / "extension" / "build.py")], cwd=ROOT,
+                       check=True, capture_output=True)
+        say("extension", f"built; load this folder in Chrome: {ROOT / 'extension'}")
+    except subprocess.CalledProcessError:
+        say("extension", "build failed; use Rebuild extension on the console's Profile page")
 
 
 def launch() -> None:
@@ -129,10 +133,11 @@ def main() -> int:
     ok = deps()
     config()
     hooks()
-    ui()
+    if ok:
+        extension()
     print()
     say("next", "The console will show a checklist. Things it cannot do for you:")
-    say("next", "  1. load the extension at chrome://extensions (Chrome requires a human)")
+    say("next", "  1. load the extension at chrome://extensions > Developer mode > Load unpacked")
     say("next", "  2. create a Telegram bot, if you want phone control (optional)")
     say("next", "  3. set up a mail credential for emailed codes (optional, see bridge/README.md)")
     say("next", "  4. save a Workday password in the extension popup (optional, Workday only)")

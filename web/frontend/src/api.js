@@ -3,7 +3,9 @@
 
 async function req(method, path, body) {
   const opts = { method, headers: {} };
-  if (body !== undefined) {
+  if (body instanceof Blob) {
+    opts.body = body;  // a file upload goes as raw bytes, not JSON
+  } else if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
@@ -44,6 +46,7 @@ export const api = {
   profile: () => req('GET', '/profile'),
   saveProfile: (profile) => req('PUT', '/profile', { profile }),
   setupStatus: () => req('GET', '/setup/status'),
+  uploadResume: (tag, file) => req('PUT', `/resumes/${encodeURIComponent(tag)}`, file),
 
   companies: () => req('GET', '/companies'),
   setTier: (name, tier) => req('PUT', '/companies/tier', { name, tier }),

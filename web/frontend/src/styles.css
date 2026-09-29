@@ -837,6 +837,9 @@ select { cursor: pointer; }
 .setup-detail { margin: 6px 0 0; font-size: .88rem; color: var(--muted, #6b7280); }
 
 .setup-holes { margin-top: 8px; font-size: .84rem; }
+.setup-resumes { list-style: none; margin: 8px 0 0; padding: 0; font-size: .88rem; }
+.setup-resumes li { margin: 6px 0; }
+.setup-resumes input[type=file] { max-width: 100%; }
 .setup-holes summary { cursor: pointer; color: var(--muted, #6b7280); }
 /* Long profiles produce 40+ entries; cap it so one step cannot push the rest off screen. */
 .setup-holes ul { margin: 8px 0 0; padding-left: 18px; max-height: 190px; overflow-y: auto; }

@@ -8,6 +8,15 @@
 #
 # (bootstrap.py does this for you.)
 
+# The console UI ships prebuilt in web/frontend/dist/. A commit that changes its sources
+# without the rebuilt dist/ would give users a UI that does not match the code.
+staged=$(git diff --cached --name-only)
+if echo "$staged" | grep -q '^web/frontend/src/' && ! echo "$staged" | grep -q '^web/frontend/dist/'; then
+    echo "[dist-check] web/frontend/src changed but web/frontend/dist did not. Rebuild it:" >&2
+    echo "    (cd web/frontend && npm run build) && git add -A web/frontend/dist" >&2
+    exit 1
+fi
+
 if command -v python >/dev/null 2>&1; then
     PY=python
 elif command -v python3 >/dev/null 2>&1; then

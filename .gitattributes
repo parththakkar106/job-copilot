@@ -1,0 +1,2 @@
+# The prebuilt console UI is served byte for byte, so git must not rewrite its line endings.
+web/frontend/dist/** -text

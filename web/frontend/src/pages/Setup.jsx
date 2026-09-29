@@ -19,7 +19,46 @@ import { useToast } from '../toast.jsx'
 // bar - a permanent "4 of 6" would read as unfinished to someone who simply does not want
 // a Telegram bot.
 
-function Step({ step, index, onGo, onRecheck, busy }) {
+// One upload button per resume track. Each upload also rebuilds the extension, so its
+// fallback copy of the PDFs matches the cache.
+function ResumeUploads({ tracks, onDone }) {
+  const notify = useToast()
+  const [uploading, setUploading] = useState('')
+
+  const upload = async (tag, file) => {
+    if (!file) return
+    setUploading(tag)
+    try {
+      await api.uploadResume(tag, file)
+      await api.buildExtension().catch(() => {})
+      notify(`Saved the ${tag} resume.`, 'success')
+      onDone()
+    } catch (e) {
+      notify(`Could not save the ${tag} resume: ${e.message}`, 'error')
+    } finally {
+      setUploading('')
+    }
+  }
+
+  return (
+    <ul className="setup-resumes">
+      {tracks.map(({ tag, cached, synced }) => (
+        <li key={tag}>
+          <label>
+            <b>{tag}</b>{' '}
+            <span className="muted">{cached ? `saved${synced ? ` ${synced}` : ''}` : 'no PDF yet'}</span>{' '}
+            <input type="file" accept="application/pdf" disabled={!!uploading}
+                   aria-label={`Upload the ${tag} resume PDF`}
+                   onChange={(e) => { upload(tag, e.target.files[0]); e.target.value = '' }} />
+          </label>
+          {uploading === tag && <span className="muted"> Uploading…</span>}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function Step({ step, index, onGo, onRecheck, onRefresh, busy }) {
   const { id, title, detail, done, manual, optional, unfilled, link } = step
   return (
     <li className={`setup-step ${done ? 'is-done' : ''}`}>
@@ -41,6 +80,8 @@ function Step({ step, index, onGo, onRecheck, busy }) {
             <ul>{unfilled.map((f) => <li key={f}><code>{f}</code></li>)}</ul>
           </details>
         )}
+
+        {step.tracks && <ResumeUploads tracks={step.tracks} onDone={onRefresh} />}
 
         <div className="setup-actions">
           {link && !done && (
@@ -111,7 +152,7 @@ export default function Setup({ onGo }) {
       <ol className="setup-list">
         {core.map((s, i) => (
           <Step key={s.id} step={s} index={i} onGo={onGo}
-                onRecheck={() => load(true)} busy={busy} />
+                onRecheck={() => load(true)} onRefresh={() => load(false)} busy={busy} />
         ))}
       </ol>
 
@@ -126,7 +167,7 @@ export default function Setup({ onGo }) {
           <ol className="setup-list">
             {extras.map((s, i) => (
               <Step key={s.id} step={s} index={coreTotal + i} onGo={onGo}
-                    onRecheck={() => load(true)} busy={busy} />
+                    onRecheck={() => load(true)} onRefresh={() => load(false)} busy={busy} />
             ))}
           </ol>
         </div>

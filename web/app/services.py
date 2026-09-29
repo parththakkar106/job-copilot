@@ -579,6 +579,37 @@ _OAUTH_VARS = ("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN")
 _IMAP_VARS = ("GMAIL_ADDRESS", "GMAIL_APP_PASSWORD")
 
 
+# Profile fields that only the local-folder resume sync reads. A PDF uploaded on the Setup
+# page fills the cache without them, so they do not count as unset details.
+_RESUME_SOURCE_FIELD = re.compile(
+    r"^(_local_resume_source\.|resume_tracks\[\d+\]\.(current_file|local_source)$)")
+
+
+def resume_status() -> list[dict]:
+    """Each resume track and whether its PDF is in the cache the extension attaches from."""
+    from core import resumes as resumes_mod
+    manifest = resumes_mod.load_manifest()
+    return [{"tag": t["tag"], "cached": resumes_mod.cached_path(t).is_file(),
+             "synced": manifest.get(t["tag"], {}).get("synced")}
+            for t in load_profile().get("resume_tracks") or []]
+
+
+def upload_resume(tag: str, raw: bytes) -> bool:
+    """Install an uploaded PDF as this track's cached resume. True if the bytes changed.
+
+    Raises KeyError for an unknown track and ValueError for bytes that are not a PDF.
+    """
+    from core import resumes as resumes_mod
+    track = next((t for t in load_profile().get("resume_tracks") or []
+                  if t.get("tag") == tag), None)
+    if track is None:
+        raise KeyError(tag)
+    try:
+        return resumes_mod._write_cache(track, raw, "console upload")
+    except resumes_mod.SyncError as e:
+        raise ValueError(str(e)) from e
+
+
 def setup_status() -> dict:
     """What a new install still needs, as a checklist the Setup page renders.
 
@@ -608,8 +639,9 @@ def setup_status() -> dict:
     holes: list[str] = []
     if configured:
         try:
-            holes = profile_mod.find_fillme(
+            holes = [h for h in profile_mod.find_fillme(
                 json.loads(PROFILE_WRITE.read_text(encoding="utf-8")))
+                if not _RESUME_SOURCE_FIELD.match(h)]
         except Exception:
             holes = []
     steps.append({
@@ -657,16 +689,17 @@ def setup_status() -> dict:
         "link": "/companies",
     })
 
-    # 4. Resumes: only the apply half needs them, and the count is what the extension
-    # will actually be able to attach.
-    n_resumes = len(list(core_paths.RESUMES.glob("*.pdf"))) if core_paths.RESUMES.exists() else 0
+    # 4. Resumes: only the apply half needs them. The page renders an upload button per
+    # track from `tracks`, so this step needs no command.
+    tracks = resume_status()
+    n_resumes = sum(1 for t in tracks if t["cached"])
     steps.append({
         "id": "resumes", "title": "Resume PDFs",
         "done": n_resumes > 0, "blocking": False, "manual": False, "optional": False,
-        "detail": (f"{n_resumes} cached." if n_resumes else
-                   "None cached. Set _local_resume_source.base_dir in your profile, then "
-                   "run: python -m core.resumes sync-local"),
-        "link": "/profile",
+        "detail": (f"{n_resumes} of {len(tracks)} tracks have a PDF." if n_resumes else
+                   "Upload a PDF for each resume track you use."),
+        "tracks": tracks,
+        "link": None,
     })
 
     # ── Optional from here down. Both are control-plane conveniences: the extension fills

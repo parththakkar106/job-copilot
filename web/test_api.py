@@ -12,6 +12,7 @@ import json
 import shutil
 import sys
 import tempfile
+from datetime import date, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -42,7 +43,9 @@ def _isolate(tmp: Path) -> None:
     shutil.copy(core_paths.PROFILE, tmp / "profile.json")
     (tmp / "applied.json").write_text(json.dumps([
         {"dedup_key": "appl1", "company": "Neon", "title": "SWE",
-         "location": "NYC", "url": "https://x", "status": "applied", "applied": "2026-07-20"},
+         "location": "NYC", "url": "https://x", "status": "applied",
+         # Inside the dashboard's 60-day window whatever day the suite runs.
+         "applied": (date.today() - timedelta(days=5)).isoformat()},
     ]), encoding="utf-8")
     (tmp / "out" / "queue.json").write_text(json.dumps([
         {"dedup_key": "qk1", "company": "Asana", "title": "Backend", "tier": "pipeline"},
@@ -79,6 +82,9 @@ def _isolate(tmp: Path) -> None:
     svc.FLUSH_TRIGGER = tmp / ".flush_trigger"
     svc.RUN_TRIGGER = tmp / ".run_trigger"
     svc.ACTIVITY_PING = tmp / ".activity"
+    from core import resumes as resumes_mod     # resume uploads land in tmp, not the real cache
+    resumes_mod.CACHE = tmp / "resumes"
+    resumes_mod.MANIFEST = tmp / "resumes" / "manifest.json"
 
 
 def _seed_pending() -> None:
@@ -138,7 +144,7 @@ def main() -> None:
         rows3 = c.get("/api/dashboard").json()["rows"]
         a1 = next(row for row in rows3 if row["dedup_key"] == "appl1")
         assert a1["bucket"] == "blocked", a1; checks += 1
-        assert a1["date"] == "2026-07-20", a1  # the decision changed, not when it left
+        assert a1["date"] == (date.today() - timedelta(days=5)).isoformat(), a1  # the decision changed, not when it left
         checks += 1
         assert sum(1 for row in rows3 if row["dedup_key"] == "appl1") == 1, "no duplicate row"
         checks += 1
@@ -268,6 +274,23 @@ def main() -> None:
         assert st["core_total"] == 4 and st["core_done"] <= 4, st; checks += 1
         assert st["core_done"] == sum(
             1 for s in st["steps"] if not s["optional"] and s["done"]), st; checks += 1
+
+        # 8d. Resume upload writes the cache the extension attaches from, and only a PDF.
+        tag = json.loads((tmp / "profile.json").read_text(encoding="utf-8"))["resume_tracks"][0]["tag"]
+        assert c.put(f"/api/resumes/{tag}", content=b"not a pdf").status_code == 400; checks += 1
+        assert c.put("/api/resumes/nosuchtrack", content=b"%PDF-1.4").status_code == 404; checks += 1
+        up = c.put(f"/api/resumes/{tag}", content=b"%PDF-1.4 test").json()
+        assert up == {"ok": True, "changed": True}, up; checks += 1
+        again = c.put(f"/api/resumes/{tag}", content=b"%PDF-1.4 test").json()
+        assert again["changed"] is False, again; checks += 1
+        assert list((tmp / "resumes").glob("*.pdf")), "upload must land in the isolated cache"; checks += 1
+        rs = next(s for s in c.get("/api/setup/status").json()["steps"] if s["id"] == "resumes")
+        assert rs["done"] and any(t["tag"] == tag and t["cached"] for t in rs["tracks"]), rs; checks += 1
+        # Resume-source fields are not "your details": an uploader never fills them in.
+        holes = next(s for s in c.get("/api/setup/status").json()["steps"]
+                     if s["id"] == "profile")["unfilled"]
+        assert not any("local_source" in h or "_local_resume_source" in h for h in holes), holes
+        checks += 1
 
         # 8b. Drafting flag: defaults ON, PUT flips it and persists to the shared prefs.
         assert c.get("/api/prefs/drafts").json()["enabled"] is True; checks += 1

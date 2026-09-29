@@ -40,8 +40,9 @@ python bootstrap.py
 ```
 
 That installs the Python dependencies, creates your config files from the shipped
-templates, and opens the console on a setup checklist that walks you through the rest in
-the browser. Requires Python 3.10+, and Node 18+ for the console UI.
+templates, builds the extension, and opens the console on a setup checklist that walks you
+through the rest in the browser. Requires Python 3.10+. Node is not needed, because the
+console UI ships prebuilt in `web/frontend/dist/`.
 
 **Four steps get you to a filled application**, and only the first is required. The
 extension is the part that does the work; the rest of the list is about feeding it:
@@ -49,9 +50,9 @@ extension is the part that does the work; the rest of the list is about feeding 
 | Step | What it means |
 |---|---|
 | **Your details** | Name, contact, work authorization, EEO answers. Edited as a form; `checkfill` counts what's left |
-| **Extension** | The fill engine itself. Rebuild from the Profile page, then load it once at `chrome://extensions` |
+| **Extension** | The fill engine itself. `bootstrap.py` builds it. Load it once at `chrome://extensions`, and rebuild from the Profile page after profile edits |
 | **Companies** | Ten real API-verified examples ship, so a scrape works immediately. Edit any tier to make the list yours |
-| **Resumes** | Only needed for the apply half. Point `_local_resume_source.base_dir` at your PDFs, then `python -m core.resumes sync-local` |
+| **Resumes** | Only needed for the apply half. Upload one PDF per track on the Setup page, or sync from a folder (see [Resumes](#resumes)) |
 
 Then two **optional extras**, listed separately in the console and left out of its progress
 bar. The extension fills and submits without either one, and did for months before they
@@ -151,7 +152,15 @@ First run needs deps:
 pip install -r bridge/requirements.txt -r web/requirements.txt
 ```
 
-Requires Python 3.10+ and Node (for the console UI).
+Requires Python 3.10+. Node 18+ is needed only for `--dev`, `--build`, or after you edit
+`web/frontend/src`. The built UI in `web/frontend/dist/` is committed, so after a UI change,
+rebuild it and commit it with the source:
+
+```bash
+cd web/frontend && npm run build && git add -A dist
+```
+
+The pre-commit hook blocks a commit that changes `web/frontend/src` without `dist/`.
 
 ## Layout
 
@@ -295,7 +304,9 @@ never serve until you do. See `bridge/README.md` for what that pass may and may 
 ## Resumes
 
 `resumes/` is a local, gitignored byte-cache of the real PDFs that the extension attaches
-via DataTransfer. Source of truth is currently the local Finals folder:
+via DataTransfer. The simplest way to fill it is the upload button for each track on the
+console's Setup page. To keep it in step with a folder of PDFs instead, set
+`_local_resume_source.base_dir` and each track's `local_source` in your profile:
 
 ```bash
 python -m core.resumes sync-local        # refresh the cache by hand

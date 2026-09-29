@@ -8,10 +8,9 @@
     python start.py --stop          # stop the running services
     python start.py --status        # show what is running
 
-DEFAULT (prod) mode runs ONE web server: the SPA is built once into web/frontend/dist and
-FastAPI serves both the API and the UI on :8000. No Node process is left running. The
-build is skipped when dist/ is newer than everything in web/frontend/src, so a normal
-start costs nothing; touch a source file (or pass --build) and it rebuilds first.
+DEFAULT (prod) mode runs ONE web server: FastAPI serves both the API and the prebuilt UI
+in web/frontend/dist on :8000. dist/ is committed, so this mode needs no Node. If Node is
+installed and a source file is newer than dist/ (or you pass --build), it rebuilds first.
 
 --dev mode instead runs uvicorn --reload on :8000 and the Vite dev server on :5173
 (proxying /api to :8000). Open :5173 in that mode. Slower to start, but edits to the
@@ -36,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -96,11 +96,26 @@ def _npm(args: str, why: str) -> bool:
 
 
 def _ensure_frontend(need_build: bool, force_build: bool) -> bool:
-    """Install deps on first run; build the SPA when prod mode needs a fresh dist."""
+    """Install deps on first run; build the SPA when prod mode needs a fresh dist.
+
+    dist/ is committed, so a user without Node runs the prebuilt UI. Node is needed only
+    for --dev, --build, or to rebuild after editing web/frontend/src.
+    """
+    building = need_build and (force_build or _dist_is_stale())
+    if need_build and not building:
+        return True
+    if not shutil.which("npm"):
+        # A fresh clone gives every file a new mtime, so dist/ can look stale when it is not.
+        if need_build and not force_build and (DIST / "index.html").exists():
+            print("[start] Node not found, using the prebuilt console UI")
+            return True
+        print("[start] npm not found. Install Node 18+ to use --dev or --build.",
+              file=sys.stderr)
+        return False
     if not (FRONTEND / "node_modules").exists():
         if not _npm("install", "first run, installing frontend deps"):
             return False
-    if need_build and (force_build or _dist_is_stale()):
+    if building:
         why = "rebuilding the console UI" if DIST.exists() else "building the console UI"
         if not _npm("run build", why):
             return False

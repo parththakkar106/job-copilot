@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from . import services as svc
 from .models import (
@@ -265,6 +265,25 @@ def get_setup_status():
 
 
 # ── Profile ──────────────────────────────────────────────────────────────────────────
+
+# A resume is a page or two; the cap stops a mistaken upload from filling the disk.
+MAX_RESUME_BYTES = 10 * 1024 * 1024
+
+
+@router.put("/resumes/{tag}")
+async def put_resume(tag: str, request: Request):
+    """Store the request body, a PDF, as this track's cached resume."""
+    raw = await request.body()
+    if len(raw) > MAX_RESUME_BYTES:
+        raise HTTPException(413, "resume PDF is over 10 MB")
+    try:
+        changed = svc.upload_resume(tag, raw)
+    except KeyError:
+        raise HTTPException(404, f"unknown resume track '{tag}'")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "changed": changed}
+
 
 @router.get("/profile")
 def get_profile():
