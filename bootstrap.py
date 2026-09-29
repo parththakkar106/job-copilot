@@ -9,7 +9,7 @@ WHY THIS EXISTS
 ---------------
 The steps this replaces were never difficult, only numerous, and a numbered list of
 fifteen shell commands reads as harder than it is. Everything here is something you could
-do by hand from the README; nothing is hidden or magic, and each step prints what it did.
+do by hand from docs/guide.md; nothing is hidden or magic, and each step prints what it did.
 
 What this deliberately does NOT do:
   - install Python or Node (you already have Python if this is running; Node is only
