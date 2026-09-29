@@ -18,6 +18,8 @@ What this deliberately does NOT do:
   - talk to Telegram. BotFather is a conversation, and the bot is optional anyway
   - ask Google for a mail credential, which is the same kind of conversation. Optional
     too: without one you paste an emailed verification code yourself
+  - store a Workday password. It lives only in the extension's own storage, set from the
+    popup, so it never passes through this script or a file in the checkout
   - overwrite any config you already have. Existing files are left strictly alone
 """
 from __future__ import annotations
@@ -129,9 +131,11 @@ def main() -> int:
     hooks()
     ui()
     print()
-    say("next", "The console will show a checklist. Two things it cannot do for you:")
+    say("next", "The console will show a checklist. Things it cannot do for you:")
     say("next", "  1. load the extension at chrome://extensions (Chrome requires a human)")
     say("next", "  2. create a Telegram bot, if you want phone control (optional)")
+    say("next", "  3. set up a mail credential for emailed codes (optional, see bridge/README.md)")
+    say("next", "  4. save a Workday password in the extension popup (optional, Workday only)")
     print()
     if not ok:
         say("next", "Dependencies did not install cleanly - fix that first, then: python start.py")

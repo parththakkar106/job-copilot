@@ -1,13 +1,13 @@
 # job copilot
 
 Personal tool to semi-automate job applications: scrape currently-open roles from
-Greenhouse / Lever / Ashby, filter to well-matched early-career quant/DS/tech/AI
-openings, auto-fill most of each application form, and review + submit with a human in
-the loop.
+Greenhouse / Lever / Ashby / Workday, filter to well-matched early-career
+quant/DS/tech/AI openings, auto-fill most of each application form, and review + submit
+with a human in the loop.
 
 > **Architecture in one paragraph:** two runtimes over one shared data layer. *Discovery*
-> is a Python scraper hitting the Greenhouse / Lever / Ashby public APIs — no logged-in
-> browsing, no LinkedIn scraping. *Apply* is a Chrome extension that fills forms locally
+> is a Python scraper hitting the Greenhouse / Lever / Ashby / Workday public APIs — no
+> logged-in browsing, no LinkedIn scraping. *Apply* is a Chrome extension that fills forms locally
 > using your own session, escalating anything it cannot answer deterministically to you
 > rather than guessing. Submission is always a human tap. The question taxonomy is config,
 > not code, so which fields are auto-filled, drafted, or always asked is yours to change.
@@ -66,6 +66,9 @@ Two of the four, plus both extras, the setup flow **cannot** do for you, and it 
 rather than pretending: Chrome deliberately requires a human to load an unpacked extension,
 creating a Telegram bot is a conversation with BotFather, and so is asking Google for a mail
 credential. Each has an "I did this, re-check" button.
+
+If you apply on Workday boards, also save a Workday password in the extension popup. The
+console checklist does not track it. See [Workday](#workday).
 
 The extras read `bridge/.env` as well as your environment, since that file is where the
 setup instructions put those values — a checklist that called the documented setup "not
@@ -209,9 +212,13 @@ It computes the same dedup key the scraper uses, so entries match exactly.
 
 ### Config you edit by hand (all in `data/`)
 
-- **`companies.yaml`** — the companies to scrape. `ats` is `greenhouse|lever|ashby`;
-  `slug` must match the board URL or the fetch 404s. `tier` is `pipeline` (auto-apply) or
-  `dream` (surface only, apply manually + referral). Editable in the console too.
+- **`companies.yaml`** — the companies to scrape. `ats` is
+  `greenhouse|lever|ashby|workday`; `slug` must match the board URL or the fetch 404s.
+  Workday rows take `host` and `board` instead of `slug`, read off the careers URL
+  `https://<host>/<board>`, for example
+  `{name: Adobe, ats: workday, host: adobe.wd5.myworkdayjobs.com, board: external_experienced, tier: pipeline}`.
+  `tier` is `pipeline` (auto-apply) or `dream` (surface only, apply manually + referral).
+  Editable in the console too.
 - **`filters.yaml`** — field keyword lists (drive both classification and relevance),
   seniority exclusions, US-location rules, and `freshness_days`.
 - **`taxonomy.yaml`** — keyword/regex rules bucketing form fields into deterministic /
@@ -226,6 +233,23 @@ After editing `taxonomy.yaml` or `profile.json`, restage the extension's copies:
 ```bash
 python extension/build.py     # then reload the unpacked extension in chrome://extensions
 ```
+
+## Workday
+
+Workday boards are scraped through Workday's public job API and filled by
+`extension/workday_driver.js`, which steps through the application wizard. The driver stops
+before the final submit step, the same as every other board.
+
+Every Workday tenant has its own candidate account. To let the driver pass the account step,
+open the extension popup and save one password under **Workday password**. The driver signs
+in with your profile email and that password, or creates the account if none exists. The
+password is stored in `chrome.storage.local` for that Chrome profile. It never reaches the
+bridge, the console, or the repo. If no password is saved, the wizard stops at the account
+step for you to sign in by hand.
+
+Workday asks for more than the other boards: a full work history, education dates, and
+skills from a fixed vocabulary. The `_work_history_note`, `_skills_note`, and education
+notes in `data/profile.example.json` describe each field.
 
 ## Emailed verification codes (optional extra)
 
@@ -293,6 +317,15 @@ all when the profile defines one track. `core/profile.py resume_filename` and it
 `extension/attach.js` are the one source of that name; `test_stream_parity.py` checks the
 two agree.
 
+Each role gets one resume track, picked by the same rules in `core/profile.py pick_resume`
+and `extension/resume_pick.js`:
+
+1. The scraper's `field` for the role, if a track has that tag.
+2. Otherwise, the first track in `resume_tracks` order with a keyword in the job title.
+   List specialist tracks before generic ones, because order is the priority.
+3. Otherwise, the track with the most keywords in the job description.
+4. Otherwise, `default_resume_tag`.
+
 Send yourself the current PDF from the phone with `/myresume` (a list of tracks with their
 cache dates) or `/myresume ai` (that track straight away).
 
@@ -304,7 +337,9 @@ Because it force-commits `out/`, origin diverges from a local clone each run —
 don't pull**: `git rebase origin/main` before pushing.
 
 For the unattended local collection run (Task Scheduler → bridge → extension), see
-[`docs/autonomous_run.md`](./docs/autonomous_run.md) and `scripts/`.
+[`docs/autonomous_run.md`](./docs/autonomous_run.md) and `scripts/`. `run_daily.ps1`
+retries `git fetch` for up to five minutes after wake and writes its output to
+`logs/run_daily.log`, with the previous run kept as `logs/run_daily.prev.log`.
 
 ## Tests
 
@@ -322,13 +357,11 @@ python -m venv .venv
 ```
 
 ```bash
-for t in bridge/test_*.py; do .venv/Scripts/python "$t"; done
+for t in bridge/test_*.py test_*.py; do .venv/Scripts/python "$t"; done
 .venv/Scripts/python web/test_api.py
 .venv/Scripts/python -m core.profile --selftest
 .venv/Scripts/python scripts/test_pii_guard.py
-.venv/Scripts/python test_home_layout.py && .venv/Scripts/python test_write_target.py
-node extension/test_fill_units.mjs
-node extension/test_aipass_units.mjs
+for t in extension/test_*.mjs; do node "$t"; done
 ```
 
 Run the whole thing **twice back to back, then `git status data/`**. Every suite is
