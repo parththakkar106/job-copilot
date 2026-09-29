@@ -873,6 +873,9 @@ select { cursor: pointer; }
 .search-group legend { font-weight: 600; padding: 0 4px; }
 .search-opt { display: flex; align-items: center; gap: 8px; font-size: .9rem; cursor: pointer; }
 .search-opt input { width: auto; flex: none; margin: 0; }
+.search-path { align-items: flex-start; }
+.search-path input { margin-top: 3px; }
+.search-kw { display: block; color: var(--muted); font-size: .78rem; margin-top: 2px; }
 .search-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-wrap: wrap; }
 .search-foot p { margin: 0; }

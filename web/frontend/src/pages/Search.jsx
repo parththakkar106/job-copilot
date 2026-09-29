@@ -2,14 +2,11 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useToast } from '../toast.jsx'
 
-// Each topic's field is also a resume track, so the page names the resumes a pick implies.
-const FIELD_LABELS = { quant: 'Quant', ai: 'AI and ML', ds: 'Data', tech: 'Software' }
-const fieldLabel = (f) => FIELD_LABELS[f] || f
-
+// Each career path is also a resume track, so the page names the resumes a pick implies.
 export default function Search() {
   const notify = useToast()
   const [data, setData] = useState(null)
-  const [topics, setTopics] = useState(new Set())
+  const [chosen, setChosen] = useState(new Set())
   const [levels, setLevels] = useState(new Set())
   const [saving, setSaving] = useState(false)
 
@@ -17,7 +14,7 @@ export default function Search() {
     api.search()
       .then((d) => {
         setData(d)
-        setTopics(new Set(d.topics.filter((t) => t.selected).map((t) => t.key)))
+        setChosen(new Set(d.paths.filter((p) => p.selected).map((p) => p.key)))
         setLevels(new Set(d.levels.filter((l) => l.selected).map((l) => l.key)))
       })
       .catch((e) => notify(e.message, 'error'))
@@ -30,16 +27,16 @@ export default function Search() {
     next.has(key) ? next.delete(key) : next.add(key)
     setter(next)
   }
-  const groups = [...new Set(data.topics.map((t) => t.field))]
-  const tracks = groups.filter((f) => data.topics.some((t) => t.field === f && topics.has(t.key)))
+  const label = Object.fromEntries(data.paths.map((p) => [p.key, p.label]))
+  const picked = data.paths.filter((p) => chosen.has(p.key))
 
   const save = async () => {
     setSaving(true)
     try {
-      const r = await api.saveSearch([...topics], [...levels])
+      const r = await api.saveSearch([...chosen], [...levels])
       // The extension carries its own copy of the profile, and its resume tracks just changed.
       await api.buildExtension().catch(() => {})
-      notify(`Saved. Resume tracks: ${r.tracks.map(fieldLabel).join(', ')}. ` +
+      notify(`Saved. Resume tracks: ${r.tracks.map((t) => label[t] || t).join(', ')}. ` +
              'Refresh discovery to search with it.', 'success', 6000)
     } catch (e) {
       notify(e.message, 'error', 6000)
@@ -52,22 +49,24 @@ export default function Search() {
     <div className="search-page">
       <div className="page-head"><h2>What to search</h2></div>
       <p className="page-hint">
-        Pick the topics and experience levels you want. The daily run keeps a role only if its
-        title matches a topic and a level you picked.
+        Pick the career paths and experience levels you want. The daily run keeps a role only
+        if its title matches a keyword of a path you picked, at a level you picked. You upload
+        one resume for each path. Edit the keywords in <code>data/filters.yaml</code>.
       </p>
 
-      {groups.map((f) => (
-        <fieldset key={f} className="card search-group">
-          <legend>{fieldLabel(f)}</legend>
-          {data.topics.filter((t) => t.field === f).map((t) => (
-            <label key={t.key} className="search-opt">
-              <input type="checkbox" checked={topics.has(t.key)}
-                     onChange={() => toggle(topics, setTopics, t.key)} />
-              {t.label}
-            </label>
-          ))}
-        </fieldset>
-      ))}
+      <fieldset className="card search-group">
+        <legend>Career paths</legend>
+        {data.paths.map((p) => (
+          <label key={p.key} className="search-opt search-path">
+            <input type="checkbox" checked={chosen.has(p.key)}
+                   onChange={() => toggle(chosen, setChosen, p.key)} />
+            <span>
+              {p.label}
+              <span className="search-kw">{p.keywords.join(', ')}</span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
 
       <fieldset className="card search-group">
         <legend>Experience level</legend>
@@ -82,12 +81,12 @@ export default function Search() {
 
       <div className="card search-foot">
         <p>
-          {tracks.length
-            ? <>Resumes to upload on the Setup page: <b>{tracks.map(fieldLabel).join(', ')}</b>.</>
-            : 'Pick at least one topic.'}
+          {picked.length
+            ? <>Resumes to upload on the Setup page: <b>{picked.map((p) => p.label).join(', ')}</b>.</>
+            : 'Pick at least one career path.'}
         </p>
         <button className="btn btn-primary" onClick={save}
-                disabled={saving || !topics.size || !levels.size}>
+                disabled={saving || !chosen.size || !levels.size}>
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>

@@ -234,14 +234,15 @@ It computes the same dedup key the scraper uses, so entries match exactly.
   `{name: Adobe, ats: workday, host: adobe.wd5.myworkdayjobs.com, board: external_experienced, tier: pipeline}`.
   `tier` is `pipeline` (auto-apply) or `dream` (surface only, apply manually + referral).
   Editable in the console too.
-- **`filters.yaml`** — the catalog of 20 search topics and 3 experience levels, words
-  that always exclude a title, US-location rules, and `freshness_days`. Each topic has
-  keywords and a `field` (quant, ai, ds, or tech). A title that matches no chosen topic is
-  dropped. A title's level comes from its words: `senior` or `sr` is mid, and `staff`,
+- **`filters.yaml`** — the catalog of 20 career paths and 3 experience levels, words
+  that always exclude a title, US-location rules, and `freshness_days`. The paths range
+  from software, AI, and data to cybersecurity, QA, DevOps, embedded, and IT. Each path
+  has title `keywords` and `resume_keywords`. A title goes to the first path, in file
+  order, with a matching keyword. A title that matches no chosen path is dropped. A title's level comes from its words: `senior` or `sr` is mid, and `staff`,
   `principal`, `lead`, `manager`, and similar words are senior. Anything else is entry.
-- **`search.yaml`** — the topics and levels you chose on the console's **Search** page.
-  Without it, the topics and levels marked `default: true` in `filters.yaml` are searched:
-  most tech topics, at entry and mid level. If you use the daily Action, commit this file
+- **`search.yaml`** — the paths and levels you chose on the console's **Search** page.
+  Without it, the paths and levels marked `default: true` in `filters.yaml` are searched:
+  quant, AI, data science, and software, at entry and mid level. If you use the daily Action, commit this file
   to your `JOBCOPILOT_HOME` repository so the run sees your choice.
 - **`taxonomy.yaml`** — keyword/regex rules bucketing form fields into deterministic /
   draftable / always_ask. **Insertion order is load-bearing:** specific rules above
@@ -341,10 +342,11 @@ all when the profile defines one track. `core/profile.py resume_filename` and it
 `extension/attach.js` are the one source of that name; `test_stream_parity.py` checks the
 two agree.
 
-Your search topics decide which resume tracks exist. Each topic's `field` is a track
-tag, so saving the Search page keeps a track for each chosen field and drops the others.
-A dropped track's PDF stays in the cache, and it comes back if you choose that field
-again. A track with a tag of your own, outside quant, ai, ds, and tech, is never dropped.
+Your career paths decide which resume tracks exist. Each path is a track, and its tag is
+the path's key in `filters.yaml`, such as `security` or `qa`. Saving the Search page keeps
+a track for each chosen path and drops the others. A new track gets the path's
+`resume_keywords`. A dropped track's PDF stays in the cache, and it comes back if you
+choose that path again. A track with a tag that is not a path is never dropped.
 
 Each role gets one resume track, picked by the same rules in `core/profile.py pick_resume`
 and `extension/resume_pick.js`:

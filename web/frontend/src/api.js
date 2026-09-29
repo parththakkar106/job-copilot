@@ -49,7 +49,7 @@ export const api = {
   uploadResume: (tag, file) => req('PUT', `/resumes/${encodeURIComponent(tag)}`, file),
 
   search: () => req('GET', '/search'),
-  saveSearch: (topics, levels) => req('PUT', '/search', { topics, levels }),
+  saveSearch: (paths, levels) => req('PUT', '/search', { paths, levels }),
 
   companies: () => req('GET', '/companies'),
   setTier: (name, tier) => req('PUT', '/companies/tier', { name, tier }),

@@ -459,36 +459,36 @@ def save_profile(obj: dict) -> None:
                              encoding="utf-8")
 
 
-# ── Search topics and levels ─────────────────────────────────────────────────────────
+# ── Search paths and levels ──────────────────────────────────────────────────────────
 
 def search_options() -> dict:
-    """The topic and level catalog from filters.yaml, marked with your current picks."""
+    """The path and level catalog from filters.yaml, marked with your current picks."""
     from core import search
     filt = yaml.safe_load(FILTERS_PATH.read_text(encoding="utf-8")) or {}
     sel = search.load(filt, SEARCH_PATH)
     return {
-        "topics": [{"key": k, "label": v.get("label", k), "field": v.get("field"),
-                    "selected": k in sel["topics"]}
-                   for k, v in (filt.get("topics") or {}).items()],
+        "paths": [{"key": k, "label": v.get("label", k), "keywords": v.get("keywords") or [],
+                   "selected": k in sel["paths"]}
+                  for k, v in (filt.get("paths") or {}).items()],
         "levels": [{"key": k, "label": v.get("label", k), "selected": k in sel["levels"]}
                    for k, v in (filt.get("levels") or {}).items()],
         "tracks": search.tracks(filt, sel),
     }
 
 
-def save_search(topics: list[str], levels: list[str]) -> list[str]:
+def save_search(chosen: list[str], levels: list[str]) -> list[str]:
     """Save your picks and match the profile's resume tracks to them.
 
     Returns the resume track tags. Raises ValueError for an empty or unknown pick.
     """
     from core import search
     filt = yaml.safe_load(FILTERS_PATH.read_text(encoding="utf-8")) or {}
-    for kind, picked in (("topics", topics), ("levels", levels)):
+    for kind, picked in (("paths", chosen), ("levels", levels)):
         unknown = set(picked) - set(filt.get(kind) or {})
         if not picked or unknown:
             raise ValueError(f"pick at least one of the known {kind}"
                              + (f"; unknown: {', '.join(sorted(unknown))}" if unknown else ""))
-    search.save({"topics": list(dict.fromkeys(topics)), "levels": list(dict.fromkeys(levels))},
+    search.save({"paths": list(dict.fromkeys(chosen)), "levels": list(dict.fromkeys(levels))},
                 SEARCH_PATH)
     profile, tags = _search_tracks(load_profile())
     # Without a profile.json, load_profile trims the template instead. Writing one here
@@ -500,13 +500,10 @@ def save_search(topics: list[str], levels: list[str]) -> list[str]:
 
 def _search_tracks(profile: dict) -> tuple[dict, list[str]]:
     """The profile with its resume tracks matched to your search picks, and the track tags."""
-    from core import paths as core_paths
     from core import search
     filt = yaml.safe_load(FILTERS_PATH.read_text(encoding="utf-8")) or {}
     tags = search.tracks(filt, search.load(filt, SEARCH_PATH))
-    template = json.loads((core_paths.REPO_ROOT / "data" / "profile.example.json")
-                          .read_text(encoding="utf-8"))
-    return search.apply_tracks(profile, tags, template), tags
+    return search.apply_tracks(profile, tags, filt.get("paths") or {}), tags
 
 
 # ── Answer bank ──────────────────────────────────────────────────────────────────────
@@ -718,13 +715,13 @@ def setup_status() -> dict:
     })
 
     # What to search. The defaults work, so this is never blocking. It comes before the
-    # resumes because the chosen topics decide which resume tracks the page asks for.
+    # resumes because the chosen paths decide which resume tracks the page asks for.
     steps.append({
         "id": "search", "title": "What to search",
         "done": SEARCH_PATH.exists(), "blocking": False, "manual": False, "optional": False,
         "detail": ("Saved. Change it any time on the Search page." if SEARCH_PATH.exists()
-                   else "Pick your topics and experience levels. Until you do, the default "
-                        "tech topics at entry and mid level are searched."),
+                   else "Pick your career paths and experience levels. Until you do, quant, AI, "
+                        "data science, and software roles at entry and mid level are searched."),
         "link": "/search",
     })
 
@@ -763,7 +760,10 @@ def setup_status() -> dict:
 
     # 4. Resumes: only the apply half needs them. The page renders an upload button per
     # track from `tracks`, so this step needs no command.
-    tracks = resume_status()
+    # Name each track after its career path, so "data_engineering" reads as a job title.
+    catalog = (yaml.safe_load(FILTERS_PATH.read_text(encoding="utf-8")) or {}).get("paths") or {}
+    tracks = [{**t, "label": (catalog.get(t["tag"]) or {}).get("label", t["tag"])}
+              for t in resume_status()]
     n_resumes = sum(1 for t in tracks if t["cached"])
     steps.append({
         "id": "resumes", "title": "Resume PDFs",

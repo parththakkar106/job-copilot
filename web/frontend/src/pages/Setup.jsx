@@ -42,13 +42,13 @@ function ResumeUploads({ tracks, onDone }) {
 
   return (
     <ul className="setup-resumes">
-      {tracks.map(({ tag, cached, synced }) => (
+      {tracks.map(({ tag, label, cached, synced }) => (
         <li key={tag}>
           <label>
-            <b>{tag}</b>{' '}
+            <b>{label || tag}</b>{' '}
             <span className="muted">{cached ? `saved${synced ? ` ${synced}` : ''}` : 'no PDF yet'}</span>{' '}
             <input type="file" accept="application/pdf" disabled={!!uploading}
-                   aria-label={`Upload the ${tag} resume PDF`}
+                   aria-label={`Upload the ${label || tag} resume PDF`}
                    onChange={(e) => { upload(tag, e.target.files[0]); e.target.value = '' }} />
           </label>
           {uploading === tag && <span className="muted"> Uploading…</span>}

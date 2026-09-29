@@ -294,7 +294,7 @@ def get_search():
 @router.put("/search")
 def put_search(body: SearchPicks):
     try:
-        tracks = svc.save_search(body.topics, body.levels)
+        tracks = svc.save_search(body.paths, body.levels)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"ok": True, "tracks": tracks}

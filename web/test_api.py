@@ -309,26 +309,27 @@ def main() -> None:
         assert tpl["detail"] == f"{len(tpl['unfilled'])} field(s) still unset.", tpl; checks += 1
 
         # 8e. Search picks: the catalog comes back with the defaults marked, bad picks are
-        # refused, and a save narrows the profile's resume tracks to the chosen fields.
+        # refused, and a save matches the profile's resume tracks to the chosen paths.
         so = c.get("/api/search").json()
-        assert len(so["topics"]) == 20 and [l["key"] for l in so["levels"]] == [
+        assert len(so["paths"]) == 20 and [l["key"] for l in so["levels"]] == [
             "entry", "mid", "senior"], so; checks += 1
         assert so["tracks"] == ["quant", "ai", "ds", "tech"], so; checks += 1
-        bad = [{"topics": [], "levels": ["entry"]}, {"topics": ["nope"], "levels": ["entry"]},
-               {"topics": ["backend"], "levels": []}]
+        bad = [{"paths": [], "levels": ["entry"]}, {"paths": ["nope"], "levels": ["entry"]},
+               {"paths": ["qa"], "levels": []}]
         assert all(c.put("/api/search", json=b).status_code == 400 for b in bad); checks += 1
         assert not (tmp / "search.yaml").exists(), "a refused pick must not be saved"; checks += 1
-        sv = c.put("/api/search", json={"topics": ["backend", "nlp"], "levels": ["entry"]}).json()
-        assert sv == {"ok": True, "tracks": ["ai", "tech"]}, sv; checks += 1
+        sv = c.put("/api/search", json={"paths": ["qa", "security"], "levels": ["entry"]}).json()
+        assert sv == {"ok": True, "tracks": ["security", "qa"]}, sv; checks += 1
         prof = json.loads((tmp / "profile.json").read_text(encoding="utf-8"))
-        assert [t["tag"] for t in prof["resume_tracks"]] == ["ai", "tech"], prof; checks += 1
-        assert prof["default_resume_tag"] in ("ai", "tech"), prof; checks += 1
+        assert [t["tag"] for t in prof["resume_tracks"]] == ["security", "qa"], prof; checks += 1
+        assert prof["default_resume_tag"] == "security", prof; checks += 1
+        assert prof["resume_tracks"][0]["local_path"] == "resumes/security.pdf"; checks += 1
         st = c.get("/api/setup/status").json()["steps"]
         assert next(s for s in st if s["id"] == "search")["done"]; checks += 1
         assert [t["tag"] for t in next(s for s in st if s["id"] == "resumes")["tracks"]] == [
-            "ai", "tech"]; checks += 1
+            "security", "qa"]; checks += 1
         again = c.get("/api/search").json()
-        assert {t["key"] for t in again["topics"] if t["selected"]} == {"backend", "nlp"}; checks += 1
+        assert {p["key"] for p in again["paths"] if p["selected"]} == {"qa", "security"}; checks += 1
 
         # 8b. Drafting flag: defaults ON, PUT flips it and persists to the shared prefs.
         assert c.get("/api/prefs/drafts").json()["enabled"] is True; checks += 1

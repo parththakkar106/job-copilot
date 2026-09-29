@@ -51,7 +51,7 @@ class ProfileUpdate(BaseModel):
 
 
 class SearchPicks(BaseModel):
-    topics: list[str]
+    paths: list[str]
     levels: list[str]
 
 

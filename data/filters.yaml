@@ -1,11 +1,11 @@
-# Everything here is editable. The search topics and levels follow the feed sources.
+# Everything here is editable. The career paths and levels follow the feed sources.
 # 10 was discarding ~93% of the eligible pool: measured against the 2026-07-29 dump,
 # 10d gave 64 eligible roles, 30d gives 161, no limit at all gives 852. Widened 2026-08-01.
 freshness_days: 30
 
 # Whole-list sources, fetched IN ADDITION to every board in companies.yaml. companies.yaml
 # can only find roles at companies already on it; a feed is how employers nobody thought to
-# add get discovered at all. Everything below still goes through the same fields /
+# add get discovered at all. Everything below still goes through the same paths /
 # seniority / location / freshness filters — a feed entry is a lead, not a verdict.
 #
 # Roles whose posting URL is on a board the extension has no adapter for do NOT enter
@@ -19,79 +19,162 @@ sources:
     # the branch its bot writes to; `main` lags. ~12MB, one GET per run.
     url: https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json
 
-# The topics you can search, grouped by `field`. Pick yours on the console's Search page,
-# which saves the choice to search.yaml. Without a search.yaml, topics marked
-# `default: true` are searched.
+# The career paths you can search. Pick yours on the console's Search page, which saves
+# the choice to search.yaml. Without a search.yaml, paths marked `default: true` are
+# searched.
 #
-# A title matching none of the chosen topics' keywords is dropped as irrelevant. Keywords
-# match as whole words, with an optional plural "s". Each `field` is also a resume track:
-# the fields of your chosen topics decide which resumes the Setup page asks for.
-# Priority: quant > ai > ds > tech, so "ML Engineer" goes to ai, and "Quant Researcher"
-# goes to quant even though it also says "engineer". Keep the fields in that order here.
+# Each path is also a resume track. You upload one resume per path you pick, and a job
+# from a path gets that path's resume.
+#   keywords:         title words that put a job in this path. A title that matches no
+#                     chosen path is dropped. Keywords match as whole words, with an
+#                     optional plural "s".
+#   resume_keywords:  words in a job description that point to this path's resume. The
+#                     resume picker uses them when a job has no path. They become the
+#                     track's `keywords` in profile.json, where you can edit them.
+#
+# Order sets priority: a title goes to the first path, from the top, with a matching
+# keyword. So "Quant Developer" goes to quant, "Security Software Engineer" goes to
+# security, and "Software Engineer in Test" goes to qa, all before general software.
 #
 # Bare "engineer" and bare "analyst" are deliberately absent. Measured on 2026-08-01, they
 # pulled in Sales, Solutions, and Support Engineer and Business Analyst roles (+152 and +59
 # at 30 days, mostly irrelevant).
-topics:
+paths:
   quant:
-    {label: Quant research and trading, field: quant, default: true,
-     keywords: [quant, quantitative]}
-  ml_engineering:
-    {label: Machine learning engineering, field: ai, default: true,
-     keywords: [machine learning, ml engineer, "ai/ml"]}
-  ai_engineering:
-    {label: AI and LLM engineering, field: ai, default: true,
-     keywords: [ai engineer, llm, genai, generative ai, forward deployed]}
-  deep_learning:
-    {label: Deep learning, field: ai, default: true, keywords: [deep learning]}
-  ai_research:
-    {label: AI research, field: ai, default: true,
-     keywords: [research scientist, research engineer, applied scientist]}
-  computer_vision:
-    {label: Computer vision, field: ai, default: true, keywords: [computer vision]}
-  nlp:
-    {label: Natural language processing, field: ai, default: true,
-     keywords: [nlp, natural language processing]}
-  ml_infra:
-    {label: ML infrastructure and MLOps, field: ai, default: true,
-     keywords: [mlops, ml infrastructure, ml platform, ml systems]}
-  data_science:
-    {label: Data science, field: ds, default: true,
-     keywords: [data scientist, data science, decision scientist, quantitative analyst]}
-  data_engineering:
-    {label: Data engineering, field: ds, default: true,
-     keywords: [data engineer, analytics engineer]}
-  analytics:
-    {label: Data and business analytics, field: ds, default: false,
-     keywords: [data analyst, business intelligence, bi engineer, product analyst]}
-  software_engineering:
-    {label: Software engineering (general), field: tech, default: true,
-     keywords: [software engineer, software developer, member of technical staff, new grad]}
-  backend:
-    {label: Backend, field: tech, default: true,
-     keywords: [backend engineer, back end engineer, backend developer]}
-  frontend:
-    {label: Frontend and web, field: tech, default: false,
-     keywords: [frontend engineer, front end engineer, frontend developer, web developer]}
-  full_stack:
-    {label: Full stack and product, field: tech, default: true,
-     keywords: [full stack, fullstack, product engineer]}
-  infrastructure:
-    {label: "Infrastructure, cloud, and SRE", field: tech, default: true,
-     keywords: [platform engineer, infrastructure engineer, site reliability, cloud engineer,
-                devops]}
-  distributed_systems:
-    {label: Systems and distributed systems, field: tech, default: true,
-     keywords: [systems engineer, distributed systems]}
+    label: Quant research and trading
+    default: true
+    keywords: [quant, quantitative]
+    resume_keywords: [quant, quantitative, trading, trader, hft, systematic, alpha, derivatives]
   security:
-    {label: Security, field: tech, default: true, keywords: [security engineer]}
+    label: Cybersecurity
+    default: false
+    # Bare "security" catches "Software Engineer, Security". It is only searched when you
+    # pick this path.
+    keywords: [security, cybersecurity, appsec, penetration tester, pentester, soc analyst,
+               threat intelligence, incident response, detection engineer, red team]
+    resume_keywords: [security, vulnerability, threat, siem, soc, incident response,
+                      penetration testing, owasp, iam, cryptography, malware, forensics]
+  qa:
+    label: QA and test engineering
+    default: false
+    keywords: [qa, quality assurance, test engineer, sdet, software engineer in test,
+               software development engineer in test, test automation, automation engineer,
+               quality engineer]
+    resume_keywords: [qa, testing, test automation, selenium, cypress, playwright, test plan,
+                      regression, quality assurance, sdet]
+  ai:
+    label: AI and machine learning
+    default: true
+    keywords: [machine learning, ml engineer, "ai/ml", ai engineer, llm, genai, generative ai,
+               forward deployed, deep learning, research scientist, research engineer,
+               applied scientist, computer vision, nlp, natural language processing, mlops,
+               ml infrastructure, ml platform, ml systems]
+    resume_keywords: [machine learning, ml, ai, artificial intelligence, deep learning, nlp,
+                      llm, genai, generative ai, agentic, computer vision, mlops, inference,
+                      applied scientist, research engineer, research scientist]
+  data_engineering:
+    label: Data engineering
+    default: false
+    keywords: [data engineer, analytics engineer, etl developer, data platform engineer]
+    resume_keywords: [data engineer, etl, data pipeline, spark, airflow, kafka, dbt,
+                      data warehouse, snowflake, bigquery]
+  ds:
+    label: Data science
+    default: true
+    keywords: [data scientist, data science, decision scientist, statistician]
+    resume_keywords: [data scientist, data science, decision scientist, statistics,
+                      statistician, experimentation, a/b testing, causal inference]
+  analytics:
+    label: Data and business analytics
+    default: false
+    keywords: [data analyst, business analyst, business intelligence, bi engineer,
+               bi developer, product analyst]
+    resume_keywords: [sql, tableau, power bi, looker, dashboard, reporting, kpi, excel]
+  devops:
+    label: DevOps, SRE, and cloud
+    default: false
+    keywords: [devops, site reliability, sre, platform engineer, infrastructure engineer,
+               cloud engineer, cloud architect, build engineer, release engineer,
+               reliability engineer]
+    resume_keywords: [kubernetes, terraform, aws, gcp, azure, ci/cd, docker, observability,
+                      linux, ansible, on-call]
+  embedded:
+    label: Embedded and firmware
+    default: false
+    keywords: [embedded, firmware]
+    resume_keywords: [firmware, embedded, rtos, microcontroller, embedded linux,
+                      device driver, bare metal]
+  hardware:
+    label: Hardware and chip design
+    default: false
+    keywords: [hardware engineer, asic, fpga, rtl, design verification, verification engineer,
+               chip design, silicon engineer, electrical engineer]
+    resume_keywords: [verilog, systemverilog, vhdl, fpga, asic, rtl, uvm, pcb, timing closure]
+  robotics:
+    label: Robotics and autonomy
+    default: false
+    keywords: [robotics, autonomy, autonomous, perception engineer, controls engineer,
+               motion planning]
+    resume_keywords: [ros, slam, perception, controls, motion planning, kinematics,
+                      sensor fusion]
   mobile:
-    {label: Mobile (iOS and Android), field: tech, default: false,
-     keywords: [ios engineer, android engineer, mobile engineer, ios developer,
-                android developer]}
+    label: Mobile (iOS and Android)
+    default: false
+    keywords: [ios, android, mobile engineer, mobile developer, react native, flutter]
+    resume_keywords: [ios, android, swift, kotlin, swiftui, jetpack compose, react native,
+                      flutter]
+  frontend:
+    label: Frontend and web
+    default: false
+    keywords: [frontend, front end, web developer, web engineer, ui engineer]
+    resume_keywords: [react, javascript, typescript, css, html, frontend, vue, angular,
+                      next js, accessibility]
+  game:
+    label: Game development
+    default: false
+    keywords: [game developer, game engineer, game programmer, gameplay, graphics engineer,
+               unity developer, unreal]
+    resume_keywords: [unity, unreal, gameplay, graphics, opengl, directx, vulkan, shaders]
+  network:
+    label: Network engineering
+    default: false
+    keywords: [network engineer, network administrator, network architect]
+    resume_keywords: [cisco, ccna, routing, switching, bgp, ospf, firewall, tcp/ip, vpn]
+  it:
+    label: IT support and systems administration
+    default: false
+    keywords: [it support, help desk, helpdesk, desktop support, system administrator,
+               systems administrator, sysadmin, it specialist, it technician]
+    resume_keywords: [active directory, windows server, office 365, troubleshooting,
+                      ticketing, jamf, intune, itil]
+  database:
+    label: Database engineering and administration
+    default: false
+    keywords: [database administrator, dba, database engineer, database developer,
+               sql developer]
+    resume_keywords: [sql, postgresql, mysql, oracle, query optimization, replication,
+                      indexing, backup]
   solutions:
-    {label: Solutions architecture, field: tech, default: true,
-     keywords: [solutions architect]}
+    label: Solutions and sales engineering
+    default: false
+    keywords: [solutions architect, solutions engineer, sales engineer, customer engineer,
+               implementation engineer]
+    resume_keywords: [customer, pre-sales, demo, integration, proof of concept, stakeholder,
+                      architecture]
+  design:
+    label: UX and product design
+    default: false
+    keywords: [ux designer, ui designer, product designer, ux researcher, interaction designer]
+    resume_keywords: [figma, user research, prototyping, wireframes, design systems,
+                      usability]
+  tech:
+    label: Software engineering (backend, full stack, general)
+    default: true
+    keywords: [software engineer, software developer, swe, sde, member of technical staff,
+               new grad, backend, back end, full stack, fullstack, product engineer,
+               systems engineer, distributed systems, application developer]
+    resume_keywords: [software, engineer, developer, backend, full stack, fullstack, platform,
+                      swe, sde, distributed systems, member of technical staff, new grad]
 
 # Experience levels, read from the job title. A title gets the first level, from the
 # bottom of this list up, with one of its `titles` words. A title with none is entry.

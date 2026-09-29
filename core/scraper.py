@@ -52,7 +52,6 @@ import yaml
 from core import paths, search
 
 UA = "job-copilot/2.0 (personal job search)"
-FIELD_PRIORITY = ("quant", "ai", "ds", "tech")  # order matters for classification
 
 # The four boards the extension has an adapter for. Everything else is apply-by-hand:
 # extension/manifest.json only injects fill.js on these hosts, so a role anywhere else
@@ -339,9 +338,10 @@ def parse_ashby(company, slug, tier, raw) -> list[Job]:
 def classify_field(title: str, fields_cfg: dict) -> str | None:
     # Word-bounded with plural tolerance ("llm" matches "LLMs"), NOT a raw substring:
     # bare `in` made "quant" match "Quantum Computing" and "ai" hide inside other words.
+    # The first path in fields_cfg order wins, so the catalog order is the priority.
     t = norm(title)
-    for fld in FIELD_PRIORITY:
-        for kw in fields_cfg.get(fld, []):
+    for fld, kws in fields_cfg.items():
+        for kw in kws:
             p = norm(kw)
             if p and re.search(rf"\b{re.escape(p)}s?\b", t):
                 return fld
@@ -807,7 +807,7 @@ def run(args):
     sel = search.load(filt)
     fields_cfg = search.fields(filt, sel)
     filt["seniority"] = search.seniority(filt, sel)
-    print(f"searching {len(sel['topics'])} topics at levels: {', '.join(sel['levels'])}",
+    print(f"searching {len(sel['paths'])} paths at levels: {', '.join(sel['levels'])}",
           file=sys.stderr)
 
     # --only: ONE company's board, right now. The referral flow's tier 3 needs this — a
@@ -970,7 +970,7 @@ def run(args):
 def render_digest(pipeline: list[Job], dream: list[Job], manual: list[Job] | None = None) -> str:
     manual = manual or []
     lines = [f"# Job queue — {datetime.now():%Y-%m-%d}", ""]
-    for fld in FIELD_PRIORITY:
+    for fld in dict.fromkeys(j.field for j in pipeline if j.field):
         group = [j for j in pipeline if j.field == fld]
         if not group:
             continue
@@ -1019,7 +1019,7 @@ def render_digest_html(pipeline: list[Job], dream: list[Job],
                 f'{_esc(j.title)}</a><br>'
                 f'<span style="color:#666;font-size:13px;">{meta}{tail}</span></li>')
 
-    for fld in FIELD_PRIORITY:
+    for fld in dict.fromkeys(j.field for j in pipeline if j.field):
         group = [j for j in pipeline if j.field == fld]
         if not group:
             continue
@@ -1089,37 +1089,48 @@ def selftest():
     assert is_fresh("2026-01-01T00:00:00+00:00", 14) is False
     assert classify_field("Quantitative Researcher", fields) == "quant"
 
-    # Topics and levels: only the chosen topics' keywords are searched, and a title is kept
+    # Paths and levels: only the chosen paths' keywords are searched, and a title is kept
     # only at a chosen level. Checked against the shipped catalog, so a bad edit fails here.
     import tempfile
     cat = load_yaml(paths.REPO_ROOT / "data" / "filters.yaml")
     # An unquoted comma in a flow mapping silently splits a label into extra keys.
-    assert all(set(t) == {"label", "field", "default", "keywords"}
-               for t in cat["topics"].values()), "a topic has a stray or missing key"
+    assert all(set(p) == {"label", "default", "keywords", "resume_keywords"}
+               for p in cat["paths"].values()), "a path has a stray or missing key"
     with tempfile.TemporaryDirectory() as d:
         pick = Path(d) / "search.yaml"
-        search.save({"topics": ["backend", "nlp"], "levels": ["entry"]}, pick)
+        search.save({"paths": ["qa", "security"], "levels": ["entry"]}, pick)
         sel = search.load(cat, pick)
     picked = search.fields(cat, sel)
-    assert search.tracks(cat, sel) == ["ai", "tech"], picked
-    assert classify_field("Backend Engineer", picked) == "tech"
-    assert classify_field("Data Scientist", picked) is None
+    assert search.tracks(cat, sel) == ["security", "qa"], picked      # catalog order
+    assert classify_field("Application Security Engineer", picked) == "security"
+    assert classify_field("Software Engineer in Test", picked) == "qa"
+    assert classify_field("Backend Engineer", picked) is None
+    every = search.fields(cat, {"paths": list(cat["paths"])})
+    for title, want in [("Security Software Engineer", "security"),
+                        ("Software Engineer in Test", "qa"), ("Quant Developer", "quant"),
+                        ("Data Engineer", "data_engineering"), ("iOS Engineer", "mobile"),
+                        ("Front-End Developer", "frontend"), ("Site Reliability Engineer", "devops"),
+                        ("Embedded Software Engineer", "embedded"), ("Backend Engineer", "tech")]:
+        assert classify_field(title, every) == want, (title, classify_field(title, every))
     sen = search.seniority(cat, sel)
-    assert passes_seniority("Backend Engineer", sen) is True
-    assert passes_seniority("Senior Backend Engineer", sen) is False
+    assert passes_seniority("Security Engineer", sen) is True
+    assert passes_seniority("Senior Security Engineer", sen) is False
     sen["keep"] = ["mid", "senior"]
-    assert passes_seniority("Senior Backend Engineer", sen) is True
+    assert passes_seniority("Senior Security Engineer", sen) is True
     assert passes_seniority("Senior Staff Engineer", sen) is True     # staff -> senior
-    assert passes_seniority("Backend Engineer", sen) is False
-    assert passes_seniority("Backend Engineer Intern", sen) is False  # always excluded
+    assert passes_seniority("Security Engineer", sen) is False
+    assert passes_seniority("Security Engineer Intern", sen) is False  # always excluded
     defaults = search.load(cat, Path(d) / "missing.yaml")
     assert defaults["levels"] == ["entry", "mid"], defaults
-    assert "frontend" not in defaults["topics"] and "backend" in defaults["topics"]
-    template = {"resume_tracks": [{"tag": t} for t in ("quant", "ai", "ds", "tech")]}
-    prof = {"resume_tracks": [{"tag": "ds", "keep": 1}, {"tag": "mine"}],
+    assert defaults["paths"] == ["quant", "ai", "ds", "tech"], defaults
+    prof = {"resume_tracks": [{"tag": "ds", "keep": 1}, {"tag": "mine"}, {"tag": "qa", "keywords": ["x"]}],
             "default_resume_tag": "ds"}
-    search.apply_tracks(prof, ["ai", "tech"], template)
-    assert [t["tag"] for t in prof["resume_tracks"]] == ["mine", "ai", "tech"], prof
+    search.apply_tracks(prof, ["security", "qa"], cat["paths"])
+    got = {t["tag"]: t for t in prof["resume_tracks"]}
+    assert list(got) == ["mine", "qa", "security"], prof
+    assert got["qa"]["keywords"] == ["x"]                              # existing track kept as is
+    assert got["security"]["local_path"] == "resumes/security.pdf"
+    assert "owasp" in got["security"]["keywords"]
     assert prof["default_resume_tag"] == "mine"
     assert classify_field("Machine Learning Engineer", fields) == "ai"
     assert classify_field("Recruiter", fields) is None

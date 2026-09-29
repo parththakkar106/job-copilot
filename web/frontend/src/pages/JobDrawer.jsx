@@ -2,8 +2,6 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useToast } from '../toast.jsx'
 
-const RESUME_TAGS = ['quant', 'ds', 'tech', 'ai']
-
 // The AI pass's actions (bridge/aipass.py decide()). Only fill and replace write to the form.
 const AI_VERB = { fill: 'AI filled', replace: 'AI replaced', flag: 'flagged, not written', propose: 'suggested, not written' }
 const WRITES = new Set(['fill', 'replace'])
@@ -63,6 +61,12 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
   const [answers, setAnswers] = useState({})
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
+  // Your resume tracks follow the career paths you search, so read them from the profile.
+  const [tags, setTags] = useState([])
+
+  useEffect(() => {
+    api.profile().then((p) => setTags((p.resume_tracks || []).map((t) => t.tag))).catch(() => {})
+  }, [])
 
   const load = async () => {
     try {
@@ -163,7 +167,7 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
         <div className="drawer-section">
           <div className="section-label">Resume track</div>
           <div className="resume-picker">
-            {RESUME_TAGS.map((t) => (
+            {tags.map((t) => (
               <button key={t} className={`chip ${pinned === t ? 'chip-active' : ''}`} onClick={() => setResume(t)}>{t}</button>
             ))}
             <span className="hint">{pinned ? `pinned: ${pinned}` : `auto: ${rec.resume || 'best match'}`}</span>
