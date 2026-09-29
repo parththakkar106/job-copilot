@@ -839,6 +839,8 @@ select { cursor: pointer; }
 .setup-holes { margin-top: 8px; font-size: .84rem; }
 .setup-resumes { list-style: none; margin: 8px 0 0; padding: 0; font-size: .88rem; }
 .setup-resumes li { margin: 6px 0; }
+.setup-ext { margin: 8px 0 0; padding-left: 20px; font-size: .88rem; }
+.setup-ext li { margin: 6px 0; overflow-wrap: anywhere; }
 .setup-resumes input[type=file] { max-width: 100%; }
 .setup-holes summary { cursor: pointer; color: var(--muted, #6b7280); }
 /* Long profiles produce 40+ entries; cap it so one step cannot push the rest off screen. */

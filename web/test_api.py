@@ -275,6 +275,10 @@ def main() -> None:
         assert st["core_done"] == sum(
             1 for s in st["steps"] if not s["optional"] and s["done"]), st; checks += 1
 
+        # 8c-ii. The extension step names the folder to load, and it is the real folder.
+        ext = next(s for s in st["steps"] if s["id"] == "extension")
+        assert Path(ext["path"], "manifest.json").is_file(), ext; checks += 1
+
         # 8d. Resume upload writes the cache the extension attaches from, and only a PDF.
         tag = json.loads((tmp / "profile.json").read_text(encoding="utf-8"))["resume_tracks"][0]["tag"]
         assert c.put(f"/api/resumes/{tag}", content=b"not a pdf").status_code == 400; checks += 1

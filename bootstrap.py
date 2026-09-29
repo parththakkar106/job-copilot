@@ -24,6 +24,7 @@ What this deliberately does NOT do:
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -43,7 +44,30 @@ def say(step: str, msg: str) -> None:
     print(f"[{step}] {msg}", flush=True)
 
 
-def deps() -> bool:
+def python() -> str:
+    """The interpreter to install into and run with.
+
+    Outside a virtual environment, create .venv and use it, so these packages never mix
+    with your other Python projects. start.py and the daily run both look for .venv.
+    Inside a virtual environment, use it as is.
+    """
+    if sys.prefix != sys.base_prefix:
+        say("python", "using the active virtual environment")
+        return sys.executable
+    venv_py = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if venv_py.exists():
+        say("python", "using .venv")
+        return str(venv_py)
+    say("python", "creating .venv for this project's packages")
+    try:
+        subprocess.run([sys.executable, "-m", "venv", str(ROOT / ".venv")], check=True)
+    except subprocess.CalledProcessError:
+        say("python", "could not create .venv; installing into this Python instead")
+        return sys.executable
+    return str(venv_py)
+
+
+def deps(py: str) -> bool:
     """Install the Python requirements. Returns False if it failed, so we can carry on and
     report everything at the end rather than dying on the first problem."""
     reqs = [ROOT / "bridge" / "requirements.txt", ROOT / "web" / "requirements.txt"]
@@ -51,7 +75,7 @@ def deps() -> bool:
     if not present:
         say("deps", "no requirements files found, skipping")
         return True
-    cmd = [sys.executable, "-m", "pip", "install", "-q"]
+    cmd = [py, "-m", "pip", "install", "-q"]
     for r in present:
         cmd += ["-r", str(r)]
     say("deps", "installing Python packages (this can take a minute)")
@@ -105,36 +129,37 @@ def hooks() -> None:
                      "       git config core.hooksPath .githooks")
 
 
-def extension() -> None:
+def extension(py: str) -> None:
     """Stage your config into extension/, so the folder is ready to load in Chrome.
 
     The extension reads its own copy of profile.json and taxonomy.json, and those copies
     are gitignored. Without this step, Chrome would load an extension with no profile.
     """
     try:
-        subprocess.run([sys.executable, str(ROOT / "extension" / "build.py")], cwd=ROOT,
+        subprocess.run([py, str(ROOT / "extension" / "build.py")], cwd=ROOT,
                        check=True, capture_output=True)
         say("extension", f"built; load this folder in Chrome: {ROOT / 'extension'}")
     except subprocess.CalledProcessError:
         say("extension", "build failed; use Rebuild extension on the console's Profile page")
 
 
-def launch() -> None:
+def launch(py: str) -> None:
     say("launch", "starting the console; a setup checklist opens in your browser")
     print()
     try:
-        subprocess.run([sys.executable, str(ROOT / "start.py")], check=False)
+        subprocess.run([py, str(ROOT / "start.py")], check=False)
     except KeyboardInterrupt:
         pass
 
 
 def main() -> int:
     print("job copilot - first-time setup\n")
-    ok = deps()
+    py = python()
+    ok = deps(py)
     config()
     hooks()
     if ok:
-        extension()
+        extension(py)
     print()
     say("next", "The console will show a checklist. Things it cannot do for you:")
     say("next", "  1. load the extension at chrome://extensions > Developer mode > Load unpacked")
@@ -145,7 +170,7 @@ def main() -> int:
     if not ok:
         say("next", "Dependencies did not install cleanly - fix that first, then: python start.py")
         return 1
-    launch()
+    launch(py)
     return 0
 
 

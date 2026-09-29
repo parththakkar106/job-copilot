@@ -20,8 +20,8 @@ It is built for 5 to 8 careful applications a day, not for mass applying.
 
 You need Python 3.10 or later and Google Chrome.
 
-1. Run the setup script. It installs dependencies, creates your config files, builds the
-   extension, and opens the console in your browser:
+1. Run the setup script. It installs dependencies into a `.venv` folder, creates your
+   config files, builds the extension, and opens the console in your browser:
 
    ```bash
    python bootstrap.py
@@ -30,7 +30,8 @@ You need Python 3.10 or later and Google Chrome.
 2. In the console, fill in **Your details**: name, contact, work authorization, and EEO
    answers.
 3. Load the extension. Open `chrome://extensions`, turn on **Developer mode**, click
-   **Load unpacked**, and select the `extension/` folder.
+   **Load unpacked**, and select the `extension/` folder. The Setup page has buttons that
+   copy the address and the folder path.
 4. On the console's **Setup** page, upload a resume PDF for each resume track you use.
 5. Optional: edit the companies on the **Companies** page. Ten examples are already there.
 

@@ -666,12 +666,15 @@ def setup_status() -> dict:
     steps.append({
         "id": "extension", "title": "Chrome extension",
         "done": staged, "blocking": False, "manual": True, "optional": False,
-        "detail": ("Config staged. Load it once at chrome://extensions > Developer mode > "
-                   "Load unpacked > select the extension/ folder."
+        "detail": ("Built. Load it once in Chrome, then rebuild from the Profile page "
+                   "after you edit your details."
                    if staged else
                    "Not staged yet - use Rebuild extension on the Profile page, then load "
                    "it at chrome://extensions."),
         "link": "/profile",
+        # The page offers this as a copy button. Chrome blocks links to chrome:// pages,
+        # so copying the address and the folder is as close as a web page can get.
+        "path": str(core_paths.REPO_ROOT / "extension"),
     })
 
     # 3. Companies: usable immediately thanks to the shipped example, so "done" means the

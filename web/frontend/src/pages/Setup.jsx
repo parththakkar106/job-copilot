@@ -58,6 +58,33 @@ function ResumeUploads({ tracks, onDone }) {
   )
 }
 
+// Copy buttons for loading the extension. Chrome does not let a web page open a chrome://
+// address, so the page copies it for you to paste into the address bar.
+function ExtensionLoad({ path }) {
+  const notify = useToast()
+  const copy = async (text, what) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      notify(`Copied ${what}.`, 'success')
+    } catch {
+      notify(`Could not copy. Select it and copy it by hand: ${text}`, 'error')
+    }
+  }
+  return (
+    <ol className="setup-ext">
+      <li>
+        Open <code>chrome://extensions</code>{' '}
+        <button className="btn" onClick={() => copy('chrome://extensions', 'the address')}>Copy address</button>
+      </li>
+      <li>Turn on <b>Developer mode</b>, then click <b>Load unpacked</b>.</li>
+      <li>
+        Select <code>{path}</code>{' '}
+        <button className="btn" onClick={() => copy(path, 'the folder path')}>Copy path</button>
+      </li>
+    </ol>
+  )
+}
+
 function Step({ step, index, onGo, onRecheck, onRefresh, busy }) {
   const { id, title, detail, done, manual, optional, unfilled, link } = step
   return (
@@ -82,6 +109,7 @@ function Step({ step, index, onGo, onRecheck, onRefresh, busy }) {
         )}
 
         {step.tracks && <ResumeUploads tracks={step.tracks} onDone={onRefresh} />}
+        {step.path && <ExtensionLoad path={step.path} />}
 
         <div className="setup-actions">
           {link && !done && (

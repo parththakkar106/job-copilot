@@ -44,13 +44,19 @@ templates, builds the extension, and opens the console on a setup checklist that
 through the rest in the browser. Requires Python 3.10+. Node is not needed, because the
 console UI ships prebuilt in `web/frontend/dist/`.
 
+Unless you run it inside a virtual environment, `bootstrap.py` creates `.venv` and installs
+the packages there, so they never mix with your other Python projects. `start.py` and the
+daily run use `.venv` automatically. For the CLI commands in this guide, run them with
+`.venv/Scripts/python` (Windows) or `.venv/bin/python` instead of `python`, or activate the
+environment first.
+
 **Four steps get you to a filled application**, and only the first is required. The
 extension is the part that does the work; the rest of the list is about feeding it:
 
 | Step | What it means |
 |---|---|
 | **Your details** | Name, contact, work authorization, EEO answers. Edited as a form; `checkfill` counts what's left |
-| **Extension** | The fill engine itself. `bootstrap.py` builds it. Load it once at `chrome://extensions`, and rebuild from the Profile page after profile edits |
+| **Extension** | The fill engine itself. `bootstrap.py` builds it. Load it once in Chrome, using the copy buttons on the Setup page, and rebuild from the Profile page after profile edits |
 | **Companies** | Ten real API-verified examples ship, so a scrape works immediately. Edit any tier to make the list yours |
 | **Resumes** | Only needed for the apply half. Upload one PDF per track on the Setup page, or sync from a folder (see [Resumes](#resumes)) |
 
@@ -358,13 +364,10 @@ Every suite is a plain script with its own `main()` — there is no pytest, no u
 discovery, and no conftest. Run each file directly; each prints an `N/N checks passed`
 line and exits non-zero on failure.
 
-One-time setup. The venv is optional but keeps the test-only dep out of the interpreter
-the bridge runs on:
+One-time setup. `bootstrap.py` already made `.venv`, so add the test-only dependency to it:
 
 ```bash
-python -m venv .venv
-.venv/Scripts/python -m pip install -r bridge/requirements.txt \
-    -r web/requirements.txt -r requirements-dev.txt
+.venv/Scripts/python -m pip install -r requirements-dev.txt
 ```
 
 ```bash

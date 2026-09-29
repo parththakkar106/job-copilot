@@ -58,7 +58,22 @@ IS_WIN = os.name == "nt"
 NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 BREAKAWAY = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
-PY = sys.executable
+VENV_PY = REPO_ROOT / ".venv" / ("Scripts/python.exe" if IS_WIN else "bin/python")
+
+
+def _python() -> str:
+    """The interpreter the services run on.
+
+    If this interpreter lacks the console's packages and bootstrap.py made a .venv, use the
+    .venv. A Python that already has the packages keeps working as before.
+    """
+    from importlib.util import find_spec
+    if all(find_spec(m) for m in ("fastapi", "uvicorn", "websockets", "yaml")):
+        return sys.executable
+    return str(VENV_PY) if VENV_PY.exists() else sys.executable
+
+
+PY = _python()
 
 
 # ---------------------------------------------------------------- frontend build ---
