@@ -6,8 +6,8 @@ most of each application form for you, and leaves the final Submit click to you.
 ## What it does
 
 1. **Finds jobs.** It checks company job boards on Greenhouse, Lever, Ashby, and Workday
-   every day. It keeps roles that match your field, are in the US, are recent, and that you
-   have not applied to yet.
+   every day. It keeps roles that match the topics and experience levels you pick, are in
+   the US, are recent, and that you have not applied to yet.
 2. **Fills applications.** A Chrome extension opens each job and fills in your name,
    contact details, work authorization, resume, and any answers you saved before.
 3. **Asks you when it is unsure.** If a question has no saved answer, the extension leaves
@@ -32,8 +32,12 @@ You need Python 3.10 or later and Google Chrome.
 3. Load the extension. Open `chrome://extensions`, turn on **Developer mode**, click
    **Load unpacked**, and select the `extension/` folder. The Setup page has buttons that
    copy the address and the folder path.
-4. On the console's **Setup** page, upload a resume PDF for each resume track you use.
-5. Optional: edit the companies on the **Companies** page. Ten examples are already there.
+4. On the **Search** page, pick what to search. There are 20 tech topics, such as machine
+   learning, AI research, backend, and infrastructure. There are three levels: entry (0 to 3
+   years), mid (4 to 10), and senior (10 or more).
+5. On the **Setup** page, upload a resume PDF for each track your topics need: Quant, AI
+   and ML, Data, or Software.
+6. Optional: edit the companies on the **Companies** page. Ten examples are already there.
 
 After setup, start everything with:
 

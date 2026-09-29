@@ -6,12 +6,14 @@ import AnswerBank from './pages/AnswerBank.jsx'
 import Profile from './pages/Profile.jsx'
 import Companies from './pages/Companies.jsx'
 import Setup from './pages/Setup.jsx'
+import Search from './pages/Search.jsx'
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'bank', label: 'Answer bank' },
   { id: 'profile', label: 'Profile' },
   { id: 'companies', label: 'Companies' },
+  { id: 'search', label: 'Search' },
 ]
 
 // Setup is not in TABS: once you are set up it is clutter, so it only appears as a tab
@@ -127,6 +129,7 @@ function Shell() {
         {tab === 'bank' && <AnswerBank />}
         {tab === 'profile' && <Profile />}
         {tab === 'companies' && <Companies />}
+        {tab === 'search' && <Search />}
         {tab === 'setup' && (
           <Setup onGo={(link) => setTab(link.replace('/', ''))} />
         )}

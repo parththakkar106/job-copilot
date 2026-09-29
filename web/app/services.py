@@ -24,12 +24,14 @@ from .paths import (
     COMPANIES_PATH,
     COMPANIES_WRITE,
     DREAM_PATH,
+    FILTERS_PATH,
     FLUSH_TRIGGER,
     MANUAL_PATH,
     PROFILE_PATH,
     PROFILE_WRITE,
     QUEUE_PATH,
     RUN_TRIGGER,
+    SEARCH_PATH,
     bank_mod,
     pending_mod,
     triage_mod,
@@ -439,7 +441,12 @@ def bridge_alive(timeout: float = 0.4) -> bool:
 def load_profile() -> dict:
     if not PROFILE_PATH.exists():
         return {}
-    return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    # Before the first save, this is the shipped template with every resume track. Trim it
+    # to your search picks, so the Setup page and the first save both match them.
+    if not PROFILE_WRITE.exists() and SEARCH_PATH.exists():
+        profile = _search_tracks(profile)[0]
+    return profile
 
 
 def save_profile(obj: dict) -> None:
@@ -450,6 +457,56 @@ def save_profile(obj: dict) -> None:
     PROFILE_WRITE.parent.mkdir(parents=True, exist_ok=True)
     PROFILE_WRITE.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + "\n",
                              encoding="utf-8")
+
+
+# ── Search topics and levels ─────────────────────────────────────────────────────────
+
+def search_options() -> dict:
+    """The topic and level catalog from filters.yaml, marked with your current picks."""
+    from core import search
+    filt = yaml.safe_load(FILTERS_PATH.read_text(encoding="utf-8")) or {}
+    sel = search.load(filt, SEARCH_PATH)
+    return {
+        "topics": [{"key": k, "label": v.get("label", k), "field": v.get("field"),
+                    "selected": k in sel["topics"]}
+                   for k, v in (filt.get("topics") or {}).items()],
+        "levels": [{"key": k, "label": v.get("label", k), "selected": k in sel["levels"]}
+                   for k, v in (filt.get("levels") or {}).items()],
+        "tracks": search.tracks(filt, sel),
+    }
+
+
+def save_search(topics: list[str], levels: list[str]) -> list[str]:
+    """Save your picks and match the profile's resume tracks to them.
+
+    Returns the resume track tags. Raises ValueError for an empty or unknown pick.
+    """
+    from core import search
+    filt = yaml.safe_load(FILTERS_PATH.read_text(encoding="utf-8")) or {}
+    for kind, picked in (("topics", topics), ("levels", levels)):
+        unknown = set(picked) - set(filt.get(kind) or {})
+        if not picked or unknown:
+            raise ValueError(f"pick at least one of the known {kind}"
+                             + (f"; unknown: {', '.join(sorted(unknown))}" if unknown else ""))
+    search.save({"topics": list(dict.fromkeys(topics)), "levels": list(dict.fromkeys(levels))},
+                SEARCH_PATH)
+    profile, tags = _search_tracks(load_profile())
+    # Without a profile.json, load_profile trims the template instead. Writing one here
+    # would count your details as started before you typed any.
+    if PROFILE_WRITE.exists():
+        save_profile(profile)
+    return tags
+
+
+def _search_tracks(profile: dict) -> tuple[dict, list[str]]:
+    """The profile with its resume tracks matched to your search picks, and the track tags."""
+    from core import paths as core_paths
+    from core import search
+    filt = yaml.safe_load(FILTERS_PATH.read_text(encoding="utf-8")) or {}
+    tags = search.tracks(filt, search.load(filt, SEARCH_PATH))
+    template = json.loads((core_paths.REPO_ROOT / "data" / "profile.example.json")
+                          .read_text(encoding="utf-8"))
+    return search.apply_tracks(profile, tags, template), tags
 
 
 # ── Answer bank ──────────────────────────────────────────────────────────────────────
@@ -657,6 +714,17 @@ def setup_status() -> dict:
                    (f"{len(holes)} field(s) still unset." if holes else "Complete.")),
         "unfilled": holes[:40],
         "link": "/profile",
+    })
+
+    # What to search. The defaults work, so this is never blocking. It comes before the
+    # resumes because the chosen topics decide which resume tracks the page asks for.
+    steps.append({
+        "id": "search", "title": "What to search",
+        "done": SEARCH_PATH.exists(), "blocking": False, "manual": False, "optional": False,
+        "detail": ("Saved. Change it any time on the Search page." if SEARCH_PATH.exists()
+                   else "Pick your topics and experience levels. Until you do, the default "
+                        "tech topics at entry and mid level are searched."),
+        "link": "/search",
     })
 
     # 2. The extension, straight after the details that feed it. Chrome deliberately

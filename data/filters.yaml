@@ -1,6 +1,4 @@
-# Everything here is editable. Field keyword lists drive classification AND relevance
-# (a role matching no field is dropped as irrelevant). Priority: quant > ai > ds > tech,
-# so "ML Engineer" -> ai, "Quant Researcher" -> quant even if it also says "engineer".
+# Everything here is editable. The search topics and levels follow the feed sources.
 # 10 was discarding ~93% of the eligible pool: measured against the 2026-07-29 dump,
 # 10d gave 64 eligible roles, 30d gives 161, no limit at all gives 852. Widened 2026-08-01.
 freshness_days: 30
@@ -21,34 +19,95 @@ sources:
     # the branch its bot writes to; `main` lags. ~12MB, one GET per run.
     url: https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json
 
-fields:
+# The topics you can search, grouped by `field`. Pick yours on the console's Search page,
+# which saves the choice to search.yaml. Without a search.yaml, topics marked
+# `default: true` are searched.
+#
+# A title matching none of the chosen topics' keywords is dropped as irrelevant. Keywords
+# match as whole words, with an optional plural "s". Each `field` is also a resume track:
+# the fields of your chosen topics decide which resumes the Setup page asks for.
+# Priority: quant > ai > ds > tech, so "ML Engineer" goes to ai, and "Quant Researcher"
+# goes to quant even though it also says "engineer". Keep the fields in that order here.
+#
+# Bare "engineer" and bare "analyst" are deliberately absent. Measured on 2026-08-01, they
+# pulled in Sales, Solutions, and Support Engineer and Business Analyst roles (+152 and +59
+# at 30 days, mostly irrelevant).
+topics:
   quant:
-    [quant, quantitative]
-  ai:
-    # research scientist / forward deployed / computer vision added 2026-08-01 after
-    # measuring marginal gain on the raw dump. Bare "engineer" and bare "analyst" were
-    # measured too and deliberately REJECTED — they pull in Sales/Solutions/Support
-    # Engineer and Business/Financial Analyst noise (+152 and +59 @30d, mostly junk).
-    [machine learning, ml engineer, ai engineer, applied scientist, research engineer,
-     deep learning, llm, nlp, "ai/ml", genai, generative ai,
-     research scientist, forward deployed, computer vision]
-  ds:
-    [data scientist, data science, decision scientist, analytics engineer, quantitative analyst,
-     data engineer]
-  tech:
-    [software engineer, software developer, backend engineer, full stack, fullstack,
-     platform engineer, infrastructure engineer, systems engineer,
-     product engineer, security engineer, solutions architect, site reliability,
-     distributed systems, member of technical staff, new grad]
+    {label: Quant research and trading, field: quant, default: true,
+     keywords: [quant, quantitative]}
+  ml_engineering:
+    {label: Machine learning engineering, field: ai, default: true,
+     keywords: [machine learning, ml engineer, "ai/ml"]}
+  ai_engineering:
+    {label: AI and LLM engineering, field: ai, default: true,
+     keywords: [ai engineer, llm, genai, generative ai, forward deployed]}
+  deep_learning:
+    {label: Deep learning, field: ai, default: true, keywords: [deep learning]}
+  ai_research:
+    {label: AI research, field: ai, default: true,
+     keywords: [research scientist, research engineer, applied scientist]}
+  computer_vision:
+    {label: Computer vision, field: ai, default: true, keywords: [computer vision]}
+  nlp:
+    {label: Natural language processing, field: ai, default: true,
+     keywords: [nlp, natural language processing]}
+  ml_infra:
+    {label: ML infrastructure and MLOps, field: ai, default: true,
+     keywords: [mlops, ml infrastructure, ml platform, ml systems]}
+  data_science:
+    {label: Data science, field: ds, default: true,
+     keywords: [data scientist, data science, decision scientist, quantitative analyst]}
+  data_engineering:
+    {label: Data engineering, field: ds, default: true,
+     keywords: [data engineer, analytics engineer]}
+  analytics:
+    {label: Data and business analytics, field: ds, default: false,
+     keywords: [data analyst, business intelligence, bi engineer, product analyst]}
+  software_engineering:
+    {label: Software engineering (general), field: tech, default: true,
+     keywords: [software engineer, software developer, member of technical staff, new grad]}
+  backend:
+    {label: Backend, field: tech, default: true,
+     keywords: [backend engineer, back end engineer, backend developer]}
+  frontend:
+    {label: Frontend and web, field: tech, default: false,
+     keywords: [frontend engineer, front end engineer, frontend developer, web developer]}
+  full_stack:
+    {label: Full stack and product, field: tech, default: true,
+     keywords: [full stack, fullstack, product engineer]}
+  infrastructure:
+    {label: "Infrastructure, cloud, and SRE", field: tech, default: true,
+     keywords: [platform engineer, infrastructure engineer, site reliability, cloud engineer,
+                devops]}
+  distributed_systems:
+    {label: Systems and distributed systems, field: tech, default: true,
+     keywords: [systems engineer, distributed systems]}
+  security:
+    {label: Security, field: tech, default: true, keywords: [security engineer]}
+  mobile:
+    {label: Mobile (iOS and Android), field: tech, default: false,
+     keywords: [ios engineer, android engineer, mobile engineer, ios developer,
+                android developer]}
+  solutions:
+    {label: Solutions architecture, field: tech, default: true,
+     keywords: [solutions architect]}
+
+# Experience levels, read from the job title. A title gets the first level, from the
+# bottom of this list up, with one of its `titles` words. A title with none is entry.
+# Pick yours on the Search page. Without a search.yaml, levels marked `default: true` are
+# kept. Many "Senior" postings list 2 to 4 years, so mid is on by default (2026-08-01).
+levels:
+  entry: {label: Entry (0-3 years), default: true, titles: []}
+  mid: {label: Mid (4-10 years), default: true, titles: [senior, sr]}
+  senior:
+    {label: Senior (10+ years), default: false,
+     titles: [staff, principal, lead, manager, director, head, vp, vice president,
+              distinguished, "10 years", "8 years"]}
 
 seniority:
-  # dropped if the title contains any of these as a whole word (you're early-career)
-  # 'senior'/'sr' removed 2026-08-01 (you asked to allow them): +52 roles @10d, +102 @30d.
-  # Many "Senior" postings at these firms are 2-4 YOE bands, so they're worth surfacing;
-  # 'staff'/'principal'/'lead' stay excluded — those are genuinely out of range.
-  exclude:
-    [staff, principal, lead, manager, director, head, vp,
-     vice president, intern, internship, phd, "10 years", "8 years"]
+  # Always dropped if the title contains any of these as a whole word, whatever the level.
+  exclude: [intern, internship, phd]
 
 location:
   # us_only is an ALLOWLIST: a role is kept only if its location shows a positive US

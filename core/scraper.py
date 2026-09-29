@@ -49,7 +49,7 @@ except ImportError:  # allow --selftest without network deps
     requests = None
 import yaml
 
-from core import paths
+from core import paths, search
 
 UA = "job-copilot/2.0 (personal job search)"
 FIELD_PRIORITY = ("quant", "ai", "ds", "tech")  # order matters for classification
@@ -348,8 +348,22 @@ def classify_field(title: str, fields_cfg: dict) -> str | None:
     return None
 
 
+def level_of(title: str, levels: dict) -> str | None:
+    """The level whose title words appear, checked from the most senior down.
+
+    A title with no level word gets the level that has none, usually entry.
+    """
+    for key, words in reversed(list(levels.items())):
+        if words and any(has_word(title, w) for w in words):
+            return key
+    return next((k for k, words in levels.items() if not words), None)
+
+
 def passes_seniority(title: str, cfg: dict) -> bool:
-    return not any(has_word(title, bad) for bad in cfg.get("exclude", []))
+    if any(has_word(title, bad) for bad in cfg.get("exclude", [])):
+        return False
+    # `keep` is absent for a filters.yaml from before levels existed.
+    return "keep" not in cfg or level_of(title, cfg.get("levels") or {}) in cfg["keep"]
 
 
 def location_verdict(location: str, cfg: dict) -> str:
@@ -790,7 +804,11 @@ def load_yaml(p: Path):
 def run(args):
     companies = load_yaml(Path(args.companies))["companies"]
     filt = load_yaml(Path(args.filters))
-    fields_cfg = filt["fields"]
+    sel = search.load(filt)
+    fields_cfg = search.fields(filt, sel)
+    filt["seniority"] = search.seniority(filt, sel)
+    print(f"searching {len(sel['topics'])} topics at levels: {', '.join(sel['levels'])}",
+          file=sys.stderr)
 
     # --only: ONE company's board, right now. The referral flow's tier 3 needs this — a
     # pasted contact works somewhere that is tracked but had nothing open last night, and
@@ -1070,6 +1088,39 @@ def selftest():
     assert is_fresh(jobs[0].posted, 14) is True
     assert is_fresh("2026-01-01T00:00:00+00:00", 14) is False
     assert classify_field("Quantitative Researcher", fields) == "quant"
+
+    # Topics and levels: only the chosen topics' keywords are searched, and a title is kept
+    # only at a chosen level. Checked against the shipped catalog, so a bad edit fails here.
+    import tempfile
+    cat = load_yaml(paths.REPO_ROOT / "data" / "filters.yaml")
+    # An unquoted comma in a flow mapping silently splits a label into extra keys.
+    assert all(set(t) == {"label", "field", "default", "keywords"}
+               for t in cat["topics"].values()), "a topic has a stray or missing key"
+    with tempfile.TemporaryDirectory() as d:
+        pick = Path(d) / "search.yaml"
+        search.save({"topics": ["backend", "nlp"], "levels": ["entry"]}, pick)
+        sel = search.load(cat, pick)
+    picked = search.fields(cat, sel)
+    assert search.tracks(cat, sel) == ["ai", "tech"], picked
+    assert classify_field("Backend Engineer", picked) == "tech"
+    assert classify_field("Data Scientist", picked) is None
+    sen = search.seniority(cat, sel)
+    assert passes_seniority("Backend Engineer", sen) is True
+    assert passes_seniority("Senior Backend Engineer", sen) is False
+    sen["keep"] = ["mid", "senior"]
+    assert passes_seniority("Senior Backend Engineer", sen) is True
+    assert passes_seniority("Senior Staff Engineer", sen) is True     # staff -> senior
+    assert passes_seniority("Backend Engineer", sen) is False
+    assert passes_seniority("Backend Engineer Intern", sen) is False  # always excluded
+    defaults = search.load(cat, Path(d) / "missing.yaml")
+    assert defaults["levels"] == ["entry", "mid"], defaults
+    assert "frontend" not in defaults["topics"] and "backend" in defaults["topics"]
+    template = {"resume_tracks": [{"tag": t} for t in ("quant", "ai", "ds", "tech")]}
+    prof = {"resume_tracks": [{"tag": "ds", "keep": 1}, {"tag": "mine"}],
+            "default_resume_tag": "ds"}
+    search.apply_tracks(prof, ["ai", "tech"], template)
+    assert [t["tag"] for t in prof["resume_tracks"]] == ["mine", "ai", "tech"], prof
+    assert prof["default_resume_tag"] == "mine"
     assert classify_field("Machine Learning Engineer", fields) == "ai"
     assert classify_field("Recruiter", fields) is None
     # word-bounded classification: no substring leaks, plural still matches

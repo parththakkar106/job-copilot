@@ -13,6 +13,7 @@
 data/profile.json
 data/companies.yaml
 data/answer_bank.yaml
+data/search.yaml
 
 # scraper outputs / audit dumps
 out/

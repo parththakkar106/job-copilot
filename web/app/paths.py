@@ -38,6 +38,8 @@ COMPANIES_PATH = core_paths.COMPANIES
 PROFILE_WRITE = core_paths.PROFILE_WRITE
 ANSWER_BANK_WRITE = core_paths.ANSWER_BANK_WRITE
 COMPANIES_WRITE = core_paths.COMPANIES_WRITE
+FILTERS_PATH = core_paths.FILTERS
+SEARCH_PATH = core_paths.SEARCH
 QUEUE_PATH = core_paths.QUEUE
 DREAM_PATH = core_paths.OUT / "dream.json"
 # Roles on a board with no adapter (see core/scraper.py). Same shape as queue.json, same

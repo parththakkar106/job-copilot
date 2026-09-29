@@ -129,6 +129,9 @@ ANSWER_BANK = _config("answer_bank.yaml", "answer_bank.example.yaml")
 PROFILE_WRITE = DATA / "profile.json"
 COMPANIES_WRITE = DATA / "companies.yaml"
 ANSWER_BANK_WRITE = DATA / "answer_bank.yaml"
+# The topics and levels you chose on the Search page. It has no template: without it, the
+# scraper searches the defaults marked in filters.yaml.
+SEARCH = DATA / "search.yaml"
 
 
 def is_configured() -> bool:

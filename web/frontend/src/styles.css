@@ -865,3 +865,14 @@ select { cursor: pointer; }
 @media (prefers-color-scheme: dark) {
   .setup-tag.req { background: #7f1d1d; color: #fecaca; }
 }
+
+/* Search page: one checkbox group per field, then the levels. */
+.search-page { display: flex; flex-direction: column; gap: 12px; }
+.search-group { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 6px 16px; margin: 0; }
+.search-group legend { font-weight: 600; padding: 0 4px; }
+.search-opt { display: flex; align-items: center; gap: 8px; font-size: .9rem; cursor: pointer; }
+.search-opt input { width: auto; flex: none; margin: 0; }
+.search-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; }
+.search-foot p { margin: 0; }

@@ -75,6 +75,8 @@ def _isolate(tmp: Path) -> None:
     svc.ANSWER_BANK_PATH = tmp / "answer_bank.yaml"
     svc.PROFILE_PATH = tmp / "profile.json"
     svc.PROFILE_WRITE = tmp / "profile.json"
+    svc.SEARCH_PATH = tmp / "search.yaml"
+    svc.FILTERS_PATH = core_paths.REPO_ROOT / "data" / "filters.yaml"   # the shipped catalog
     svc.QUEUE_PATH = tmp / "out" / "queue.json"
     svc.DREAM_PATH = tmp / "out" / "dream.json"
     svc.MANUAL_PATH = tmp / "out" / "manual.json"
@@ -249,11 +251,11 @@ def main() -> None:
 
         # 8c. Setup checklist reports every step and a ready flag.
         st = c.get("/api/setup/status").json()
-        assert st["total"] == 6 and len(st["steps"]) == 6, st; checks += 1
+        assert st["total"] == 7 and len(st["steps"]) == 7, st; checks += 1
         # ORDER, not just membership: the extension is the product, so it comes second -
         # right after the details that feed it, and ahead of everything optional.
         assert [s["id"] for s in st["steps"]] == [
-            "profile", "extension", "companies", "resumes", "telegram",
+            "profile", "search", "extension", "companies", "resumes", "telegram",
             "verify_code"], st; checks += 1
         assert isinstance(st["ready"], bool) and "blocking_left" in st, st; checks += 1
         # profile is the only blocking step, and it exists here, so nothing blocks.
@@ -271,7 +273,7 @@ def main() -> None:
             "telegram", "verify_code"], st; checks += 1
         # The progress bar counts core steps only - an install that declines both extras is
         # finished, and must not read as 4 of 6 forever.
-        assert st["core_total"] == 4 and st["core_done"] <= 4, st; checks += 1
+        assert st["core_total"] == 5 and st["core_done"] <= 5, st; checks += 1
         assert st["core_done"] == sum(
             1 for s in st["steps"] if not s["optional"] and s["done"]), st; checks += 1
 
@@ -295,6 +297,28 @@ def main() -> None:
                      if s["id"] == "profile")["unfilled"]
         assert not any("local_source" in h or "_local_resume_source" in h for h in holes), holes
         checks += 1
+
+        # 8e. Search picks: the catalog comes back with the defaults marked, bad picks are
+        # refused, and a save narrows the profile's resume tracks to the chosen fields.
+        so = c.get("/api/search").json()
+        assert len(so["topics"]) == 20 and [l["key"] for l in so["levels"]] == [
+            "entry", "mid", "senior"], so; checks += 1
+        assert so["tracks"] == ["quant", "ai", "ds", "tech"], so; checks += 1
+        bad = [{"topics": [], "levels": ["entry"]}, {"topics": ["nope"], "levels": ["entry"]},
+               {"topics": ["backend"], "levels": []}]
+        assert all(c.put("/api/search", json=b).status_code == 400 for b in bad); checks += 1
+        assert not (tmp / "search.yaml").exists(), "a refused pick must not be saved"; checks += 1
+        sv = c.put("/api/search", json={"topics": ["backend", "nlp"], "levels": ["entry"]}).json()
+        assert sv == {"ok": True, "tracks": ["ai", "tech"]}, sv; checks += 1
+        prof = json.loads((tmp / "profile.json").read_text(encoding="utf-8"))
+        assert [t["tag"] for t in prof["resume_tracks"]] == ["ai", "tech"], prof; checks += 1
+        assert prof["default_resume_tag"] in ("ai", "tech"), prof; checks += 1
+        st = c.get("/api/setup/status").json()["steps"]
+        assert next(s for s in st if s["id"] == "search")["done"]; checks += 1
+        assert [t["tag"] for t in next(s for s in st if s["id"] == "resumes")["tracks"]] == [
+            "ai", "tech"]; checks += 1
+        again = c.get("/api/search").json()
+        assert {t["key"] for t in again["topics"] if t["selected"]} == {"backend", "nlp"}; checks += 1
 
         # 8b. Drafting flag: defaults ON, PUT flips it and persists to the shared prefs.
         assert c.get("/api/prefs/drafts").json()["enabled"] is True; checks += 1

@@ -50,5 +50,10 @@ class ProfileUpdate(BaseModel):
     profile: dict[str, Any]
 
 
+class SearchPicks(BaseModel):
+    topics: list[str]
+    levels: list[str]
+
+
 class DraftPref(BaseModel):
     enabled: bool                # turn Tier-2 Claude drafting on or off

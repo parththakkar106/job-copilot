@@ -20,6 +20,7 @@ from .models import (
     FilledEdit,
     ProfileUpdate,
     ResumeOverride,
+    SearchPicks,
     StateChange,
 )
 from .paths import (EXTENSION_BUILD, REPO_ROOT, SCRAPER_MODULE, aipass_mod,
@@ -283,6 +284,20 @@ async def put_resume(tag: str, request: Request):
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"ok": True, "changed": changed}
+
+
+@router.get("/search")
+def get_search():
+    return svc.search_options()
+
+
+@router.put("/search")
+def put_search(body: SearchPicks):
+    try:
+        tracks = svc.save_search(body.topics, body.levels)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "tracks": tracks}
 
 
 @router.get("/profile")

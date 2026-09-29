@@ -48,6 +48,9 @@ export const api = {
   setupStatus: () => req('GET', '/setup/status'),
   uploadResume: (tag, file) => req('PUT', `/resumes/${encodeURIComponent(tag)}`, file),
 
+  search: () => req('GET', '/search'),
+  saveSearch: (topics, levels) => req('PUT', '/search', { topics, levels }),
+
   companies: () => req('GET', '/companies'),
   setTier: (name, tier) => req('PUT', '/companies/tier', { name, tier }),
 
