@@ -155,7 +155,11 @@ def _describe(field: dict, n: int) -> str:
             "already": "already on the form when we arrived (the ATS or its resume parser put it there)",
             "ai": "written by an earlier pass",
         }.get(src, "already present")
-        bits.append(f"   CURRENT VALUE ({where}): {cur[:400]}")
+        # Say so when the value is cut. A silent cut at 400 characters made a 602-character
+        # saved answer look unfinished, and the model replaced it with a shorter "completed"
+        # version at 0.85 confidence.
+        shown = cur if len(cur) <= 2000 else cur[:2000] + " [shortened here for this prompt; the form holds the full text]"
+        bits.append(f"   CURRENT VALUE ({where}): {shown}")
     else:
         bits.append("   CURRENT VALUE: (empty)")
     if field.get("bucket") in NEVER_WRITE:

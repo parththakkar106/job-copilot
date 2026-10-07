@@ -134,6 +134,11 @@ def test_prompt():
     from core import scraper
     assert scraper._plain("&lt;p&gt;Build &amp;amp; ship&lt;/p&gt;&lt;li&gt;Python&lt;/li&gt;") \
         == "Build & ship\nPython"; checks += 1
+    # A long saved answer reaches the model whole. Cut at 400 characters, it looked
+    # unfinished and was replaced by a shorter "completed" version.
+    essay = "word " * 120 + "the final clause."
+    p = aipass.build_prompt([field("q5", "Accomplishment", value=essay, source="bank")], {})
+    assert "the final clause." in p; checks += 1
     return checks
 
 
