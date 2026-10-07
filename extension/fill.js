@@ -337,7 +337,12 @@ function matchOption(optEls, wantRaw) {
   const opts = optEls.map(el => ({ el, t: canon(el.textContent) }));
   let m = opts.find(o => o.t === want); if (m) return m.el;
   m = opts.find(o => wb(want).test(o.t)); if (m) return m.el;
-  m = opts.find(o => o.t.length >= 2 && wb(o.t).test(want)); if (m) return m.el;
+  // The two looser tiers below skip an option whose negation differs from the answer's.
+  // Shared words alone matched "I am not a protected veteran" to "I identify as a
+  // protected veteran" on Robinhood, which states the opposite.
+  const neg = (t) => /\b(not|none|never|non|don't|do not)\b/.test(t);
+  const wantNeg = neg(want);
+  m = opts.find(o => o.t.length >= 2 && neg(o.t) === wantNeg && wb(o.t).test(want)); if (m) return m.el;
   // Relocation questions often replace Yes/No with verbose sentences ("I am willing to
   // relocate to this job's location" / "I currently live…" / "I do not live and am not
   // willing…"). Map a boolean answer onto them. Self-scoped: only fires when the options are
@@ -356,6 +361,7 @@ function matchOption(optEls, wantRaw) {
   const wt = new Set(want.split(" ").filter(w => w.length > 1));
   let best = null, bestScore = 0, second = 0;
   for (const o of opts) {
+    if (neg(o.t) !== wantNeg) continue;
     const ot = new Set(o.t.split(" ").filter(w => w.length > 1));
     let inter = 0; for (const w of wt) if (ot.has(w)) inter++;
     const score = inter / Math.max(1, Math.min(wt.size, ot.size));

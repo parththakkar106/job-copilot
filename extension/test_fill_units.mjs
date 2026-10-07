@@ -596,6 +596,18 @@ const gen = matchFirstCandidate(asOpts("Male", "Female", "Decline to self-identi
 ok(gen && gen.hit.textContent === "Male" && !gen.viaAlternate,
    "THE REGRESSION GUARD: a real gender list still takes the gender, never the pronoun");
 
+// Robinhood: "What is your military status?" offers no "not a veteran" wording. A negative
+// answer must never land on a positive option that shares its other words.
+const MIL = asOpts("I am on active duty", "I have never served in the military",
+                   "I identify as a protected veteran", "I identify as a non-protected veteran",
+                   "I don't wish to answer");
+ok(matchOption(MIL, "I am not a protected veteran") === null,
+   "'not a protected veteran' does not match 'I identify as a protected veteran'");
+const mil = matchFirstCandidate(MIL, { rendered: "I am not a veteran",
+  alternates: ["I am not a protected veteran", "I have never served in the military"] });
+ok(mil && mil.hit.textContent === "I have never served in the military",
+   "the veteran answer falls through to the never-served alternate");
+
 // SentiLink: Ashby labels its SMS-consent group with the phone field's text.
 const sms = matchFirstCandidate(asOpts("Yes - I consent to receiving text messages",
                                        "No - I do not consent to receiving text messages"),
