@@ -183,7 +183,7 @@ def _load_facts() -> list[str]:
         ("identity", "location_display", "Current home (not a preference)"),
         ("preferences", "work_arrangement", "Work arrangement"),
         ("links", "linkedin", "LinkedIn"),
-        ("links", "github", "GitHub"),
+        ("links", "portfolio", "Personal website"),
         # Voluntary self-identification answers, so the pass verifies these fields
         # against his own choices instead of flagging or guessing them.
         ("eeo", "gender", "Gender"),
