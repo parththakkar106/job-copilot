@@ -18,6 +18,13 @@ sources:
     # The bot-maintained JSON behind github.com/SimplifyJobs/New-Grad-Positions. `dev` is
     # the branch its bot writes to; `main` lags. ~12MB, one GET per run.
     url: https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json
+  - name: VC portfolio jobs (early career)
+    format: vcjobs
+    enabled: true
+    # The JSON behind jobs.ypatodkar.com/?career=early: engineering roles across 16 VC
+    # portfolios, refreshed twice daily. ~6MB, one GET per run. The parser keeps only
+    # rows the site tags `career: early`.
+    url: https://jobs.ypatodkar.com/api/all-jobs.json
 
 # The career paths you can search. Pick yours on the console's Search page, which saves
 # the choice to search.yaml. Without a search.yaml, paths marked `default: true` are

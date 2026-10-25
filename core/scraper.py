@@ -715,7 +715,35 @@ def parse_simplify(raw, dream_names: set[str] | None = None) -> list[Job]:
     return out
 
 
-FEED_PARSERS = {"simplify": parse_simplify}
+def parse_vcjobs(raw, dream_names: set[str] | None = None) -> list[Job]:
+    """The jobs.ypatodkar.com api/all-jobs.json object -> Jobs. Pure; the fetch is in fetch_feed.
+
+    The site merges the job boards of 16 VC portfolios. Each job row names its company by
+    index `c` into a parallel `companies` array. Only `career == "early"` rows are kept,
+    which matches the site's own `?career=early` view. The site lists US metros only, so
+    "Remote" rows get a US location hint; the hint is read only when `city` can't be placed.
+    """
+    dream_names = dream_names or set()
+    if not isinstance(raw, dict):
+        return []
+    companies = raw.get("companies") or []
+    out = []
+    for j in raw.get("jobs") or []:
+        if not isinstance(j, dict) or j.get("career") != "early":
+            continue
+        c = j.get("c")
+        company = str(companies[c].get("n") or "") if (
+            isinstance(c, int) and 0 <= c < len(companies)) else ""
+        url = j.get("url") or ""
+        ats, slug, job_id = ats_from_url(url)
+        out.append(Job(company, str(j.get("title") or ""), str(j.get("city") or ""), url,
+                       ats, slug, job_id, iso_date(j.get("posted")), None,
+                       "dream" if norm(company) in dream_names else "pipeline",
+                       "United States"))
+    return out
+
+
+FEED_PARSERS = {"simplify": parse_simplify, "vcjobs": parse_vcjobs}
 
 
 def fetch_feed(src: dict, fields_cfg: dict, dream_names: set[str]) -> list[Job]:
@@ -744,7 +772,8 @@ def fetch_feed(src: dict, fields_cfg: dict, dream_names: set[str]) -> list[Job]:
         j.field = classify_field(j.title, fields_cfg)
         j.keyed()
     n_fill = sum(1 for j in jobs if fillable(j.ats))
-    print(f"    {name}: {len(raw) if isinstance(raw, list) else '?'} rows -> {len(jobs)} live "
+    rows = raw.get("jobs") if isinstance(raw, dict) else raw
+    print(f"    {name}: {len(rows) if isinstance(rows, list) else '?'} rows -> {len(jobs)} live "
           f"({n_fill} on a fillable board)", file=sys.stderr)
     return jobs
 
@@ -1284,6 +1313,22 @@ def selftest():
                               "locations": ["SF", "NYC"], "url": "", "sponsorship": "Other"}])
     assert _multi[0].location == "SF; NYC"
     assert passes_location(_multi[0].location, location) is True
+
+    _vc = {"companies": [{"n": "Shield AI"}, {"n": "Apple"}], "jobs": [
+        {"c": 0, "title": "Software Engineer", "city": "Remote", "career": "early",
+         "url": "https://jobs.lever.co/shieldai/abc", "posted": "2026-09-09T17:10:07.825Z"},
+        {"c": 0, "title": "Staff Engineer", "city": "Seattle", "career": "experienced",
+         "url": "https://jobs.lever.co/shieldai/def", "posted": "2026-09-09T17:10:07.825Z"},
+        {"c": 1, "title": "ML Engineer", "city": "Bay Area", "career": "early", "url": ""},
+        {"c": 9, "title": "Orphan", "career": "early", "url": ""},
+    ]}
+    got = parse_vcjobs(_vc, dream_names={norm("Apple")})
+    # only early-career rows survive; an out-of-range company index keeps the row unnamed
+    assert [j.company for j in got] == ["Shield AI", "Apple", ""], [j.company for j in got]
+    assert (got[0].ats, got[0].ats_slug, got[0].ats_job_id) == ("lever", "shieldai", "abc")
+    assert got[0].posted.startswith("2026-09-09") and got[1].tier == "dream"
+    assert resolved_verdict(got[0].location, got[0].location_hint, location) == "us"
+    assert parse_vcjobs(None) == [] and parse_vcjobs({"jobs": ["junk"]}) == []
     print("selftest OK")
 
 
