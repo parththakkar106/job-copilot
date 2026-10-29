@@ -33,10 +33,16 @@ def run():
         "AI propose": _rec(decisions=[_ai(0.95, action="propose")]),
         "hard fact": _rec(decisions=[_ai(0.99, action="replace", hot=True)]),
         "not written": _rec(decisions=[_ai(0.99, applied=False)]),
+        "AI wrote an essay": _rec(decisions=[_ai(0.99, value="I want to build " * 10)]),
     }
     for want, rec in cases.items():
         got = pending.auto_block(rec)
         assert got and (want.lower().split()[0] in got.lower()), (want, got); checks += 1
+    # A short free-text fact is not an essay, and a long pick from a dropdown is not either.
+    assert pending.auto_block(_rec(decisions=[_ai(0.95, value="Acme Corp")])) is None; checks += 1
+    _picked = _rec(decisions=[_ai(0.95, value="x" * 200)])
+    _picked["fields"] = [{"id": "f1", "options": ["x" * 200, "y"]}]
+    assert pending.auto_block(_picked) is None; checks += 1
     # An answered-blank optional counts as answered.
     assert pending.auto_block(_rec(questions=[{"id": "q", "label": "x", "answer": ""}],
                                    decisions=[_ai(0.95)])) is None; checks += 1

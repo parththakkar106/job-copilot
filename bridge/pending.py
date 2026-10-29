@@ -470,14 +470,20 @@ def is_complete(rec: dict) -> bool:
 
 # The bar every AI decision on a form must clear before the bridge approves it unattended.
 AUTO_MIN_CONF = 0.9
+# An AI-written free-text answer at least this long is an essay, which Parth always reads.
+# Field kind cannot tell essays apart: forms use a plain `text` input for both "Ohio" and
+# a 500-character "Why us?". Measured 2026-10-30, short facts stay under 130 characters
+# and essays start near 330.
+ESSAY_MIN_CHARS = 150
 
 
 def auto_block(rec: dict) -> str | None:
     """Why this record may NOT be approved without Parth, or None when it may.
 
     Deterministic fills are trusted as they are. Everything else on the form must come from
-    the AI pass at AUTO_MIN_CONF or above. A record the AI pass never touched is refused:
-    nothing has checked that the deterministic rules matched the right fields.
+    the AI pass at AUTO_MIN_CONF or above, and no AI-written essay may be on it. A record
+    the AI pass never touched is refused: nothing has checked that the deterministic rules
+    matched the right fields.
     """
     if not is_complete(rec):
         return f"{len(unanswered(rec))} open question(s)"
@@ -486,10 +492,14 @@ def auto_block(rec: dict) -> str | None:
     decisions = rec.get("ai_decisions") or []
     if not decisions:
         return "no AI pass"
+    with_options = {f.get("id") for f in rec.get("fields") or [] if f.get("options")}
     for d in decisions:
         label = d.get("label") or d.get("id") or "a field"
         if d.get("action") in ("flag", "propose"):
             return f"AI {d['action']}: {label}"
+        if (d.get("action") in ("fill", "replace") and d.get("id") not in with_options
+                and len(str(d.get("value") or "")) >= ESSAY_MIN_CHARS):
+            return f"AI wrote an essay: {label}"
         if d.get("hot"):
             return f"AI replaced a hard fact: {label}"
         if d.get("applied") is False:
