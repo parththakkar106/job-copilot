@@ -25,6 +25,13 @@ sources:
     # portfolios, refreshed twice daily. ~6MB, one GET per run. The parser keeps only
     # rows the site tags `career: early`.
     url: https://jobs.ypatodkar.com/api/all-jobs.json
+  - name: a16z speedrun talent network
+    format: speedrun
+    enabled: true
+    # The JSON behind speedrun-talent-network.com: engineering roles, new grad to senior,
+    # 0-5 years, posted in the last 24h, across the a16z portfolio and beyond. Paged 50 rows
+    # at a time, plus one GET per row to read its apply link (~45 rows a day).
+    url: https://speedrun-talent-network.com/api/jobs?fn=engineering&lvl=new_grad,junior,mid,senior&yoe=_,1_2,3_5&posted=24h&scope=everywhere
 
 # The career paths you can search. Pick yours on the console's Search page, which saves
 # the choice to search.yaml. Without a search.yaml, paths marked `default: true` are

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import re
 import sys
@@ -743,7 +744,63 @@ def parse_vcjobs(raw, dream_names: set[str] | None = None) -> list[Job]:
     return out
 
 
-FEED_PARSERS = {"simplify": parse_simplify, "vcjobs": parse_vcjobs}
+def parse_speedrun(raw, dream_names: set[str] | None = None) -> list[Job]:
+    """The speedrun-talent-network.com /api/jobs rows -> Jobs. Pure; the fetch is in
+    fetch_speedrun.
+
+    The API row has no apply link, only `path` to the site's own job page. fetch_speedrun
+    reads the real ATS link from that page into `apply_url`. If that read fails, the row
+    falls back to the speedrun page, which `ats_from_url` sends to manual.json.
+    """
+    dream_names = dream_names or set()
+    if not isinstance(raw, dict):
+        return []
+    out = []
+    for j in raw.get("jobs") or []:
+        if not isinstance(j, dict):
+            continue
+        company = str(j.get("company_key") or "")
+        url = j.get("apply_url") or (SPEEDRUN_SITE + str(j.get("path") or ""))
+        ats, slug, job_id = ats_from_url(url)
+        out.append(Job(company, str(j.get("title") or ""), str(j.get("location") or ""), url,
+                       ats, slug, job_id, iso_date(j.get("published_at")), None,
+                       "dream" if norm(company) in dream_names else "pipeline"))
+    return out
+
+
+SPEEDRUN_SITE = "https://speedrun-talent-network.com"
+# The job page embeds its props as HTML-escaped JSON: applyUrl&quot;:[0,&quot;<url>&quot;
+_SPEEDRUN_APPLY = re.compile(r"applyUrl&quot;:\[0,&quot;(.*?)&quot;")
+
+
+def fetch_speedrun(url: str, timeout: int) -> dict | None:
+    """All pages of a speedrun /api/jobs query, each row given its `apply_url`.
+
+    The API returns 50 rows per page, selected by `&page=N`. Reading the apply link costs
+    one extra GET per row. That is about 45 rows a day with a 24h `posted` filter.
+    """
+    rows: list[dict] = []
+    for page in range(20):  # shortcut: 1000-row ceiling — raise it if a query ever outgrows it
+        r = _get(f"{url}&page={page}", timeout=timeout)
+        if not r or r.status_code != 200:
+            return {"jobs": rows} if rows else None
+        try:
+            data = r.json()
+        except ValueError:
+            return {"jobs": rows} if rows else None
+        batch = data.get("jobs") or []
+        rows.extend(batch)
+        if not batch or len(rows) >= int(data.get("total") or 0):
+            break
+    for row in rows:
+        detail = _get(SPEEDRUN_SITE + str(row.get("path") or "")) if row.get("path") else None
+        m = _SPEEDRUN_APPLY.search(detail.text) if detail and detail.status_code == 200 else None
+        if m:
+            row["apply_url"] = html.unescape(m.group(1))
+    return {"jobs": rows}
+
+
+FEED_PARSERS = {"simplify": parse_simplify, "vcjobs": parse_vcjobs, "speedrun": parse_speedrun}
 
 
 def fetch_feed(src: dict, fields_cfg: dict, dream_names: set[str]) -> list[Job]:
@@ -758,15 +815,22 @@ def fetch_feed(src: dict, fields_cfg: dict, dream_names: set[str]) -> list[Job]:
         return []
     # listings.json is ~12MB, an order of magnitude past any board API response, so the
     # default 20s read timeout is not a fair budget for it.
-    r = _get(url, timeout=int(src.get("timeout") or 60))
-    if not r or r.status_code != 200:
-        print(f"  ! {name}: feed fetch failed", file=sys.stderr)
-        return []
-    try:
-        raw = r.json()
-    except ValueError:
-        print(f"  ! {name}: feed did not return JSON", file=sys.stderr)
-        return []
+    timeout = int(src.get("timeout") or 60)
+    if fmt == "speedrun":
+        raw = fetch_speedrun(url, timeout)
+        if raw is None:
+            print(f"  ! {name}: feed fetch failed", file=sys.stderr)
+            return []
+    else:
+        r = _get(url, timeout=timeout)
+        if not r or r.status_code != 200:
+            print(f"  ! {name}: feed fetch failed", file=sys.stderr)
+            return []
+        try:
+            raw = r.json()
+        except ValueError:
+            print(f"  ! {name}: feed did not return JSON", file=sys.stderr)
+            return []
     jobs = FEED_PARSERS[fmt](raw, dream_names)
     for j in jobs:
         j.field = classify_field(j.title, fields_cfg)
@@ -1329,6 +1393,24 @@ def selftest():
     assert got[0].posted.startswith("2026-09-09") and got[1].tier == "dream"
     assert resolved_verdict(got[0].location, got[0].location_hint, location) == "us"
     assert parse_vcjobs(None) == [] and parse_vcjobs({"jobs": ["junk"]}) == []
+
+    _sr = {"jobs": [
+        {"company_key": "Illumio", "title": "Sr. Software Engineer", "location": "Sunnyvale",
+         "published_at": "2026-10-29T00:02:56.593+00:00", "path": "/jobs/sr-swe-372174f8",
+         "apply_url": "https://jobs.ashbyhq.com/illumio/372174f8-2298/application"},
+        {"company_key": "Apple", "title": "ML Engineer", "location": "Remote",
+         "path": "/jobs/ml-engineer-apple-1"},
+        "junk",
+    ]}
+    got = parse_speedrun(_sr, dream_names={norm("Apple")})
+    assert [j.company for j in got] == ["Illumio", "Apple"], [j.company for j in got]
+    assert (got[0].ats, got[0].ats_slug) == ("ashby", "illumio"), (got[0].ats, got[0].ats_slug)
+    assert got[0].posted.startswith("2026-10-29") and got[1].tier == "dream"
+    # no apply link read -> the speedrun page itself, which is apply-by-hand
+    assert got[1].url == SPEEDRUN_SITE + "/jobs/ml-engineer-apple-1" and got[1].ats == "other"
+    assert parse_speedrun(None) == [] and parse_speedrun([]) == []
+    _page = 'x applyUrl&quot;:[0,&quot;https://a.co/j?x=1&amp;y=2&quot;],&quot;z'
+    assert html.unescape(_SPEEDRUN_APPLY.search(_page).group(1)) == "https://a.co/j?x=1&y=2"
     print("selftest OK")
 
 
