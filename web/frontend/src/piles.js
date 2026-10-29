@@ -38,7 +38,7 @@ export const MOVES = {
     { target: 'blocked', label: 'Not interested', hot: 'b' },
   ],
   in_queue: [
-    { target: 'filled', label: 'Approve → Ready', hot: 'a', primary: true },
+    { target: 'filled', label: 'Approve → Ready', hot: 'a', primary: true, button: '✓ Approve' },
     { target: 'skipped', label: 'Skip for now', hot: 's' },
     { target: 'submitted', label: 'Mark applied by hand', hot: 'm' },
     { target: 'blocked', label: 'Not interested', hot: 'b' },
@@ -70,7 +70,7 @@ export const MOVES = {
   // Expiry is automatic, so Expired is never a move target. Bringing a role back marks it
   // `keep` on the server, so the next sweep leaves it alone.
   expired: [
-    { target: 'in_queue', label: 'Bring back to queue', hot: 'a', primary: true },
+    { target: 'in_queue', label: 'Bring back to queue', hot: 'a', primary: true, button: '↩ Bring back' },
     { target: 'submitted', label: 'Mark applied by hand', hot: 'm' },
     { target: 'blocked', label: 'Not interested', hot: 'b' },
   ],
@@ -104,20 +104,21 @@ export const isEditable = (bucket) => bucket === 'in_queue' || bucket === 'fille
  * `hideWhenEmpty` keeps the derived columns off the board on a day when they read 0, so
  * the four columns that matter get the width.
  *
- * `rail: true` pulls the column out of the grid entirely and parks it as a collapsible rail
- * down the left edge. `manual` is the one that gets this: those roles are not IN the
+ * `rail: 'left' | 'right'` pulls the column out of the grid entirely and parks it as a
+ * collapsible rail down that edge. `manual` gets the left one: those roles are not IN the
  * automated flow — nothing fills them, nothing sends them, Parth applies in the tab himself
- * — so they want to be a reachable list, not a full column of board width.
+ * — so they want to be a reachable list, not a full column of board width. `expired` gets
+ * the right one for the same reason: a pile he only visits to bring a role back.
  */
 export const COLUMNS = [
-  { id: 'manual', label: 'By hand', droppable: false, hideWhenEmpty: true, rail: true },
+  { id: 'manual', label: 'By hand', droppable: false, hideWhenEmpty: true, rail: 'left' },
   { id: 'discovered', label: 'Discovered', droppable: false, hideWhenEmpty: true },
   { id: 'in_queue', label: 'In queue', droppable: true },
   { id: 'filled', label: 'Ready', droppable: true },
   { id: 'dream', label: 'Dream', droppable: false, hideWhenEmpty: true },
   { id: 'submitted', label: 'Sent', droppable: true },
   { id: 'blocked', label: 'Blocked', droppable: true },
-  { id: 'expired', label: 'Expired', droppable: false, hideWhenEmpty: true },
+  { id: 'expired', label: 'Expired', droppable: false, hideWhenEmpty: true, rail: 'right' },
 ]
 
 /**

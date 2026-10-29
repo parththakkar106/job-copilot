@@ -66,7 +66,7 @@ function Card({ row, onOpen, onMove, onDragRow, dragging, index, menuUp }) {
             aria-label={`${primary.label}: ${row.title} at ${row.company}`}
             draggable={false}
             onClick={(e) => { e.stopPropagation(); onMove(row, primary, { optimistic: primary.target }) }}>
-            ✓ Approve
+            {primary.button}
           </button>
         )}
         <MoveMenu row={row} onMove={onMove} up={menuUp} />
@@ -97,27 +97,30 @@ function Card({ row, onOpen, onMove, onDragRow, dragging, index, menuUp }) {
   )
 }
 
-const RAIL_KEY = 'jobpipeline.rail.manual'
-
 /**
- * The By-hand pile, as a collapsible rail down the left edge of the board.
+ * A pile shown as a collapsible rail down one edge of the board: By hand on the left,
+ * Expired on the right.
  *
  * These roles are outside the automated flow entirely — no adapter fills them, nothing
  * sends them, Parth applies in the tab himself. As a full board column they spent a
  * seventh of the width on a list he only visits deliberately; as a rail they stay one
  * click away and give that width back to the piles that move every day.
  *
- * Collapsed is the default and it is remembered per browser. Cards still drag OUT (marking
- * one applied by hand is the whole point) and still carry their ⋯ menu, so the rail is
- * never the only way to act on a role.
+ * Collapsed is the default and it is remembered per browser and per rail. Cards still drag
+ * OUT (marking one applied by hand is the whole point) and still carry their ⋯ menu, so the
+ * rail is never the only way to act on a role.
  */
-function ByHandRail({ col, rows, onOpen, onMove, onDragRow, drag }) {
+function Rail({ col, rows, onOpen, onMove, onDragRow, drag }) {
+  const key = `jobpipeline.rail.${col.id}`
   const [open, setOpen] = useState(() => {
-    try { return localStorage.getItem(RAIL_KEY) === 'open' } catch { return false }
+    try { return localStorage.getItem(key) === 'open' } catch { return false }
   })
   useEffect(() => {
-    try { localStorage.setItem(RAIL_KEY, open ? 'open' : 'shut') } catch { /* private mode */ }
-  }, [open])
+    try { localStorage.setItem(key, open ? 'open' : 'shut') } catch { /* private mode */ }
+  }, [key, open])
+  // The arrow points the way the rail moves when clicked: toward its edge to close.
+  const toEdge = col.rail === 'right' ? '▶' : '◀'
+  const away = col.rail === 'right' ? '◀' : '▶'
 
   return (
     <section className={`kb-rail ${open ? 'kb-rail-open' : 'kb-rail-shut'}`}
@@ -128,7 +131,7 @@ function ByHandRail({ col, rows, onOpen, onMove, onDragRow, drag }) {
         <span className={`kb-dot kb-dot-${col.id}`} />
         <span className="kb-rail-label">{col.label}</span>
         <span className="kb-count">{rows.length}</span>
-        <span className="kb-rail-chev" aria-hidden="true">{open ? '◀' : '▶'}</span>
+        <span className="kb-rail-chev" aria-hidden="true">{open ? toEdge : away}</span>
       </button>
       {open && (
         <div className="kb-body kb-rail-body">
@@ -161,7 +164,8 @@ export default function Kanban({ rows, onOpen, onMove, switcher, lastMove, undo 
   const shown = COLUMNS.filter((c) => !c.hideWhenEmpty || byCol[c.id].length)
   // The rail is laid out beside the grid, not inside it, so it must not count towards
   // --kb-cols — leaving it in made every remaining column one slot narrower than it is.
-  const rail = shown.find((c) => c.rail)
+  const left = shown.find((c) => c.rail === 'left')
+  const right = shown.find((c) => c.rail === 'right')
   const cols = shown.filter((c) => !c.rail)
 
   const drop = useCallback((col) => {
@@ -187,8 +191,8 @@ export default function Kanban({ rows, onOpen, onMove, switcher, lastMove, undo 
           slot and shrink everything else, and it has to be able to collapse to ~34px,
           which a `repeat(n, 1fr)` track cannot do. */}
       <div className="kb-board">
-        {rail && (
-          <ByHandRail col={rail} rows={byCol[rail.id]} drag={drag}
+        {left && (
+          <Rail col={left} rows={byCol[left.id]} drag={drag}
             onOpen={onOpen} onMove={onMove} onDragRow={setDrag} />
         )}
         <div className="kb-cols" style={{ '--kb-cols': cols.length }}>
@@ -237,6 +241,10 @@ export default function Kanban({ rows, onOpen, onMove, switcher, lastMove, undo 
           )
         })}
         </div>
+        {right && (
+          <Rail col={right} rows={byCol[right.id]} drag={drag}
+            onOpen={onOpen} onMove={onMove} onDragRow={setDrag} />
+        )}
       </div>
 
       {lastMove && (

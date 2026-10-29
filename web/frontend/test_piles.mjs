@@ -77,12 +77,13 @@ ok(!isEditable("submitted") && isEditable("in_queue") && isEditable("filled"),
    "only queue-side cards open the drawer");
 
 // ── The rail, and the one-click primary move ─────────────────────────────────────────
-// The rail is laid out beside the column grid rather than inside it, so exactly one column
-// may claim it — two would silently stack in the same 232px strip.
+// Rails are laid out beside the column grid rather than inside it, one per edge. Two on the
+// same edge would stack in the same 232px strip, so each side has exactly one.
 const rails = COLUMNS.filter((c) => c.rail);
-ok(rails.length === 1 && rails[0].id === "manual", "By hand is the one rail column");
-ok(!rails[0].droppable, "and it stays a drag source only — nothing drops into a derived pile");
-ok(COLUMNS[0].rail, "the rail column is first, so it renders on the left edge");
+ok(rails.length === 2, "two rail columns");
+ok(COLUMNS.find((c) => c.rail === "left")?.id === "manual", "By hand is the left rail");
+ok(COLUMNS.find((c) => c.rail === "right")?.id === "expired", "Expired is the right rail");
+ok(rails.every((c) => !c.droppable), "rails stay drag sources only — nothing drops into them");
 
 // A primary move must be a REAL move for that bucket, or the button would post a transition
 // the server rejects.

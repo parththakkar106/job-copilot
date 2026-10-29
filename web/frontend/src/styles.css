@@ -444,7 +444,10 @@ kbd {
    It also claims the remaining page height by flexing rather than by subtracting a magic
    number from 100vh — the strip and toolbar above it wrap at narrow widths, and a hardcoded
    offset would leave the last row of cards hanging below the fold exactly when it wrapped. */
-.content:has(.kanban) { max-width: 1560px; display: flex; flex-direction: column; }
+/* The board view is capped at the window height, so each column and rail scrolls inside
+   itself. Uncapped, the page grew to the tallest pile: 457 expired cards made it 52,000px. */
+.app:has(.kanban) { height: 100vh; }
+.content:has(.kanban) { max-width: 1560px; display: flex; flex-direction: column; min-height: 0; }
 .content:has(.kanban) .dashboard { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 .kanban { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -464,6 +467,9 @@ kbd {
   /* Columns scroll inside themselves rather than the page growing to the tallest one —
      with ~29 roles in To apply, a page-height board would bury the other columns. */
   flex: 1; min-width: 0;
+  /* Too narrow for every column at 210px, the grid scrolls sideways inside its own box
+     instead of spilling under the right-hand rail. */
+  overflow-x: auto;
 }
 
 /* ── By-hand rail ──────────────────────────────────────────────────────────────────── */
