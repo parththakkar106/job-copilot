@@ -890,3 +890,9 @@ select { cursor: pointer; }
 .pf-value input { width: 170px; }
 .pf-add { margin-top: 2px; }
 .pf-value .btn { padding: 4px 9px; }
+
+/* ── Inline answers, bulk selection ────────────────────────────────────────────────── */
+.focus-answers { margin: 4px 0 14px; max-height: 52vh; overflow-y: auto; padding-right: 4px; }
+.draft-all { margin-bottom: 12px; }
+.row-pick { flex-shrink: 0; width: 16px; height: 16px; cursor: pointer; accent-color: var(--blue, #5b8def); }
+.bulkbar { gap: 8px; }

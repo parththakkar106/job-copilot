@@ -141,13 +141,19 @@ def _pending_row(rec: dict, tiers: dict[str, str]) -> dict:
         bucket, tag = "filled", rec.get("hold_reason") or "needs you"
     elif st == pending_mod.SKIPPED:
         bucket, tag = "in_queue", "skipped"
+    elif st == pending_mod.EXPIRED:
+        bucket, tag = "expired", f"posted over {pending_mod.EXPIRE_DAYS} days ago"
     else:  # awaiting
         bucket = "in_queue"
-        tag = f"{n} question{'' if n == 1 else 's'}" if n else "ready to approve"
+        tag = (f"{n} question{'' if n == 1 else 's'}" if n
+               else "ready to approve" + (f" (not auto-sent: {rec['auto_block']})"
+                                           if rec.get("auto_block") else ""))
     if st == pending_mod.APPROVED:
         rank = RANK_READY_TO_SUBMIT
     elif st == pending_mod.AWAITING:
         rank = _AWAITING_RANK[pending_mod.next_tier(rec)]
+    elif st == pending_mod.EXPIRED:
+        rank = RANK_DONE
     else:
         rank = RANK_HELD if st == pending_mod.HELD else RANK_SKIPPED
     return {
@@ -165,6 +171,7 @@ def _pending_row(rec: dict, tiers: dict[str, str]) -> dict:
         "unanswered": n,
         "resume": rec.get("resume", ""),
         "rank": rank,
+        "auto_approved": bool(rec.get("auto_approved")),
     }
 
 
@@ -292,7 +299,7 @@ def count_rows(rows: list[dict]) -> dict:
     the view is showing — computing counts over all history while the rows were windowed to
     60 days made the numbers disagree with the list underneath them."""
     out = {"all": len(rows), "discovered": 0, "in_queue": 0, "filled": 0, "submitted": 0,
-           "blocked": 0, "dream": 0, "manual": 0, "tier_pipeline": 0, "tier_dream": 0}
+           "blocked": 0, "expired": 0, "dream": 0, "manual": 0, "tier_pipeline": 0, "tier_dream": 0}
     for r in rows:
         out[r["bucket"]] = out.get(r["bucket"], 0) + 1
         out["tier_" + r["tier"]] = out.get("tier_" + r["tier"], 0) + 1

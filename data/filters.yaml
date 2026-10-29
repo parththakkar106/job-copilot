@@ -1,7 +1,9 @@
 # Everything here is editable. The career paths and levels follow the feed sources.
 # 10 was discarding ~93% of the eligible pool: measured against the 2026-07-29 dump,
 # 10d gave 64 eligible roles, 30d gives 161, no limit at all gives 852. Widened 2026-08-01.
-freshness_days: 30
+# Cut to 7 on 2026-10-30 to match pending.EXPIRE_DAYS: a role older than 7 days moves to
+# Expired anyway, so scraping it only fills the queue with roles that expire on arrival.
+freshness_days: 7
 
 # Whole-list sources, fetched IN ADDITION to every board in companies.yaml. companies.yaml
 # can only find roles at companies already on it; a feed is how employers nobody thought to

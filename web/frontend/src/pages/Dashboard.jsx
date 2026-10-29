@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { useToast } from '../toast.jsx'
 import { Avatar, relDate, shortDate, useHotkeys } from '../ui.jsx'
-import { BUCKETS, BUCKET_LABEL, TO_APPLY, inverseMove, isEditable } from '../piles.js'
+import { BUCKETS, BUCKET_LABEL, MOVES, TO_APPLY, inverseMove, isEditable } from '../piles.js'
 import MoveMenu from '../MoveMenu.jsx'
 import JobDrawer from './JobDrawer.jsx'
 import Focus from './Focus.jsx'
@@ -34,16 +34,19 @@ function ViewSwitch({ view, onView }) {
   )
 }
 
-function Row({ row, onOpen, onMove, leaving }) {
+function Row({ row, onOpen, onMove, leaving, picked, onPick }) {
   const editable = isEditable(row.bucket)
   return (
     <div className={`row row-${row.bucket} ${leaving ? 'row-leaving' : ''}`}>
+      <input type="checkbox" className="row-pick" checked={picked} onChange={() => onPick(row)}
+        aria-label={`Select ${row.company} ${row.title}`} />
       <Avatar name={row.company} />
       <div className="row-main" onClick={() => editable && onOpen(row)} role={editable ? 'button' : undefined}>
         <div className="row-title">
           <span className="row-company">{row.company}</span>
           <span className="row-role">{row.title}</span>
           {row.tier === 'dream' && <span className="badge badge-dream">dream</span>}
+          {row.auto_approved && <span className="badge">auto</span>}
         </div>
         <div className="row-sub">
           {row.location && <span className="row-loc">{row.location}</span>}
@@ -97,7 +100,7 @@ function StatStrip({ c, onPick }) {
   )
 }
 
-export default function Dashboard({ onChanged, bridgeAlive, refreshSignal }) {
+export default function Dashboard({ bridgeAlive, refreshSignal }) {
   const notify = useToast()
   const [data, setData] = useState({ rows: [], counts: {} })
   const [view, setView] = useState(storedView)
@@ -109,6 +112,8 @@ export default function Dashboard({ onChanged, bridgeAlive, refreshSignal }) {
   const [leaving, setLeaving] = useState({})     // dedup_key -> true, for the exit animation
   const [optimistic, setOptimistic] = useState({}) // dedup_key -> bucket, while a move is in flight
   const [lastMove, setLastMove] = useState(null) // the one undoable move
+  const [picked, setPicked] = useState(() => new Set()) // dedup_keys ticked in the list
+  const [bulkBusy, setBulkBusy] = useState(false)
   const undoTimer = useRef(null)
 
   useEffect(() => { localStorage.setItem(VIEW_KEY, view) }, [view])
@@ -122,8 +127,10 @@ export default function Dashboard({ onChanged, bridgeAlive, refreshSignal }) {
   }, [notify])
 
   // Reload when a run-control action bumps the signal — WITHOUT remounting (which would
-  // close an open job drawer mid-edit).
-  useEffect(() => { load() }, [load, refreshSignal])
+  // close an open job drawer mid-edit). Only the first load shows the skeleton: a later one
+  // that blanked the page lost Parth's scroll position and filters on every action.
+  const loaded = useRef(false)
+  useEffect(() => { load(loaded.current); loaded.current = true }, [load, refreshSignal])
 
   // A dropped card has to land in its new column immediately or the ~200ms round trip reads
   // as a failed drop. The override is applied here, where every view reads its rows, so the
@@ -175,7 +182,7 @@ export default function Dashboard({ onChanged, bridgeAlive, refreshSignal }) {
         undoTimer.current = setTimeout(() => setLastMove(null), 12000)
       }
       if (res?.note) notify(res.note, 'info')
-      await load(true); onChanged?.()
+      await load(true)
     } catch (e) {
       notify(`${row.company}: ${e.message}`, 'error', 6000)
     } finally {
@@ -184,7 +191,39 @@ export default function Dashboard({ onChanged, bridgeAlive, refreshSignal }) {
       setLeaving((s) => { const { [row.dedup_key]: _, ...rest } = s; return rest })
       setOptimistic((s) => { const { [row.dedup_key]: _, ...rest } = s; return rest })
     }
-  }, [load, notify, onChanged])
+  }, [load, notify])
+
+  const pick = useCallback((row) => setPicked((s) => {
+    const n = new Set(s)
+    if (n.has(row.dedup_key)) n.delete(row.dedup_key); else n.add(row.dedup_key)
+    return n
+  }), [])
+
+  // One move over every ticked row the move applies to, then one quiet reload. Rows whose
+  // pile has no such move are left alone and counted, so nothing is silently skipped.
+  const bulk = useCallback(async (target) => {
+    const chosen = data.rows.filter((r) => picked.has(r.dedup_key))
+    const can = chosen.filter((r) => (MOVES[r.bucket] || []).some((m) => m.target === target))
+    setBulkBusy(true)
+    const failed = []
+    const failedKeys = new Set()
+    for (const r of can) {
+      try {
+        await api.setState(r.dedup_key, target, null, {
+          company: r.company, title: r.title, location: r.location, url: r.url,
+        })
+      } catch (e) { failed.push(`${r.company}: ${e.message}`); failedKeys.add(r.dedup_key) }
+    }
+    await load(true)
+    setBulkBusy(false)
+    setPicked(failedKeys)   // keep only the failures ticked, so a retry is one click
+    const done = can.length - failed.length
+    const skipped = chosen.length - can.length
+    notify(`${BUCKET_LABEL[target] || target}: ${done} moved`
+      + (skipped ? `, ${skipped} not movable there` : '')
+      + (failed.length ? `. Failed: ${failed.join('; ')}` : ''),
+      failed.length ? 'error' : 'success', failed.length ? 8000 : 3000)
+  }, [data.rows, picked, load, notify])
 
   const undo = useCallback(() => {
     if (!lastMove) return
@@ -208,7 +247,7 @@ export default function Dashboard({ onChanged, bridgeAlive, refreshSignal }) {
   const drawer = openKey && (
     <JobDrawer dedupKey={openKey} bridgeAlive={bridgeAlive}
       onClose={() => setOpenKey(null)}
-      onChanged={() => { load(true); onChanged?.() }} />
+      onChanged={() => load(true)} />
   )
 
   const switcher = <ViewSwitch view={view} onView={setView} />
@@ -277,12 +316,23 @@ export default function Dashboard({ onChanged, bridgeAlive, refreshSignal }) {
           <div className="rows">
             {rows.map((r) => (
               <Row key={`${r.bucket}-${r.dedup_key}`} row={r} leaving={leaving[r.dedup_key]}
+                picked={picked.has(r.dedup_key)} onPick={pick}
                 onOpen={(row) => setOpenKey(row.dedup_key)} onMove={move} />
             ))}
           </div>
         )}
 
-      {lastMove && (
+      {picked.size > 0 ? (
+        <div className="undobar bulkbar">
+          <span><strong>{picked.size}</strong> selected</span>
+          <button className="btn btn-sm btn-go" disabled={bulkBusy} onClick={() => bulk('filled')}>Approve</button>
+          <button className="btn btn-sm" disabled={bulkBusy} onClick={() => bulk('skipped')}>Skip</button>
+          <button className="btn btn-sm btn-danger" disabled={bulkBusy} onClick={() => bulk('blocked')}>Not interested</button>
+          <button className="btn btn-sm btn-ghost" disabled={bulkBusy}
+            onClick={() => setPicked(new Set(rows.map((r) => r.dedup_key)))}>All {rows.length}</button>
+          <button className="btn btn-sm btn-ghost" disabled={bulkBusy} onClick={() => setPicked(new Set())}>Clear</button>
+        </div>
+      ) : lastMove && (
         <div className="undobar">
           <span>Moved <strong>{lastMove.row.company}</strong> — {lastMove.label}</span>
           <button className="btn btn-sm" onClick={undo}>↩ Undo</button>

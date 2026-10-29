@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { api } from '../api'
+import { useToast } from '../toast.jsx'
 import { Avatar, relDate, shortDate, useHotkeys } from '../ui.jsx'
 import { BUCKET_LABEL, MOVES, isEditable } from '../piles.js'
+import { QuestionList, withDrafts } from './JobDrawer.jsx'
 
 // One role at a time, keyboard-first. The default view: the whole point is to burn through
 // the to-apply pile without reading a table, so everything is reachable with one key and
@@ -9,8 +12,10 @@ import { BUCKET_LABEL, MOVES, isEditable } from '../piles.js'
 const KEYS = [
   ['J / →', 'next'],
   ['K / ←', 'back'],
-  ['↵', 'open & answer'],
-  ['A', 'approve'],
+  ['↵', 'open the full record'],
+  ['Ctrl+↵', 'save answers, approve, next'],
+  ['A', 'approve (saves typed answers first)'],
+  ['D', 'use all drafts'],
   ['S', 'skip'],
   ['M', 'applied by hand'],
   ['B', 'not interested'],
@@ -36,9 +41,39 @@ function stateLine(row) {
   return { kind: 'go', text: row.tag || 'ready to approve' }
 }
 
+/**
+ * The open questions of the role on the card, answerable in place, so approving a role
+ * needs no drawer. Drafts start filled in. An empty box stays an open question rather than
+ * a blank answer: nearly every escalated question is required, and a blank one would be
+ * sent to the employer as is.
+ */
+function useInlineAnswers(row) {
+  const key = row && row.bucket === 'in_queue' ? row.dedup_key : null
+  const [rec, setRec] = useState(null)
+  const [answers, setAnswers] = useState({})
+  useEffect(() => {
+    setRec(null); setAnswers({})
+    if (!key) return
+    let live = true
+    api.job(key).then((r) => {
+      if (!live) return
+      const qs = (r.questions || []).filter((q) => q.answer == null)
+      setRec({ ...r, questions: qs })
+      setAnswers(withDrafts(qs, {}))
+    }).catch(() => {})
+    return () => { live = false }
+  }, [key])
+  const typed = rec ? rec.questions
+    .filter((q) => String(answers[q.id] ?? '').trim() !== '')
+    .map((q) => ({ id: q.id, value: answers[q.id] })) : []
+  return { rec, answers, setAnswers, typed }
+}
+
 export default function Focus({ rows, onOpen, onMove, onList, undo, lastMove, switcher, hotkeys = true }) {
+  const notify = useToast()
   const [i, setI] = useState(0)
   const [help, setHelp] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   // Rows shrink as roles get moved out of the pile. Clamp rather than reset so the cursor
   // lands on whatever slid into the slot — that's the next role, which is where you want it.
@@ -48,9 +83,30 @@ export default function Focus({ rows, onOpen, onMove, onList, undo, lastMove, sw
 
   const row = rows[idx]
   const moves = useMemo(() => (row ? MOVES[row.bucket] || [] : []), [row])
+  const inline = useInlineAnswers(row)
 
   const go = (d) => setI((x) => Math.min(Math.max(0, x + d), Math.max(0, n - 1)))
   const hit = (target) => { if (row) onMove(row, { target }) }
+
+  // Approving from the card saves what was typed on it first, then moves on to the next
+  // role. If questions are still open the role stays put and says how many.
+  const approve = async () => {
+    if (!row || busy) return
+    if (!inline.rec) { hit('filled'); return }
+    setBusy(true)
+    try {
+      const r = inline.typed.length ? await api.saveAnswers(row.dedup_key, inline.typed) : inline.rec
+      if (!r._complete) {
+        const left = (r.questions || []).filter((q) => q.answer == null).length
+        notify(`${row.company}: ${left} question${left === 1 ? '' : 's'} still open`, 'error')
+        return
+      }
+      await onMove(row, { target: 'filled' })
+      go(1)
+    } catch (e) {
+      notify(`${row.company}: ${e.message}`, 'error', 6000)
+    } finally { setBusy(false) }
+  }
   const byHot = (k) => moves.find((m) => m.hot === k)
 
   useHotkeys({
@@ -58,7 +114,8 @@ export default function Focus({ rows, onOpen, onMove, onList, undo, lastMove, sw
     k: () => go(-1), arrowleft: () => go(-1),
     arrowdown: () => go(1), arrowup: () => go(-1),
     enter: () => row && isEditable(row.bucket) && onOpen(row),
-    a: () => byHot('a') && hit('filled'),
+    a: () => byHot('a') && approve(),
+    d: () => inline.rec && inline.setAnswers(withDrafts(inline.rec.questions, inline.answers)),
     s: () => byHot('s') && hit('skipped'),
     m: () => byHot('m') && hit('submitted'),
     b: () => byHot('b') && hit('blocked'),
@@ -130,6 +187,15 @@ export default function Focus({ rows, onOpen, onMove, onList, undo, lastMove, sw
             <span className="dot" />{st.text}
           </div>
 
+          {inline.rec && inline.rec.questions.length > 0 && (
+            <div className="focus-answers"
+              onKeyDown={(e) => { if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); approve() } }}>
+              <QuestionList questions={inline.rec.questions} answers={inline.answers}
+                setAns={(id, v) => inline.setAnswers((a) => ({ ...a, [id]: v }))}
+                setAll={inline.setAnswers} emptyHint="empty stays an open question" />
+            </div>
+          )}
+
           <div className="focus-actions">
             {isEditable(row.bucket) && (
               <button className="btn btn-primary" onClick={() => onOpen(row)}>
@@ -137,7 +203,8 @@ export default function Focus({ rows, onOpen, onMove, onList, undo, lastMove, sw
               </button>
             )}
             {primary && (
-              <button className="btn btn-go" onClick={() => hit(primary.target)}>
+              <button className="btn btn-go" disabled={busy}
+                onClick={() => (primary.target === 'filled' ? approve() : hit(primary.target))}>
                 {primary.label} <kbd>{primary.hot.toUpperCase()}</kbd>
               </button>
             )}

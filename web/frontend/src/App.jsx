@@ -125,7 +125,7 @@ function Shell() {
       <RunControls onChanged={bump} />
 
       <main className="content">
-        {tab === 'dashboard' && <Dashboard refreshSignal={refreshKey} onChanged={bump} bridgeAlive={status.bridge_alive} />}
+        {tab === 'dashboard' && <Dashboard refreshSignal={refreshKey} bridgeAlive={status.bridge_alive} />}
         {tab === 'bank' && <AnswerBank />}
         {tab === 'profile' && <Profile />}
         {tab === 'companies' && <Companies />}

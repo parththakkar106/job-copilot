@@ -48,8 +48,8 @@ def _int_env(name: str, default: int) -> int:
 
 
 # Caps are env-overridable so Parth can dial volume without a code change.
-MAX_PER_DAY = _int_env("APPLY_MAX_PER_DAY", 15)
-MAX_PER_COMPANY = _int_env("APPLY_MAX_PER_COMPANY", 2)
+MAX_PER_DAY = _int_env("APPLY_MAX_PER_DAY", 40)
+MAX_PER_COMPANY = _int_env("APPLY_MAX_PER_COMPANY", 3)
 
 
 def load_applied(applied_path: Path | str = APPLIED_PATH) -> list[dict]:

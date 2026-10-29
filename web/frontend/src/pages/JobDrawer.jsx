@@ -45,6 +45,59 @@ function FilledValue({ row, onSave }) {
   )
 }
 
+/** Every empty answer that has a draft, filled with that draft. */
+export function withDrafts(questions, answers) {
+  const out = { ...answers }
+  for (const q of questions) if (q.draft && (out[q.id] ?? '') === '') out[q.id] = q.draft
+  return out
+}
+
+/**
+ * The open questions of one record, with their drafts. Shared by the drawer and the inline
+ * answers on the Focus card, so both offer the same controls.
+ */
+export function QuestionList({ questions, answers, setAns, setAll, emptyHint = 'leave empty to answer as blank' }) {
+  const draftable = questions.filter((q) => q.draft && (answers[q.id] ?? '') === '').length
+  return (
+    <>
+      {draftable > 0 && (
+        <button className="btn btn-sm draft-all" onClick={() => setAll(withDrafts(questions, answers))}>
+          Use all drafts ({draftable}) ↴
+        </button>
+      )}
+      {questions.map((q) => (
+        <div key={q.id} className="qa">
+          <label className="qa-label">
+            {q.label}
+            {q.answer == null && <span className="qa-open">needs answer</span>}
+            {/* The form already has a value here — Greenhouse's resume parser fills the
+                education block before the extension sees it, and those fields match no
+                taxonomy rule, so they were escalated as questions anyway. Saying so is
+                the difference between "type this out" and "confirm this". */}
+            {q._on_form && <span className="qa-onform">already on the form</span>}
+          </label>
+          {q.draft && (answers[q.id] ?? '') === '' && (
+            <button className="draft-chip" onClick={() => setAns(q.id, q.draft)}>
+              {q._on_form ? 'use what the form has ↴' : 'use draft ↴'}
+            </button>
+          )}
+          {Array.isArray(q.options) && q.options.length > 0 ? (
+            <select value={answers[q.id] ?? ''} onChange={(e) => setAns(q.id, e.target.value)}
+              aria-label={q.label}>
+              <option value="">— leave blank —</option>
+              {q.options.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          ) : (
+            <textarea rows={q.kind === 'textarea' ? 4 : 2} value={answers[q.id] ?? ''}
+              onChange={(e) => setAns(q.id, e.target.value)} aria-label={q.label}
+              placeholder={emptyHint} />
+          )}
+        </div>
+      ))}
+    </>
+  )
+}
+
 // Greenhouse forms are often embedded on the company's own careers site (asana.com,
 // careers.roblox.com, ...), where the form lives in a cross-origin iframe — the extension
 // panel can't float and its dropdown clicks misfire. The legacy embed endpoint serves the
@@ -148,6 +201,8 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
             <div className="drawer-title">{rec.company} · {rec.title}</div>
             <div className="drawer-meta">
               {rec.location || '—'} · <span className={`tag tag-${rec.status === 'approved' ? 'filled' : 'in_queue'}`}>{rec.status}</span>
+              {rec.auto_approved && <> · <span className="ai-badge ai-wrote">auto-approved</span></>}
+              {rec.status === 'awaiting' && rec.auto_block && <> · <span className="hint">not auto-sent: {rec.auto_block}</span></>}
               {rec.url && (applyUrl(rec) === rec.url
                 ? <> · <a href={rec.url} target="_blank" rel="noreferrer">open ↗</a></>
                 : <> · <a href={rec.url} target="_blank" rel="noreferrer">job description ↗</a>
@@ -177,34 +232,8 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
         <div className="drawer-section">
           <div className="section-label">Questions ({(rec.questions || []).length})</div>
           {(rec.questions || []).length === 0 && <div className="hint">No open questions — deterministic fill covered everything.</div>}
-          {(rec.questions || []).map((q) => (
-            <div key={q.id} className="qa">
-              <label className="qa-label">
-                {q.label}
-                {q.answer == null && <span className="qa-open">needs answer</span>}
-                {/* The form already has a value here — Greenhouse's resume parser fills the
-                    education block before the extension sees it, and those fields match no
-                    taxonomy rule, so they were escalated as questions anyway. Saying so is
-                    the difference between "type this out" and "confirm this". */}
-                {q._on_form && <span className="qa-onform">already on the form</span>}
-              </label>
-              {q.draft && (answers[q.id] ?? '') === '' && (
-                <button className="draft-chip" onClick={() => setAns(q.id, q.draft)}>
-                  {q._on_form ? 'use what the form has ↴' : 'use draft ↴'}
-                </button>
-              )}
-              {Array.isArray(q.options) && q.options.length > 0 ? (
-                <select value={answers[q.id] ?? ''} onChange={(e) => setAns(q.id, e.target.value)}>
-                  <option value="">— leave blank —</option>
-                  {q.options.map((o) => <option key={o} value={o}>{o}</option>)}
-                </select>
-              ) : (
-                <textarea rows={q.kind === 'textarea' ? 4 : 2} value={answers[q.id] ?? ''}
-                  onChange={(e) => setAns(q.id, e.target.value)}
-                  placeholder="leave empty to answer as blank" />
-              )}
-            </div>
-          ))}
+          <QuestionList questions={rec.questions || []} answers={answers} setAns={setAns}
+            setAll={(a) => { setAnswers(a); setDirty(true) }} />
         </div>
 
         {aiDecisions.length > 0 && (

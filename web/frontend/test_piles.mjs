@@ -69,7 +69,7 @@ for (const from of COLUMNS.map((c) => c.id)) {
 }
 
 // ── Column shape ─────────────────────────────────────────────────────────────────────
-ok(COLUMNS.length === 7, "seven columns");
+ok(COLUMNS.length === 8, "eight columns");
 ok(COLUMNS.filter((c) => c.droppable).length === 4, "four of them accept drops");
 ok(COLUMNS.every((c) => c.droppable || c.hideWhenEmpty),
    "the non-droppable columns are exactly the ones hidden when empty");

@@ -13,12 +13,13 @@ export const BUCKETS = [
   { id: 'manual', label: 'By hand' },
   { id: 'submitted', label: 'Sent' },
   { id: 'blocked', label: 'Blocked' },
+  { id: 'expired', label: 'Expired' },
   { id: 'all', label: 'Everything' },
 ]
 
 export const BUCKET_LABEL = {
   discovered: 'Discovered', in_queue: 'In queue', filled: 'Ready',
-  dream: 'Dream', manual: 'By hand', submitted: 'Sent', blocked: 'Blocked',
+  dream: 'Dream', manual: 'By hand', submitted: 'Sent', blocked: 'Blocked', expired: 'Expired',
 }
 
 /**
@@ -66,6 +67,13 @@ export const MOVES = {
     { target: 'in_queue', label: 'Un-block (back to queue)' },
     { target: 'submitted', label: 'Actually applied', hot: 'm' },
   ],
+  // Expiry is automatic, so Expired is never a move target. Bringing a role back marks it
+  // `keep` on the server, so the next sweep leaves it alone.
+  expired: [
+    { target: 'in_queue', label: 'Bring back to queue', hot: 'a', primary: true },
+    { target: 'submitted', label: 'Mark applied by hand', hot: 'm' },
+    { target: 'blocked', label: 'Not interested', hot: 'b' },
+  ],
 }
 
 /**
@@ -75,7 +83,7 @@ export const MOVES = {
  * scraped files. The way back is the in_queue transition, which drops the applied-log row;
  * the dashboard then re-surfaces the role from queue.json / dream.json / manual.json.
  */
-const DERIVED = ['discovered', 'dream', 'manual']
+const DERIVED = ['discovered', 'dream', 'manual', 'expired']
 
 export function inverseMove(fromBucket) {
   const back = DERIVED.includes(fromBucket) ? 'in_queue' : fromBucket
@@ -109,6 +117,7 @@ export const COLUMNS = [
   { id: 'dream', label: 'Dream', droppable: false, hideWhenEmpty: true },
   { id: 'submitted', label: 'Sent', droppable: true },
   { id: 'blocked', label: 'Blocked', droppable: true },
+  { id: 'expired', label: 'Expired', droppable: false, hideWhenEmpty: true },
 ]
 
 /**

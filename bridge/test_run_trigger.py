@@ -12,6 +12,10 @@ import tempfile
 
 import bridge as B
 
+# fire_run_queue runs the expiry sweep, which rewrites pending records. Point it at an empty
+# temp dir so this test can never expire Parth's real batch.
+B.pending_mod.PENDING_DIR = pathlib.Path(tempfile.mkdtemp())
+
 
 class FakeWS:
     def __init__(self):

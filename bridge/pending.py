@@ -38,7 +38,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -63,6 +63,10 @@ HELD = "held"
 # not re-served by the daily queue (handle_queue excludes every pending key). He un-skips
 # it from the dashboard, or by picking it out of /jobs, when he's ready.
 SKIPPED = "skipped"
+# Still waiting on Parth EXPIRE_DAYS after the role was posted, so expire_stale() moved it
+# out of the to-apply piles. The record and its answers stay; reopen() brings it back.
+EXPIRED = "expired"
+EXPIRE_DAYS = 7
 
 
 def _now() -> str:
@@ -464,6 +468,37 @@ def is_complete(rec: dict) -> bool:
     return not unanswered(rec)
 
 
+# The bar every AI decision on a form must clear before the bridge approves it unattended.
+AUTO_MIN_CONF = 0.9
+
+
+def auto_block(rec: dict) -> str | None:
+    """Why this record may NOT be approved without Parth, or None when it may.
+
+    Deterministic fills are trusted as they are. Everything else on the form must come from
+    the AI pass at AUTO_MIN_CONF or above. A record the AI pass never touched is refused:
+    nothing has checked that the deterministic rules matched the right fields.
+    """
+    if not is_complete(rec):
+        return f"{len(unanswered(rec))} open question(s)"
+    if open_warnings(rec):
+        return "required fields read empty"
+    decisions = rec.get("ai_decisions") or []
+    if not decisions:
+        return "no AI pass"
+    for d in decisions:
+        label = d.get("label") or d.get("id") or "a field"
+        if d.get("action") in ("flag", "propose"):
+            return f"AI {d['action']}: {label}"
+        if d.get("hot"):
+            return f"AI replaced a hard fact: {label}"
+        if d.get("applied") is False:
+            return f"AI value not written: {label}"
+        if float(d.get("confidence") or 0) < AUTO_MIN_CONF:
+            return f"AI {round(float(d.get('confidence') or 0) * 100)}% on {label}"
+    return None
+
+
 def approve(dedup_key: str, base: Path | str | None = None) -> dict | None:
     """Mark a job ready for phase 3. Refuses while questions are outstanding, so a
     stale ✅ tap can't send a half-answered form to a real employer."""
@@ -529,6 +564,8 @@ def reopen(dedup_key: str, base: Path | str | None = None) -> dict | None:
     rec = load(dedup_key, base)
     if rec is None:
         return None
+    if rec.get("status") == EXPIRED:
+        rec["keep"] = True  # brought back by hand, so expire_stale must not take it again
     rec["status"] = AWAITING
     rec["flush_attempts"] = 0
     rec.pop("hold_reason", None)
@@ -609,6 +646,25 @@ def job_date(rec: dict) -> str:
     Records written before 2026-09-14 have no `posted` field unless it was backfilled
     from the queue history, so the collect date is the fallback."""
     return str(rec.get("posted") or rec.get("created") or "")[:10]
+
+
+def expire_stale(days: int = EXPIRE_DAYS, base: Path | str | None = None,
+                 today: date | None = None) -> list[dict]:
+    """Expire every record still waiting on Parth more than `days` after its job_date.
+
+    Approved records are left alone because the flush is about to send them. Returns the
+    records that moved."""
+    cutoff = ((today or date.today()) - timedelta(days=days)).isoformat()
+    out = []
+    for rec in all_jobs(None, base):
+        when = job_date(rec)
+        if (rec.get("status") in (AWAITING, SKIPPED, HELD) and not rec.get("keep")
+                and when and when < cutoff):
+            rec["status"] = EXPIRED
+            rec.pop("focus_at", None)
+            save(rec, base)
+            out.append(rec)
+    return out
 
 
 def by_date_then_questions(recs: list[dict]) -> list[dict]:

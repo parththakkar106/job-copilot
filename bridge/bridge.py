@@ -117,6 +117,7 @@ import triage as triage_mod
 import drafter as drafter_mod  # Tier-2 essay drafting via the Claude Code CLI
 import aipass as aipass_mod  # optional one-call AI fill + verify pass over a whole form
 import mailcode as mailcode_mod  # emailed verification codes, human-triggered only
+import prefs as prefs_mod  # runtime flags Parth flips while things run (auto_submit)
 
 # The shared pipeline modules live in core/ (data-layer tools, not bridge ones), so put the
 # repo root on the path before importing them. triage.py is a sibling and needs no help.
@@ -1050,6 +1051,21 @@ async def push_run_queue() -> None:
             pass
 
 
+async def expire_stale(source: str) -> None:
+    """Move roles posted more than pending.EXPIRE_DAYS ago, still unapplied, to Expired.
+    Runs at boot and before each collect run, so the sweep happens at least once a day."""
+    try:
+        gone = await asyncio.to_thread(pending_mod.expire_stale)
+    except Exception as e:
+        print(f"[expire] {source} sweep failed: {redact(e)}", file=sys.stderr)
+        return
+    if gone:
+        dlog(f"[expire] {source}: {len(gone)} role(s) moved to expired")
+        await asyncio.to_thread(
+            tg_send, f"🗓 {len(gone)} role(s) passed {pending_mod.EXPIRE_DAYS} days since "
+                     f"posting and moved to Expired. Their answers are kept.")
+
+
 async def fire_run_queue(source: str) -> None:
     """Kick off the daily collection run. Waits briefly for the extension to connect —
     on a cold start the launcher opens Chrome and the MV3 worker takes a moment to wake
@@ -1074,6 +1090,7 @@ async def fire_run_queue(source: str) -> None:
     # Refresh before the run rather than during it: a run fills several forms back to back,
     # and a resume that changes halfway through would send two different PDFs out.
     await asyncio.to_thread(sync_resumes, f"run:{source}")
+    await expire_stale(f"run:{source}")
     touch_activity()  # a fresh run resets the idle clock; don't flush a stale pile mid-collect
     dlog(f"[run] firing runQueue ({source})")
     await push_run_queue()
@@ -2225,6 +2242,33 @@ async def _predraft_record(dedup_key: str, context: dict) -> None:
         dlog(f"[predraft] {dedup_key!r} failed ({e})")
 
 
+async def _auto_approve(rec: dict) -> None:
+    """Approve a freshly collected record without Parth when pending.auto_block clears it.
+
+    The idle-watcher then sends it like any approved job, after the collect run ends. The
+    reason a record was refused is saved on it, so the console can say why it is waiting.
+    `prefs.auto_submit = false` turns this off.
+    """
+    if not prefs_mod.get("auto_submit", True):
+        return
+    key = rec.get("dedup_key")
+    reason = pending_mod.auto_block(rec)
+    if reason:
+        rec["auto_block"] = reason
+        await asyncio.to_thread(pending_mod.save, rec)
+        return
+    if await asyncio.to_thread(pending_mod.approve, key) is None:
+        return
+    fresh = await asyncio.to_thread(pending_mod.load, key)
+    if fresh:
+        fresh["auto_approved"] = True
+        await asyncio.to_thread(pending_mod.save, fresh)
+    await asyncio.to_thread(
+        tg_send, f"🤖 Auto-approved <b>{html.escape(str(rec.get('company')))}</b> · "
+                 f"{html.escape(str(rec.get('title')))} (every AI answer ≥ "
+                 f"{round(pending_mod.AUTO_MIN_CONF * 100)}%). It goes out after this run.")
+
+
 async def handle_collect(msg, ws):
     """Phase 1: the orchestrator reports what one job needs, and moves on. Fire-and-forget
     by design — nobody waits for Parth here, which is the whole point of batching."""
@@ -2244,6 +2288,8 @@ async def handle_collect(msg, ws):
             msg.get("filled") or [], None, msg.get("warnings") or [],
             msg.get("ai_decisions") or [], msg.get("fields") or [])
         answers = {"ok": True, "added": rec is not None}
+        if rec:
+            await _auto_approve(rec)
         # Kick off Claude drafting in the background so the push finds ready drafts. Context
         # is the job's own facts; the tab has already closed, so nobody is waiting on this.
         if rec and drafter_mod.available():
@@ -2947,7 +2993,8 @@ def _pending_row(rec: dict) -> dict:
 def _dashboard_rows(since_days: int = 60) -> list[dict]:
     """Every pile merged into dated, bucketed rows, newest first. Pending is always shown
     in full; the applied/blocked pile (which only grows) is windowed to since_days."""
-    rows = [_pending_row(r) for r in pending_mod.all_jobs()]
+    rows = [_pending_row(r) for r in pending_mod.all_jobs()
+            if r.get("status") != pending_mod.EXPIRED]
     cutoff = (date.today() - timedelta(days=since_days)).isoformat() if since_days else None
     for r in triage_mod.load_applied(triage_mod.APPLIED_PATH):
         when = (r.get("applied") or "")[:10]
@@ -3146,6 +3193,7 @@ async def main():
     touch_activity()
     # Catch up on anything edited while the bridge was down, before the first form.
     await asyncio.to_thread(sync_resumes, "startup")
+    await expire_stale("startup")
     offset = await drain_startup_backlog()
 
     async with websockets.serve(ws_handler, WS_HOST, WS_PORT):
