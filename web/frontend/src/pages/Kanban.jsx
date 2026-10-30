@@ -21,7 +21,7 @@ function resumeTrack(resume) {
 }
 
 function Card({ row, onOpen, onMove, onDragRow, dragging, index, menuUp }) {
-  const editable = isEditable(row.bucket)
+  const openable = row.has_record
   const primary = primaryMove(row.bucket)
   const track = resumeTrack(row.resume)
   // _dream_rows and the applied rows don't carry apply_url at all, so the fallback matters.
@@ -47,9 +47,9 @@ function Card({ row, onOpen, onMove, onDragRow, dragging, index, menuUp }) {
       style={{ animationDelay: `${Math.min(index, 12) * 14}ms` }}
       onDragStart={onDragStart}
       onDragEnd={() => onDragRow(null)}
-      onClick={() => editable && onOpen(row)}
-      role={editable ? 'button' : undefined}
-      title={editable ? 'open & answer' : undefined}>
+      onClick={() => openable && onOpen(row)}
+      role={openable ? 'button' : undefined}
+      title={openable ? (isEditable(row.bucket) ? 'open & answer' : 'open to read') : undefined}>
       <div className="kb-card-top">
         <Avatar name={row.company} size="sm" />
         <span className="kb-co">{row.company}</span>
@@ -76,9 +76,9 @@ function Card({ row, onOpen, onMove, onDragRow, dragging, index, menuUp }) {
         <span className={`tag tag-${row.bucket}`} title={row.tag}>{row.tag}</span>
         <div className="spacer" />
         {track && <span className="kb-track" title={row.resume}>{track}</span>}
-        {/* Every card gets this, not just the editable ones. Only in_queue/filled cards
-            respond to a click (isEditable), so a dream or applied card was a dead end on
-            this view — the posting was reachable only from the list or Focus. Prefers the
+        {/* Every card gets this, not just the ones with a record. Only those respond to a
+            click (has_record), so a dream card was a dead end on this view — the posting
+            was reachable only from the list or Focus. Prefers the
             posting itself over apply_url: this link is for READING the role, and the
             Greenhouse embed apply_url renders a bare form with no job description. */}
         {postUrl && (
@@ -98,8 +98,9 @@ function Card({ row, onOpen, onMove, onDragRow, dragging, index, menuUp }) {
 }
 
 /**
- * A pile shown as a collapsible rail down one edge of the board: By hand on the left,
- * Expired on the right.
+ * A pile shown as a collapsible rail down one edge of the board: Awaiting referral and By
+ * hand on the left, Expired on the right. Awaiting referral also takes drops, collapsed or
+ * open.
  *
  * These roles are outside the automated flow entirely — no adapter fills them, nothing
  * sends them, Parth applies in the tab himself. As a full board column they spent a
@@ -110,7 +111,7 @@ function Card({ row, onOpen, onMove, onDragRow, dragging, index, menuUp }) {
  * OUT (marking one applied by hand is the whole point) and still carry their ⋯ menu, so the
  * rail is never the only way to act on a role.
  */
-function Rail({ col, rows, onOpen, onMove, onDragRow, drag }) {
+function Rail({ col, rows, onOpen, onMove, onDragRow, drag, target }) {
   const key = `jobpipeline.rail.${col.id}`
   const [open, setOpen] = useState(() => {
     try { return localStorage.getItem(key) === 'open' } catch { return false }
@@ -123,7 +124,8 @@ function Rail({ col, rows, onOpen, onMove, onDragRow, drag }) {
   const away = col.rail === 'right' ? '◀' : '▶'
 
   return (
-    <section className={`kb-rail ${open ? 'kb-rail-open' : 'kb-rail-shut'}`}
+    <section className={`kb-rail ${open ? 'kb-rail-open' : 'kb-rail-shut'} ${target.className}`}
+      {...target.handlers}
       aria-label={`${col.label} — ${rows.length} role${rows.length === 1 ? '' : 's'}`}>
       <button className="kb-rail-toggle" onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
@@ -164,8 +166,8 @@ export default function Kanban({ rows, onOpen, onMove, switcher, lastMove, undo 
   const shown = COLUMNS.filter((c) => !c.hideWhenEmpty || byCol[c.id].length)
   // The rail is laid out beside the grid, not inside it, so it must not count towards
   // --kb-cols — leaving it in made every remaining column one slot narrower than it is.
-  const left = shown.find((c) => c.rail === 'left')
-  const right = shown.find((c) => c.rail === 'right')
+  const left = shown.filter((c) => c.rail === 'left')
+  const right = shown.filter((c) => c.rail === 'right')
   const cols = shown.filter((c) => !c.rail)
 
   const drop = useCallback((col) => {
@@ -177,6 +179,37 @@ export default function Kanban({ rows, onOpen, onMove, switcher, lastMove, undo 
     // open) snaps it back and toasts, which is the right signal.
     if (m) onMove(row, m, { optimistic: col.id })
   }, [drag, onMove])
+
+  // Drop-target wiring shared by columns and rails: highlight when legal, recede when not.
+  const dropTarget = (col) => {
+    const legal = drag ? canDrop(drag.bucket, col.id) : false
+    const hot = legal && over === col.id
+    return {
+      legal, hot,
+      className: `${hot ? 'kb-col-hot' : ''} ${drag && !legal ? 'kb-col-cold' : ''}`,
+      handlers: {
+        onDragOver: (e) => {
+          // Missing preventDefault here is THE native-DnD bug: without it no drop fires.
+          if (!legal) return
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'move'
+          if (over !== col.id) setOver(col.id)
+        },
+        onDragLeave: (e) => {
+          // dragleave also fires crossing into a child, so only clear when the pointer
+          // has genuinely left the column.
+          if (!e.currentTarget.contains(e.relatedTarget)) {
+            setOver((o) => (o === col.id ? null : o))
+          }
+        },
+        onDrop: (e) => { e.preventDefault(); drop(col) },
+      },
+    }
+  }
+  const rail = (c) => (
+    <Rail key={c.id} col={c} rows={byCol[c.id]} drag={drag} target={dropTarget(c)}
+      onOpen={onOpen} onMove={onMove} onDragRow={setDrag} />
+  )
 
   return (
     <div className={`kanban ${drag ? 'kanban-dragging' : ''}`}>
@@ -191,32 +224,12 @@ export default function Kanban({ rows, onOpen, onMove, switcher, lastMove, undo 
           slot and shrink everything else, and it has to be able to collapse to ~34px,
           which a `repeat(n, 1fr)` track cannot do. */}
       <div className="kb-board">
-        {left && (
-          <Rail col={left} rows={byCol[left.id]} drag={drag}
-            onOpen={onOpen} onMove={onMove} onDragRow={setDrag} />
-        )}
+        {left.map(rail)}
         <div className="kb-cols" style={{ '--kb-cols': cols.length }}>
         {cols.map((col) => {
-          const legal = drag ? canDrop(drag.bucket, col.id) : false
-          const hot = legal && over === col.id
+          const { hot, className, handlers } = dropTarget(col)
           return (
-            <section key={col.id}
-              className={`kb-col kb-col-${col.id} ${hot ? 'kb-col-hot' : ''} ${drag && !legal ? 'kb-col-cold' : ''}`}
-              onDragOver={(e) => {
-                // Missing preventDefault here is THE native-DnD bug: without it no drop fires.
-                if (!legal) return
-                e.preventDefault()
-                e.dataTransfer.dropEffect = 'move'
-                if (over !== col.id) setOver(col.id)
-              }}
-              onDragLeave={(e) => {
-                // dragleave also fires crossing into a child, so only clear when the pointer
-                // has genuinely left the column.
-                if (!e.currentTarget.contains(e.relatedTarget)) {
-                  setOver((o) => (o === col.id ? null : o))
-                }
-              }}
-              onDrop={(e) => { e.preventDefault(); drop(col) }}>
+            <section key={col.id} className={`kb-col kb-col-${col.id} ${className}`} {...handlers}>
               <header className="kb-head">
                 <span className={`kb-dot kb-dot-${col.id}`} />
                 <span className="kb-label">{col.label}</span>
@@ -241,10 +254,7 @@ export default function Kanban({ rows, onOpen, onMove, switcher, lastMove, undo 
           )
         })}
         </div>
-        {right && (
-          <Rail col={right} rows={byCol[right.id]} drag={drag}
-            onOpen={onOpen} onMove={onMove} onDragRow={setDrag} />
-        )}
+        {right.map(rail)}
       </div>
 
       {lastMove && (

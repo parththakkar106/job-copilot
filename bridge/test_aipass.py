@@ -338,6 +338,36 @@ async def test_handler():
         assert "My own saved wording about Ramp." in seen["prompt"]; checks += 1
         assert "answer bank" in seen["prompt"]; checks += 1
 
+        # Fill clicked twice on one form: the second click reuses the first answers and
+        # makes no call. The pending lookup is stubbed so the real pending/ is never read.
+        real_lookup = B._pending_by_url
+        B._pending_by_url = lambda url: None
+        try:
+            url = "https://jobs.ashbyhq.com/ramp/11111111-2222-3333-4444-555555555555"
+            ws = FakeWS()
+            await B.handle_ai_pass({"reqId": "a4", "fields": fields, "context": {"url": url}}, ws)
+            first = ws.sent[0]["answers"]["decisions"]
+            drafter._run_claude = lambda *a, **k: (_ for _ in ()).throw(AssertionError("called"))
+            ws = FakeWS()
+            await B.handle_ai_pass({"reqId": "a5", "fields": fields,
+                                    "context": {"url": url + "/application"}}, ws)
+            ans = ws.sent[0]["answers"]
+            assert ans.get("reused") and ans["decisions"] == first; checks += 1
+
+            # A queue job reuses its pending record instead, and his console edit wins.
+            B._pending_by_url = lambda url: {
+                "ai_decisions": [{"id": "q2", "action": "fill", "value": "AI", "applied": True}],
+                "edits": [{"id": "q2", "value": "Mine"}]}
+            ws = FakeWS()
+            await B.handle_ai_pass({"reqId": "a6", "fields": fields,
+                                    "context": {"url": "https://x/k9"}}, ws)
+            got = ws.sent[0]["answers"]["decisions"]
+            assert [d["value"] for d in got] == ["AI", "Mine"] and got[1]["by"] == "you"; checks += 1
+            assert "applied" not in got[0]; checks += 1
+        finally:
+            B._pending_by_url = real_lookup
+            B._AI_CACHE.clear()
+
         # A blow-up inside the pass answers cleanly instead of killing the fill.
         drafter._run_claude = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
         ws = FakeWS()

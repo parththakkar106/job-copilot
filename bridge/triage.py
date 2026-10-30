@@ -112,6 +112,8 @@ def append_applied(record: dict, applied_path: Path | str = APPLIED_PATH) -> boo
         # to every future clone of this application.
         if record.get("resume_track"):
             row["resume_track"] = record["resume_track"]
+        if record.get("referred"):
+            row["referred"] = True
         rows.append(row)
         p.write_text(json.dumps(rows, indent=2), encoding="utf-8")
         return True

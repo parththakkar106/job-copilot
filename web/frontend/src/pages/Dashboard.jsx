@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { useToast } from '../toast.jsx'
 import { Avatar, relDate, shortDate, useHotkeys } from '../ui.jsx'
-import { BUCKETS, BUCKET_LABEL, MOVES, TO_APPLY, inverseMove, isEditable } from '../piles.js'
+import { BUCKETS, BUCKET_LABEL, MOVES, TO_APPLY, inverseMove } from '../piles.js'
 import MoveMenu from '../MoveMenu.jsx'
 import JobDrawer from './JobDrawer.jsx'
 import Focus from './Focus.jsx'
@@ -35,13 +35,13 @@ function ViewSwitch({ view, onView }) {
 }
 
 function Row({ row, onOpen, onMove, leaving, picked, onPick }) {
-  const editable = isEditable(row.bucket)
+  const openable = row.has_record
   return (
     <div className={`row row-${row.bucket} ${leaving ? 'row-leaving' : ''}`}>
       <input type="checkbox" className="row-pick" checked={picked} onChange={() => onPick(row)}
         aria-label={`Select ${row.company} ${row.title}`} />
       <Avatar name={row.company} />
-      <div className="row-main" onClick={() => editable && onOpen(row)} role={editable ? 'button' : undefined}>
+      <div className="row-main" onClick={() => openable && onOpen(row)} role={openable ? 'button' : undefined}>
         <div className="row-title">
           <span className="row-company">{row.company}</span>
           <span className="row-role">{row.title}</span>
@@ -59,13 +59,12 @@ function Row({ row, onOpen, onMove, leaving, picked, onPick }) {
         <span className="row-date-abs">{shortDate(row.date)}</span>
       </div>
       <div className="row-actions">
-        {editable && <button className="btn btn-sm" onClick={() => onOpen(row)}>Open</button>}
+        {openable && <button className="btn btn-sm" onClick={() => onOpen(row)}>Open</button>}
+        {row.url && <a className="btn btn-sm btn-ghost" href={row.url} target="_blank" rel="noreferrer"
+          title="Job description">JD</a>}
         {row.url && row.apply_url && row.apply_url !== row.url &&
-          <a className="btn btn-sm btn-ghost" href={row.url} target="_blank" rel="noreferrer"
-            title="Job description">JD</a>}
-        {row.url && <a className="btn btn-sm btn-ghost btn-icon" href={row.apply_url || row.url}
-          target="_blank" rel="noreferrer"
-          title={row.apply_url && row.apply_url !== row.url ? 'Application form' : 'Open'}>↗</a>}
+          <a className="btn btn-sm btn-ghost btn-icon" href={row.apply_url} target="_blank"
+            rel="noreferrer" title="Application form">↗</a>}
         <MoveMenu row={row} onMove={onMove} />
       </div>
     </div>
@@ -174,6 +173,7 @@ export default function Dashboard({ bridgeAlive, refreshSignal }) {
     try {
       const res = await api.setState(row.dedup_key, m.target, m.reason ?? null, {
         company: row.company, title: row.title, location: row.location, url: row.url,
+        bucket: row.bucket,
       })
       if (undoable) {
         const inv = inverseMove(row.bucket)

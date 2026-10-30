@@ -119,6 +119,7 @@ export default function Focus({ rows, onOpen, onMove, onList, undo, lastMove, sw
     s: () => byHot('s') && hit('skipped'),
     m: () => byHot('m') && hit('submitted'),
     b: () => byHot('b') && hit('blocked'),
+    r: () => byHot('r') && hit('referral'),
     o: () => row?.url && window.open(row.apply_url || row.url, '_blank', 'noreferrer'),
     u: () => undo(),
     l: onList,
