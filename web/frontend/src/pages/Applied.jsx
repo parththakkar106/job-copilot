@@ -5,7 +5,7 @@ import JobDrawer from './JobDrawer.jsx'
 
 // What each queued link's status means, in the order a link moves through them.
 const LINK_STATUS = {
-  waiting: 'Waiting for Chrome',
+  waiting: 'In line',
   running: 'Filling',
   filled: 'Filled',
   needs_answers: 'Needs your answers',

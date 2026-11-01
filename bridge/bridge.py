@@ -1175,7 +1175,8 @@ def _next_link(now: float) -> dict | None:
             return None           # one fill at a time
         give_up = row.get("attempts", 0) >= LINK_MAX_ATTEMPTS
         row.update(status="failed" if give_up else "waiting",
-                   note="the extension never answered" if give_up else "")
+                   note="The extension never answered. Reload it at chrome://extensions."
+                   if give_up else "")
         _save_link(row)
     return next((r for r in rows if r.get("status") == "waiting"
                  and now >= r.get("retry_at", 0)), None)
@@ -1190,7 +1191,10 @@ async def serve_link() -> None:
         return
     row.update(status="running", sent_at=now, attempts=row.get("attempts", 0) + 1)
     await asyncio.to_thread(_save_link, row)
-    touch_activity()
+    # Only a first attempt restarts the idle clock. Retries arrive every LINK_ANSWER_SECS,
+    # which is shorter than IDLE_FLUSH_SECS, so they would hold back every approved role.
+    if row["attempts"] == 1:
+        touch_activity()
     for ws in list(CLIENTS):
         try:
             await ws.send(json.dumps({"type": "apply_url", "url": row["form_url"],

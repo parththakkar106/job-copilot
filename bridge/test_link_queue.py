@@ -83,6 +83,17 @@ async def run():
     outside.write_text("{}")
     await B.handle_link_done({"link_id": "../evil", "ok": True, "reqId": "r"}, ws)
     ok(outside.exists())
+
+    # Only a first attempt restarts the idle clock, so retries cannot hold back a send.
+    put("7-abcdef", attempts=1)
+    B.LAST_ACTIVITY = 1.0
+    await B.serve_link()
+    ok(B.LAST_ACTIVITY == 1.0, "a retry restarted the idle clock")
+    B._link_path("7-abcdef").unlink()
+    put("8-abcdef")
+    await B.serve_link()
+    ok(B.LAST_ACTIVITY != 1.0, "a new link left the idle clock alone")
+    B._link_path("8-abcdef").unlink()
     B.CLIENTS.discard(ws)
 
     # A link removed while its fill runs stays removed.
