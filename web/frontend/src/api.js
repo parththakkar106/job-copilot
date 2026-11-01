@@ -10,6 +10,10 @@ async function req(method, path, body) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(`/api${path}`, opts);
+  if (res.status === 401) {
+    location.assign('/login');   // the session expired
+    return new Promise(() => {});
+  }
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -38,6 +42,13 @@ export const api = {
   buildExtension: () => req('POST', '/run/build-extension'),
 
   queue: () => req('GET', '/queue'),
+
+  applied: () => req('GET', '/applied'),
+  readLink: (url) => req('POST', '/applied/read', { url }),
+  addApplied: (role) => req('POST', '/applied', role),
+  links: () => req('GET', '/links'),
+  queueLink: (url) => req('POST', '/links', { url }),
+  removeLink: (id) => req('DELETE', `/links/${id}`),
 
   bank: () => req('GET', '/bank'),
   saveBank: (row) => req('PUT', '/bank', row),

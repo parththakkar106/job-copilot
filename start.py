@@ -60,6 +60,14 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 BREAKAWAY = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
 VENV_PY = REPO_ROOT / ".venv" / ("Scripts/python.exe" if IS_WIN else "bin/python")
 
+# The Cloudflare Tunnel that publishes the console. See docs/remote_access.md.
+TUNNEL_NAME = "job-console"
+TUNNEL_HOST = "jobs.parth.party"
+TUNNEL_PORT = 20241
+TUNNEL_CONFIG = Path.home() / ".cloudflared" / f"{TUNNEL_NAME}.yml"
+TUNNEL_EXE = r"C:\Program Files (x86)\cloudflared\cloudflared.exe"   # winget's install path
+CONSOLE_AUTH = REPO_ROOT / "bridge" / ".console_auth.json"
+
 
 def _python() -> str:
     """The interpreter the services run on.
@@ -149,6 +157,25 @@ def _bridge_creds_present() -> bool:
     return BRIDGE_ENV.exists()
 
 
+def _tunnel_command() -> list[str] | None:
+    """The cloudflared command that publishes the console, or None if it is not set up.
+
+    The tunnel needs its config file and a console password. The console refuses tunnel
+    traffic without a password anyway, so this check only keeps the site from starting up
+    as a page of 503s."""
+    exe = shutil.which("cloudflared")
+    if not exe and Path(TUNNEL_EXE).exists():
+        exe = TUNNEL_EXE
+    if not exe or not TUNNEL_CONFIG.exists():
+        return None
+    if not CONSOLE_AUTH.exists():
+        print("[start] tunnel skipped: run scripts/set_console_password.py first")
+        return None
+    # The fixed metrics port gives the launcher a port to watch, as for the other services.
+    return [exe, "--config", str(TUNNEL_CONFIG), "--metrics", f"127.0.0.1:{TUNNEL_PORT}",
+            "tunnel", "run", TUNNEL_NAME]
+
+
 def _services(dev: bool, want_bridge: bool) -> list[dict]:
     """The processes to run. `core` services tear the rest down when they exit; the
     bridge doesn't - losing it costs the run controls, not the console."""
@@ -165,6 +192,11 @@ def _services(dev: bool, want_bridge: bool) -> list[dict]:
         svc.append({"tag": "web", "log": "console", "port": 8000, "core": True,
                     "cwd": REPO_ROOT, "args": api, "shell": None,
                     "url": "http://127.0.0.1:8000", "open": True})
+        tunnel = _tunnel_command()
+        if tunnel:
+            svc.append({"tag": "tun", "log": "tunnel", "port": TUNNEL_PORT, "core": False,
+                        "cwd": REPO_ROOT, "args": tunnel, "shell": None,
+                        "url": f"https://{TUNNEL_HOST}", "open": False})
     if want_bridge and _bridge_creds_present():
         svc.append({"tag": "brg", "log": "bridge", "port": 8765, "core": False,
                     "cwd": REPO_ROOT, "args": [PY, str(BRIDGE)], "shell": None,
@@ -176,7 +208,7 @@ def _services(dev: bool, want_bridge: bool) -> list[dict]:
 
 # Every port start.py can serve on. The stop step clears all of them regardless of mode,
 # so switching between --dev and prod does not leave the other mode's server behind.
-PORTS = (8000, 5173, 8765)
+PORTS = (8000, 5173, 8765, TUNNEL_PORT)
 
 
 def _port_open(port: int) -> bool:
@@ -223,6 +255,8 @@ def _is_ours(proc: dict) -> str | None:
         return "console"
     if name.startswith("python") and "start.py" in cmd and root in cmd:
         return "launcher"
+    if name == "cloudflared.exe" and TUNNEL_NAME in cmd:
+        return "tunnel"
     if name == "node.exe" and root in cmd:
         return "frontend"
     # The .cmd wrappers the old window-per-service launcher wrote to %TEMP%\jobpipe-*.
@@ -380,7 +414,8 @@ def _run_hidden(svc: list[dict], dev: bool, want_bridge: bool) -> int:
 
 
 def _status() -> int:
-    for port, name in ((8765, "bridge"), (8000, "console"), (5173, "frontend (dev)")):
+    for port, name in ((8765, "bridge"), (8000, "console"), (5173, "frontend (dev)"),
+                       (TUNNEL_PORT, "tunnel")):
         print(f"  {name:<15} :{port}  {'up' if _port_open(port) else 'down'}")
     for pid, what in _running():
         print(f"  pid {pid:<8} {what}")

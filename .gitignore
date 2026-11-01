@@ -44,6 +44,10 @@ bridge/.prefs.*.tmp
 # secrets — never commit
 .env
 *.key
+bridge/.console_auth.json
+
+# links the web console queued for the extension
+bridge/.link_queue/
 
 # python
 __pycache__/

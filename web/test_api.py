@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from web.app import services as svc  # noqa: E402
+from web.app import auth, services as svc  # noqa: E402
 from web.app.main import app  # noqa: E402
 # paths.py (imported above) puts bridge/ on sys.path, so `prefs` is importable after it.
 from web.app.paths import bank_mod, drafter_mod, pending_mod, triage_mod  # noqa: E402
@@ -36,6 +36,8 @@ def _isolate(tmp: Path) -> None:
     config files are gitignored and only the .example templates are present.
     """
     from core import paths as core_paths
+    # No password file: a real one would answer every test request with 401.
+    auth.AUTH_PATH = tmp / ".console_auth.json"
     (tmp / "pending").mkdir()
     (tmp / "out").mkdir()
     shutil.copy(core_paths.COMPANIES, tmp / "companies.yaml")

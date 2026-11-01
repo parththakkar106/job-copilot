@@ -179,3 +179,6 @@ FLUSH_TRIGGER = REPO_ROOT / "bridge" / ".flush_trigger"
 # "Parth is still working" and restarts the idle countdown, so approving a job on the
 # dashboard no longer lets the idle-watcher send the pile seconds later.
 ACTIVITY_PING = REPO_ROOT / "bridge" / ".activity"
+# One JSON file per link the console queued. One file per link means the console and the
+# bridge never rewrite the same file, so neither can drop the other's change.
+LINK_QUEUE = REPO_ROOT / "bridge" / ".link_queue"

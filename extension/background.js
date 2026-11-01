@@ -178,7 +178,9 @@ function connectBridge() {
         // fill it deterministically, and collect its questions into the batch — exactly a
         // one-off runQueue iteration. Fire-and-forget; the collect ride-back does the rest.
         console.log("[bridge] apply-url requested from Telegram");
-        runApplyUrl(m.url).catch(e => console.warn("[apply_url] failed:", (e && e.message) || e));
+        runApplyUrl(m.url, m.link_id)
+          .then(r => m.link_id && requestBridge({ type: "link_done", link_id: m.link_id, ...r }))
+          .catch(e => console.warn("[apply_url] failed:", (e && e.message) || e));
       } else if (m.type === "error") {
         console.warn("[bridge] error:", m.error);
       }
@@ -934,9 +936,9 @@ async function runFlush() {
 // Telegram with /next and phase 3 (runFlush) submits it later, exactly like a queued role.
 // The dedup_key is left empty; the bridge resolves it (matching today's queue by URL if the
 // link is already in it, so an /apply of a queued role can't cause a second application).
-async function runApplyUrl(url) {
-  if (queueRunning || flushRunning) { await notify("↩️ I'm mid-run — send /apply again once it's finished."); return; }
-  if (!/^https?:\/\//i.test(String(url || ""))) { await notify("⚠️ That didn't look like a link. Send /apply followed by the application URL."); return; }
+async function runApplyUrl(url, linkId = "") {
+  if (queueRunning || flushRunning) { await notify("↩️ I'm mid-run — send /apply again once it's finished."); return { ok: false, busy: true }; }
+  if (!/^https?:\/\//i.test(String(url || ""))) { await notify("⚠️ That didn't look like a link. Send /apply followed by the application URL."); return { ok: false, note: "not a link" }; }
   queueRunning = true;
   stopRequested = false;
   let tab = null;
@@ -945,26 +947,27 @@ async function runApplyUrl(url) {
     tab = await chrome.tabs.create({ url, active: true });
     if (!(await waitForComplete(tab.id))) {
       await notify("⏭️ That page didn't load — check the link and try /apply again.");
-      return;
+      return { ok: false, note: "the page didn't load" };
     }
     await sleepBg(jitter(1500, 3000)); // React hydration + human-ish delay
 
     const report = await fillTab(tab.id, /* autoSubmit */ false, { mode: "collect" });
     if ((report.errors || []).length && !(report.filled || []).length) {
       await notify(`⚠️ Couldn't fill it: ${escHtml((report.errors || []).join("; "))}`);
-      return;
+      return { ok: false, note: (report.errors || []).join("; ") };
     }
     const questions = report.questions || [];
     // Nothing read = wrong URL shape (a job description or an unsupported ATS), not a
     // zero-question form. Tell him rather than collecting an empty shell (same guard runQueue uses).
     if (!(report.filled || []).length && !questions.length) {
       await notify("⚠️ I read nothing off that page. Send the <b>application form</b> link (Greenhouse, Lever or Ashby), not the job description.");
-      return;
+      return { ok: false, note: "no application form on that page" };
     }
     await requestBridge({
       type: "collect",
       job: {
         dedup_key: "", // the bridge resolves it (URL-match today's queue, else compute)
+        link_id: linkId, // set when the console queued this link
         company: report.company || "", title: report.title || "",
         location: "", url: report.url || url,
         compensation: (report.jobInfo && report.jobInfo.compensation) || "",
@@ -982,8 +985,10 @@ async function runApplyUrl(url) {
       + (questions.length
           ? `• ${questions.length} question(s) need you — send <b>/next</b>.`
           : `• Nothing needed but a ✅ — send <b>/next</b> to review and approve.`));
+    return { ok: true };
   } catch (e) {
     await notify(`⚠️ ${escHtml(String((e && e.message) || e))}`);
+    return { ok: false, note: String((e && e.message) || e) };
   } finally {
     if (tab && tab.id != null) { try { await chrome.tabs.remove(tab.id); } catch (_) {} }
     queueRunning = false;

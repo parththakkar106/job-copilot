@@ -56,6 +56,7 @@ FLUSH_TRIGGER = BRIDGE_DIR / ".flush_trigger"    # new: fires a P3 flush (send a
 # Not a command: it only tells the bridge Parth is still working, so its idle-watcher
 # restarts the countdown instead of flushing the pile he just approved.
 ACTIVITY_PING = BRIDGE_DIR / ".activity"
+LINK_QUEUE = core_paths.LINK_QUEUE
 
 # Re-exported so routers import them from one place.
 import pending as pending_mod        # noqa: E402  (bridge/pending.py)

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
 import { ToastProvider, useToast } from './toast.jsx'
 import Dashboard from './pages/Dashboard.jsx'
+import Applied from './pages/Applied.jsx'
 import AnswerBank from './pages/AnswerBank.jsx'
 import Profile from './pages/Profile.jsx'
 import Companies from './pages/Companies.jsx'
@@ -10,6 +11,7 @@ import Search from './pages/Search.jsx'
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard' },
+  { id: 'applied', label: 'Applied' },
   { id: 'bank', label: 'Answer bank' },
   { id: 'profile', label: 'Profile' },
   { id: 'companies', label: 'Companies' },
@@ -119,6 +121,9 @@ function Shell() {
           <span className={`bridge-pill ${status.bridge_alive ? 'up' : 'down'}`}>
             <span className="dot" /> bridge {status.bridge_alive ? 'up' : 'down'}
           </span>
+          <form method="post" action="/logout">
+            <button className="btn btn-sm btn-ghost">Log out</button>
+          </form>
         </div>
       </header>
 
@@ -126,6 +131,7 @@ function Shell() {
 
       <main className="content">
         {tab === 'dashboard' && <Dashboard refreshSignal={refreshKey} bridgeAlive={status.bridge_alive} />}
+        {tab === 'applied' && <Applied bridgeAlive={status.bridge_alive} />}
         {tab === 'bank' && <AnswerBank />}
         {tab === 'profile' && <Profile />}
         {tab === 'companies' && <Companies />}

@@ -470,6 +470,8 @@ def is_complete(rec: dict) -> bool:
 
 # The bar every AI decision on a form must clear before the bridge approves it unattended.
 AUTO_MIN_CONF = 0.9
+# A link Parth queued himself is a role he already chose, so it clears a lower bar.
+LINK_MIN_CONF = 0.8
 # An AI-written free-text answer at least this long is an essay, which Parth always reads.
 # Field kind cannot tell essays apart: forms use a plain `text` input for both "Ohio" and
 # a 500-character "Why us?". Measured 2026-10-30, short facts stay under 130 characters
@@ -477,11 +479,11 @@ AUTO_MIN_CONF = 0.9
 ESSAY_MIN_CHARS = 150
 
 
-def auto_block(rec: dict) -> str | None:
+def auto_block(rec: dict, min_conf: float = AUTO_MIN_CONF) -> str | None:
     """Why this record may NOT be approved without Parth, or None when it may.
 
     Deterministic fills are trusted as they are. Everything else on the form must come from
-    the AI pass at AUTO_MIN_CONF or above, and no AI-written essay may be on it. A record
+    the AI pass at `min_conf` or above, and no AI-written essay may be on it. A record
     the AI pass never touched is refused: nothing has checked that the deterministic rules
     matched the right fields.
     """
@@ -504,7 +506,7 @@ def auto_block(rec: dict) -> str | None:
             return f"AI replaced a hard fact: {label}"
         if d.get("applied") is False:
             return f"AI value not written: {label}"
-        if float(d.get("confidence") or 0) < AUTO_MIN_CONF:
+        if float(d.get("confidence") or 0) < min_conf:
             return f"AI {round(float(d.get('confidence') or 0) * 100)}% on {label}"
     return None
 

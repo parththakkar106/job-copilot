@@ -10,7 +10,11 @@ export default defineConfig({
     // resolves to ::1 on Windows, which 127.0.0.1 requests miss).
     host: '127.0.0.1',
     port: 5173,
-    proxy: { '/api': 'http://127.0.0.1:8000' },
+    proxy: {
+      '/api': 'http://127.0.0.1:8000',
+      '/login': 'http://127.0.0.1:8000',
+      '/logout': 'http://127.0.0.1:8000',
+    },
   },
   build: { outDir: 'dist', emptyOutDir: true },
 })

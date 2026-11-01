@@ -11,12 +11,17 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import socket
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
+
+from core.joblink import form_url, url_token
+from core.joblink import read as joblink_read
+from core.scraper import dedup_key
 
 from .paths import (
     ACTIVITY_PING,
@@ -26,6 +31,7 @@ from .paths import (
     DREAM_PATH,
     FILTERS_PATH,
     FLUSH_TRIGGER,
+    LINK_QUEUE,
     MANUAL_PATH,
     PROFILE_PATH,
     PROFILE_WRITE,
@@ -33,6 +39,7 @@ from .paths import (
     RUN_TRIGGER,
     SEARCH_PATH,
     bank_mod,
+    drafter_mod,
     pending_mod,
     triage_mod,
 )
@@ -400,6 +407,132 @@ def apply_transition(key: str, target: str, reason: str | None = None,
         return {"ok": False, "error": "no record to hold"}
 
     return {"ok": False, "error": f"unknown target: {target}"}
+
+
+# ── Applied list and pasted links ────────────────────────────────────────────────────
+
+def applied_rows() -> list[dict]:
+    """Every role Parth applied to, newest first. `rejected` rows are roles he passed on."""
+    rows = [{"dedup_key": r.get("dedup_key"), "company": r.get("company", ""),
+             "title": r.get("title", ""), "location": r.get("location", ""),
+             "url": r.get("url", ""), "applied": (r.get("applied") or "")[:10]}
+            for r in triage_mod.load_applied(triage_mod.APPLIED_PATH)
+            if r.get("status") != "rejected"]
+    # The file is oldest first, so reversing it puts the latest row first within a day.
+    return sorted(reversed(rows), key=lambda r: r["applied"], reverse=True)
+
+
+def _known_role(url: str) -> dict | None:
+    """The tracked role a link points at, in any pile, matched by job id.
+
+    The scraper's key hashes its own company, title, and location strings, and a page read
+    rarely reproduces them. A fresh key for a role already in the queue would leave that
+    role in the queue, and the collect run would apply a second time."""
+    token = url_token(url)
+    if not token:
+        return None
+    applied = triage_mod.load_applied(triage_mod.APPLIED_PATH)
+    roles = applied + pending_mod.all_jobs() + load_queue() + load_dream() + load_manual()
+    return next((r for r in roles if url_token(r.get("url")) == token), None)
+
+
+def read_link(url: str) -> dict:
+    """What the Add box previews. A role already in applied.json comes back flagged."""
+    names = {(c["ats"], str(c["slug"]).lower()): c["name"] for c in load_companies()}
+    # Haiku is enough to pull three fields out of a page, and it spends the least quota.
+    ask = (lambda p: drafter_mod._run_claude(p, model="haiku", timeout=45)) \
+        if drafter_mod.available() else None
+    out = joblink_read(url, names, ask)
+    known = _known_role(url)
+    out["already_applied"] = bool(
+        known and known.get("dedup_key") in triage_mod.applied_keys(triage_mod.APPLIED_PATH))
+    return out
+
+
+def add_applied(role: dict) -> dict:
+    """Log a role Parth applied to himself. A tracked role moves out of its pile."""
+    known = _known_role(role["url"])
+    key = (known or {}).get("dedup_key") or dedup_key(
+        role["company"], role["title"], role["location"])
+    if key in triage_mod.applied_keys(triage_mod.APPLIED_PATH):
+        return {"ok": False, "error": "that role is already in your applied list"}
+    return apply_transition(key, "submitted", meta=role)
+
+
+def _link_view(row: dict, applied: dict[str, dict]) -> dict | None:
+    """A queued link with its role's current state, or None once it should leave the list.
+
+    A filled link names its record, so the record's status is the truth. A sent role stays
+    listed through the day it was sent, then shows only in the applied list."""
+    key = row.get("dedup_key")
+    if not key:
+        return row
+    rec = pending_mod.load(key)
+    if rec:
+        left = len(pending_mod.unanswered(rec))
+        status = rec.get("status")
+        if status == pending_mod.AWAITING:
+            status = "needs_answers" if left else "ready"
+        elif status == pending_mod.APPROVED:
+            status = "sending"
+        return {**row, "status": status, "company": rec.get("company", ""),
+                "title": rec.get("title", ""), "unanswered": left,
+                "note": rec.get("hold_reason") or rec.get("auto_block") or ""}
+    done = applied.get(key)
+    if done and done.get("status") != "rejected" \
+            and (done.get("applied") or "")[:10] >= date.today().isoformat():
+        return {**row, "status": "sent", "company": done.get("company", ""),
+                "title": done.get("title", "")}
+    return None
+
+
+def queued_links() -> list[dict]:
+    if not LINK_QUEUE.exists():
+        return []
+    applied = {r.get("dedup_key"): r for r in triage_mod.load_applied(triage_mod.APPLIED_PATH)}
+    rows = []
+    for p in sorted(LINK_QUEUE.glob("*.json")):
+        try:
+            row = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue          # the bridge is mid-write; the next poll reads it
+        view = _link_view(row, applied)
+        if view:
+            rows.append(view)
+        else:
+            p.unlink(missing_ok=True)
+    return rows
+
+
+def queue_link(url: str) -> dict:
+    """Queue a link for the bridge to hand to the extension when Chrome is connected."""
+    known = _known_role(url)
+    if known:
+        key = known.get("dedup_key")
+        if key in triage_mod.applied_keys(triage_mod.APPLIED_PATH):
+            return {"ok": False, "error": "that role is already in your applied list"}
+        if pending_mod.load(key):
+            return {"ok": False, "error": "that role is already filled, on your Dashboard"}
+    token = url_token(url)
+    if any(url_token(r.get("url")) == token for r in queued_links()):
+        return {"ok": False, "error": "that link is already queued"}
+    LINK_QUEUE.mkdir(parents=True, exist_ok=True)
+    # The timestamp prefix makes a sorted directory listing first-in, first-out.
+    link_id = f"{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+    row = {"id": link_id, "url": url, "form_url": form_url(url), "status": "waiting",
+           "attempts": 0, "added": datetime.now(timezone.utc).isoformat()}
+    (LINK_QUEUE / f"{link_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    return {"ok": True, "link": row}
+
+
+def remove_link(link_id: str) -> bool:
+    if not re.fullmatch(r"\d+-[0-9a-f]{6}", link_id):
+        return False
+    path = LINK_QUEUE / f"{link_id}.json"
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
 
 
 # ── Run triggers (reach the extension via sentinel files, never a WebSocket) ─────────

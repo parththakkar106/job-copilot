@@ -124,6 +124,7 @@ import prefs as prefs_mod  # runtime flags Parth flips while things run (auto_su
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from core import apply_log as apply_log_mod  # Workday entry-route policy (reads applied.json)
 from core import bank as bank_mod
+from core.joblink import url_token as _url_token  # identity for the panel->queue dedup match
 from core import paths as paths_mod       # the one place that knows where anything lives
 from core import profile as profile_mod  # resume track tags + display names for /resume
 from core import referral as referral_mod  # pasted-profile resolution + the outreach store
@@ -1118,6 +1119,122 @@ async def trigger_watcher() -> None:
                 await fire_run_queue("scheduled")
         except Exception as e:
             print(f"[run] trigger watcher error: {redact(e)}", file=sys.stderr)
+
+
+# --- links queued from the web console --------------------------------------------------
+#
+# The console writes one file per link into LINK_QUEUE_DIR. This watcher hands them to the
+# extension one at a time, and the extension answers `link_done` when each fill ends. So a
+# link waits safely while Chrome is closed or a run is using the tabs. A link stays on disk
+# until that answer arrives, and LINK_ANSWER_SECS covers an evicted extension worker, which
+# never answers.
+LINK_QUEUE_DIR = paths_mod.LINK_QUEUE
+LINK_ANSWER_SECS = 300
+LINK_BUSY_RETRY_SECS = 60
+LINK_MAX_ATTEMPTS = 3
+_LINK_ID_RE = re.compile(r"\d+-[0-9a-f]{6}")
+
+
+def _link_rows() -> list[dict]:
+    rows = []
+    for p in sorted(pathlib.Path(LINK_QUEUE_DIR).glob("*.json")):
+        try:
+            rows.append(json.loads(p.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as e:
+            dlog(f"[links] skipping {p.name} ({e})")
+    return rows
+
+
+def _link_path(link_id: str) -> pathlib.Path:
+    return pathlib.Path(LINK_QUEUE_DIR) / f"{link_id}.json"
+
+
+def _save_link(row: dict) -> None:
+    # The console may have removed this link since the read. Writing it back would revive it.
+    path = _link_path(row["id"])
+    if path.exists():
+        path.write_text(json.dumps(row), encoding="utf-8")
+
+
+def _bind_link(link_id: str, dedup_key: str) -> None:
+    """Tie a queued link to its filled record, so the console can show that role's state."""
+    path = _link_path(link_id)
+    if _LINK_ID_RE.fullmatch(link_id) and path.exists():
+        row = json.loads(path.read_text(encoding="utf-8"))
+        row.update(status="filled", dedup_key=dedup_key)
+        _save_link(row)
+
+
+def _next_link(now: float) -> dict | None:
+    """The link to hand over now, or None. Times out a link that never got an answer."""
+    rows = _link_rows()
+    for row in rows:
+        if row.get("status") != "running":
+            continue
+        if now - row.get("sent_at", 0) < LINK_ANSWER_SECS:
+            return None           # one fill at a time
+        give_up = row.get("attempts", 0) >= LINK_MAX_ATTEMPTS
+        row.update(status="failed" if give_up else "waiting",
+                   note="the extension never answered" if give_up else "")
+        _save_link(row)
+    return next((r for r in rows if r.get("status") == "waiting"
+                 and now >= r.get("retry_at", 0)), None)
+
+
+async def serve_link() -> None:
+    if not CLIENTS:
+        return
+    now = time.time()
+    row = await asyncio.to_thread(_next_link, now)
+    if row is None:
+        return
+    row.update(status="running", sent_at=now, attempts=row.get("attempts", 0) + 1)
+    await asyncio.to_thread(_save_link, row)
+    touch_activity()
+    for ws in list(CLIENTS):
+        try:
+            await ws.send(json.dumps({"type": "apply_url", "url": row["form_url"],
+                                      "link_id": row["id"]}))
+        except Exception:
+            pass
+
+
+async def link_queue_watcher() -> None:
+    while True:
+        await asyncio.sleep(TRIGGER_POLL_SECS)
+        try:
+            await serve_link()
+        except Exception as e:
+            print(f"[links] watcher error: {redact(e)}", file=sys.stderr)
+
+
+async def handle_link_done(msg, ws):
+    """The extension finished a queued link. A busy extension gets the same link again.
+
+    A filled link stays on disk, because the console shows its record's state until the role
+    is sent. An auto-approved role goes out now. This message arrives after the extension
+    has finished the fill, and a flush any earlier would find it busy and be dropped."""
+    link_id = str(msg.get("link_id") or "")
+    path = _link_path(link_id)
+    send = False
+    if _LINK_ID_RE.fullmatch(link_id) and path.exists():
+        row = json.loads(path.read_text(encoding="utf-8"))
+        if msg.get("busy"):
+            row.update(status="waiting", attempts=max(0, row.get("attempts", 1) - 1),
+                       retry_at=time.time() + LINK_BUSY_RETRY_SECS)
+            _save_link(row)
+        elif not msg.get("ok"):
+            row.update(status="failed", note=str(msg.get("note") or "the fill failed"))
+            _save_link(row)
+        elif row.get("dedup_key"):
+            rec = await asyncio.to_thread(pending_mod.load, row["dedup_key"])
+            send = bool(rec and rec.get("auto_approved"))
+        else:
+            path.unlink(missing_ok=True)
+    await ws.send(json.dumps({"type": "answers", "reqId": msg.get("reqId"),
+                              "answers": {"ok": True}}))
+    if send:
+        await fire_flush("link")
 
 
 async def fire_flush(source: str) -> None:
@@ -2242,7 +2359,7 @@ async def _predraft_record(dedup_key: str, context: dict) -> None:
         dlog(f"[predraft] {dedup_key!r} failed ({e})")
 
 
-async def _auto_approve(rec: dict) -> None:
+async def _auto_approve(rec: dict, min_conf: float = pending_mod.AUTO_MIN_CONF) -> None:
     """Approve a freshly collected record without Parth when pending.auto_block clears it.
 
     The idle-watcher then sends it like any approved job, after the collect run ends. The
@@ -2252,7 +2369,7 @@ async def _auto_approve(rec: dict) -> None:
     if not prefs_mod.get("auto_submit", True):
         return
     key = rec.get("dedup_key")
-    reason = pending_mod.auto_block(rec)
+    reason = pending_mod.auto_block(rec, min_conf)
     if reason:
         rec["auto_block"] = reason
         await asyncio.to_thread(pending_mod.save, rec)
@@ -2266,7 +2383,7 @@ async def _auto_approve(rec: dict) -> None:
     await asyncio.to_thread(
         tg_send, f"🤖 Auto-approved <b>{html.escape(str(rec.get('company')))}</b> · "
                  f"{html.escape(str(rec.get('title')))} (every AI answer ≥ "
-                 f"{round(pending_mod.AUTO_MIN_CONF * 100)}%). It goes out after this run.")
+                 f"{round(min_conf * 100)}%). It goes out after this run.")
 
 
 async def handle_collect(msg, ws):
@@ -2275,11 +2392,16 @@ async def handle_collect(msg, ws):
     req_id = msg.get("reqId")
     try:
         job = msg.get("job") or {}
+        # A link pasted on Telegram always stops for Parth's check. The queue path always
+        # carries the scraper's dedup_key, so an empty key marks a pasted link. A link from
+        # the console's queue arrives with its link_id and may go out on its own.
+        pasted = not str(job.get("dedup_key") or "").strip()
+        link_id = str(job.get("link_id") or "")
         # The queue path always carries the scraper's dedup_key; the ad-hoc /apply path does
         # not (the extension can't mint one). Resolve it here — URL-match today's queue so an
         # /apply of a role already queued reuses its key (no second application), else compute
         # one from the scraped company/title/location. A key already present is left untouched.
-        if not str(job.get("dedup_key") or "").strip():
+        if pasted:
             job = {**job, "dedup_key": await asyncio.to_thread(resolve_dedup_key, job)}
         if not job.get("posted"):
             job = {**job, "posted": await asyncio.to_thread(posted_from_queue, job["dedup_key"])}
@@ -2288,7 +2410,11 @@ async def handle_collect(msg, ws):
             msg.get("filled") or [], None, msg.get("warnings") or [],
             msg.get("ai_decisions") or [], msg.get("fields") or [])
         answers = {"ok": True, "added": rec is not None}
-        if rec:
+        if link_id:
+            await asyncio.to_thread(_bind_link, link_id, job["dedup_key"])
+        if rec and link_id:
+            await _auto_approve(rec, pending_mod.LINK_MIN_CONF)
+        elif rec and not pasted:
             await _auto_approve(rec)
         # Kick off Claude drafting in the background so the push finds ready drafts. Context
         # is the job's own facts; the tab has already closed, so nobody is waiting on this.
@@ -2391,41 +2517,6 @@ async def handle_queue(msg, ws):
         print(f"[queue] triage failed: {e}", file=sys.stderr)
         answers = {"jobs": [], "stats": {"error": str(e)}}
     await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": answers}))
-
-
-# --- URL identity for the panel->queue dedup match ----------------------------------
-# The panel's live URL is NEVER byte-equal to the queue's URL for the same job:
-#   ashby       queue .../<uuid>              live .../<uuid>/application
-#   greenhouse  queue boards.greenhouse.io/... (or careers.<co>.com/...?gh_jid=N)
-#               live  job-boards.greenhouse.io/<slug>/jobs/N  (after the 301)
-#   lever       queue .../<posting-uuid>       live .../<posting-uuid>/apply
-# So compare a TOKEN both worlds share: the Ashby/Lever posting UUID, or the Greenhouse
-# numeric job id (gh_jid=N and /jobs/N are the same id). Only when no token exists fall
-# back to a normalized host+path compare.
-
-_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
-_GH_ID_RE = re.compile(r"[?&]gh_jid=(\d+)|/jobs/(\d+)(?:[/?#]|$)")
-
-
-def _url_token(url: str) -> str:
-    u = str(url or "").strip().lower()
-    if not u:
-        return ""
-    m = _UUID_RE.search(u)
-    if m:
-        return "uuid:" + m.group(0)
-    m = _GH_ID_RE.search(u)
-    if m:
-        return "gh:" + (m.group(1) or m.group(2))
-    # No recognizable job id: normalized host+path (strip scheme/query/fragment,
-    # the /apply|/application suffix, trailing slash; fold the GH host rename).
-    m = re.match(r"^[a-z]+://([^/?#]+)([^?#]*)", u)
-    if not m:
-        return "url:" + u
-    host, path = m.group(1), m.group(2)
-    host = host.replace("job-boards.greenhouse.io", "boards.greenhouse.io")
-    path = re.sub(r"/(apply|application)/?$", "", path).rstrip("/")
-    return "url:" + host + path
 
 
 def posted_from_queue(dedup_key: str) -> str:
@@ -3110,6 +3201,7 @@ async def ws_handler(ws):
 
     dispatch = {"ask": handle_ask, "review": handle_review, "queue": handle_queue,
                 "applied": handle_applied, "notify": handle_notify,
+                "link_done": handle_link_done,
                 "log_report": handle_log_report, "audit_dump": handle_audit_dump,
                 "collect": handle_collect, "approved": handle_approved,
                 "drafts": handle_drafts, "bank_touch": handle_bank_touch,
@@ -3208,6 +3300,7 @@ async def main():
         idle = asyncio.create_task(idle_watcher())
         trigger = asyncio.create_task(trigger_watcher())
         flush_trigger = asyncio.create_task(flush_trigger_watcher())
+        links = asyncio.create_task(link_queue_watcher())
         activity = asyncio.create_task(activity_watcher())
         outreach = asyncio.create_task(outreach_watcher())
         try:
@@ -3216,6 +3309,7 @@ async def main():
             idle.cancel()
             trigger.cancel()
             flush_trigger.cancel()
+            links.cancel()
             activity.cancel()
             outreach.cancel()
 

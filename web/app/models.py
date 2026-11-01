@@ -1,9 +1,10 @@
 """Pydantic request bodies for the write endpoints."""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AnswerEdit(BaseModel):
@@ -53,6 +54,18 @@ class ProfileUpdate(BaseModel):
 class SearchPicks(BaseModel):
     paths: list[str]
     levels: list[str]
+
+
+class JobLink(BaseModel):
+    url: str = Field(max_length=2000)
+
+
+class AppliedRole(BaseModel):
+    company: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=300)
+    location: str = Field(default="", max_length=200)
+    url: str = Field(max_length=2000)
+    applied: date                # the day Parth applied; never in the future
 
 
 class DraftPref(BaseModel):

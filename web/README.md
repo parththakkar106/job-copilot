@@ -88,10 +88,8 @@ python web/test_api.py            # 42 checks — API over an isolated temp data
 python bridge/test_flush_trigger.py   # 8 checks — the .flush_trigger handoff
 ```
 
-## Local-first, and hosting later
+## Remote access
 
-`start.py` binds the console to `127.0.0.1` on purpose — the state files hold PII (address, phone,
-per-job answers). To reach it from your phone or another device later, don't change the
-bind: put it behind a tunnel / reverse proxy that adds authentication (e.g. Cloudflare
-Access, Tailscale, or an nginx basic-auth front). The app itself has **no auth** yet, so
-never expose it directly on `0.0.0.0`.
+`start.py` binds the console to `127.0.0.1` because the state files hold PII (address, phone,
+per-job answers). To reach it from another device, keep that bind and use the password-protected
+Cloudflare Tunnel in [docs/remote_access.md](../docs/remote_access.md). Never bind it to `0.0.0.0`.

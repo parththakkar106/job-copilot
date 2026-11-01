@@ -8,16 +8,21 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Request
+
+from core.joblink import is_web_url
 
 from . import services as svc
 from .models import (
     AnswersUpdate,
+    AppliedRole,
     BankRow,
     CompanyTier,
     DraftPref,
     FilledEdit,
+    JobLink,
     ProfileUpdate,
     ResumeOverride,
     SearchPicks,
@@ -167,6 +172,56 @@ def submit_job(dedup_key: str):
     approved = pending_mod.counts().get("approved", 0)
     return {"ok": True, "approved_now": approved,
             "note": "flush requested; the extension will send the whole approved pile"}
+
+
+# ── Applied list and pasted links ────────────────────────────────────────────────────
+
+def _web_url(url: str) -> str:
+    url = url.strip()
+    if not is_web_url(url):
+        raise HTTPException(400, "paste a full http or https link")
+    return url
+
+
+@router.get("/applied")
+def get_applied():
+    return {"rows": svc.applied_rows()}
+
+
+@router.post("/applied/read")
+def read_applied_link(body: JobLink):
+    return svc.read_link(_web_url(body.url))
+
+
+@router.post("/applied")
+def add_applied(body: AppliedRole):
+    if body.applied > date.today():
+        raise HTTPException(400, "the applied date is in the future")
+    res = svc.add_applied({**body.model_dump(), "url": _web_url(body.url),
+                           "applied": body.applied.isoformat()})
+    if not res.get("ok"):
+        raise HTTPException(409, res.get("error", "could not save that role"))
+    return res
+
+
+@router.get("/links")
+def get_links():
+    return {"links": svc.queued_links()}
+
+
+@router.post("/links")
+def add_link(body: JobLink):
+    res = svc.queue_link(_web_url(body.url))
+    if not res.get("ok"):
+        raise HTTPException(409, res["error"])
+    return res
+
+
+@router.delete("/links/{link_id}")
+def delete_link(link_id: str):
+    if not svc.remove_link(link_id):
+        raise HTTPException(404, "no such link")
+    return {"ok": True}
 
 
 # ── Run controls ─────────────────────────────────────────────────────────────────────
