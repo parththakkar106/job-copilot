@@ -81,9 +81,15 @@ def _for_display(rec: dict) -> dict:
 @router.get("/jobs/{dedup_key}")
 def get_job(dedup_key: str):
     rec = pending_mod.load(dedup_key)
+    # Only a live queue record can change. A sent or blocked role opens from its archive, and
+    # the bridge moves expired and referral roles on its own, so those are for reading.
+    read_only = rec is None or rec.get("status") in (pending_mod.EXPIRED, pending_mod.REFERRAL)
+    rec = rec or pending_mod.load_archived(dedup_key)
     if rec is None:
         raise HTTPException(404, "no pending record for that job")
-    return _for_display(rec)
+    rec = _for_display(rec)
+    rec["_read_only"] = read_only
+    return rec
 
 
 @router.put("/jobs/{dedup_key}/answers")

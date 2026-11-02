@@ -151,6 +151,8 @@ def _pending_row(rec: dict, tiers: dict[str, str]) -> dict:
         bucket, tag = "in_queue", "skipped"
     elif st == pending_mod.EXPIRED:
         bucket, tag = "expired", f"posted over {pending_mod.EXPIRE_DAYS} days ago"
+    elif st == pending_mod.REFERRAL:
+        bucket, tag = "referral", "awaiting referral"   # dashboard_rows adds the dates
     else:  # awaiting
         bucket = "in_queue"
         tag = (f"{n} question{'' if n == 1 else 's'}" if n
@@ -180,6 +182,7 @@ def _pending_row(rec: dict, tiers: dict[str, str]) -> dict:
         "resume": rec.get("resume", ""),
         "rank": rank,
         "auto_approved": bool(rec.get("auto_approved")),
+        "has_record": True,
     }
 
 
@@ -268,6 +271,7 @@ def dashboard_rows(since_days: int | None = 60) -> list[dict]:
     tiers = _tier_map()
     rows = [_pending_row(r, tiers) for r in pending_mod.all_jobs()]
     cutoff = (date.today() - timedelta(days=since_days)).isoformat() if since_days else None
+    archived = pending_mod.archived_keys()
     for r in triage_mod.load_applied(triage_mod.APPLIED_PATH):
         when = (r.get("applied") or "")[:10]
         if cutoff and when and when < cutoff:
@@ -280,17 +284,28 @@ def dashboard_rows(since_days: int | None = 60) -> list[dict]:
             "location": r.get("location", ""),
             "url": r.get("url", ""),
             "bucket": "blocked" if blocked else "submitted",
-            "tag": "blocked" if blocked else "applied",
+            "tag": "blocked" if blocked else "applied" + (" · referred" if r.get("referred") else ""),
             "status": r.get("status") or "applied",
             "tier": tiers.get((r.get("company") or "").casefold(), "pipeline"),
             "date": when,
             "unanswered": 0,
             "resume": "",
+            "has_record": r.get("dedup_key") in archived,
         })
     seen = {r.get("dedup_key") for r in rows if r.get("dedup_key")}
     rows.extend(_queue_rows(seen))
     rows.extend(_dream_rows(seen))
     rows.extend(_manual_rows(seen, tiers))
+    # A parked role keeps its source row but shows in Awaiting referral. Discovered and By
+    # hand roles have no record to carry the status, so the wait list decides for all.
+    waits = pending_mod.referral_waits()
+    for r in rows:
+        w = waits.get(r.get("dedup_key"))
+        if w and r["bucket"] in ("referral", "discovered", "manual", "dream"):
+            r["bucket"] = "referral"
+            r["tag"] = (f"asked {w['asked'][:10]}, applies after {pending_mod.REFERRAL_DAYS} days"
+                        if w.get("asked") else f"parked {w['parked'][:10]}, asks after "
+                        f"{pending_mod.REFERRAL_DAYS} days")
     sort_rows(rows)
     return rows
 
@@ -307,7 +322,7 @@ def count_rows(rows: list[dict]) -> dict:
     the view is showing — computing counts over all history while the rows were windowed to
     60 days made the numbers disagree with the list underneath them."""
     out = {"all": len(rows), "discovered": 0, "in_queue": 0, "filled": 0, "submitted": 0,
-           "blocked": 0, "expired": 0, "dream": 0, "manual": 0, "tier_pipeline": 0, "tier_dream": 0}
+           "blocked": 0, "expired": 0, "referral": 0, "dream": 0, "manual": 0, "tier_pipeline": 0, "tier_dream": 0}
     for r in rows:
         out[r["bucket"]] = out.get(r["bucket"], 0) + 1
         out["tier_" + r["tier"]] = out.get("tier_" + r["tier"], 0) + 1
@@ -338,6 +353,8 @@ def apply_transition(key: str, target: str, reason: str | None = None,
         return {"ok": False, "error": "no dedup_key"}
     pend = pending_mod.load(key)
     in_applied = key in triage_mod.applied_keys(triage_mod.APPLIED_PATH)
+    # Any other move ends the wait. The branches below set the record's new status.
+    was_parked = target != "referral" and pending_mod.unpark_referral(key) is not None
 
     def revive() -> dict | None:
         """Undo a prior submitted/blocked decision so a queue-side target can take effect:
@@ -373,8 +390,13 @@ def apply_transition(key: str, target: str, reason: str | None = None,
             return {"ok": True, "bucket": "filled"}
         return {"ok": False, "error": "answer its questions first (or no filled record exists)"}
 
+    if target == "referral":
+        revive()
+        pending_mod.park_referral(key, {**meta, **(pend or {})})
+        return {"ok": True, "bucket": "referral"}
+
     if target == "in_queue":
-        moved = bool(revive())
+        moved = bool(revive()) or was_parked
         if pend:
             moved = bool(pending_mod.reopen(key)) or moved
         elif in_applied:

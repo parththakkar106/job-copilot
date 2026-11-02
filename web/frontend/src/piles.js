@@ -14,12 +14,14 @@ export const BUCKETS = [
   { id: 'submitted', label: 'Sent' },
   { id: 'blocked', label: 'Blocked' },
   { id: 'expired', label: 'Expired' },
+  { id: 'referral', label: 'Awaiting referral' },
   { id: 'all', label: 'Everything' },
 ]
 
 export const BUCKET_LABEL = {
   discovered: 'Discovered', in_queue: 'In queue', filled: 'Ready',
   dream: 'Dream', manual: 'By hand', submitted: 'Sent', blocked: 'Blocked', expired: 'Expired',
+  referral: 'Awaiting referral',
 }
 
 /**
@@ -34,16 +36,19 @@ export const BUCKET_LABEL = {
  */
 export const MOVES = {
   discovered: [
+    { target: 'referral', label: 'Wait for a referral', hot: 'r' },
     { target: 'submitted', label: 'Mark applied by hand', hot: 'm' },
     { target: 'blocked', label: 'Not interested', hot: 'b' },
   ],
   in_queue: [
+    { target: 'referral', label: 'Wait for a referral', hot: 'r' },
     { target: 'filled', label: 'Approve → Ready', hot: 'a', primary: true, button: '✓ Approve' },
     { target: 'skipped', label: 'Skip for now', hot: 's' },
     { target: 'submitted', label: 'Mark applied by hand', hot: 'm' },
     { target: 'blocked', label: 'Not interested', hot: 'b' },
   ],
   filled: [
+    { target: 'referral', label: 'Wait for a referral', hot: 'r' },
     { target: 'in_queue', label: 'Back to queue' },
     { target: 'skipped', label: 'Skip for now', hot: 's' },
     { target: 'submitted', label: 'Mark applied by hand', hot: 'm' },
@@ -56,6 +61,7 @@ export const MOVES = {
   // No adapter for the board, so 'Approve → Ready' would be a lie: there is nothing to
   // fill and nothing to send. Applying is something Parth does in the tab himself.
   manual: [
+    { target: 'referral', label: 'Wait for a referral', hot: 'r' },
     { target: 'submitted', label: 'Mark applied by hand', hot: 'm' },
     { target: 'blocked', label: 'Not interested', hot: 'b' },
   ],
@@ -66,6 +72,13 @@ export const MOVES = {
   blocked: [
     { target: 'in_queue', label: 'Un-block (back to queue)' },
     { target: 'submitted', label: 'Actually applied', hot: 'm' },
+  ],
+  // Parked roles leave on their own after the 2-day question (bridge referral_wait_sweep).
+  // These are the ways to end the wait early.
+  referral: [
+    { target: 'in_queue', label: 'Stop waiting (back to its pile)' },
+    { target: 'submitted', label: 'Got the referral, mark sent', hot: 'm' },
+    { target: 'blocked', label: 'Not interested', hot: 'b' },
   ],
   // Expiry is automatic, so Expired is never a move target. Bringing a role back marks it
   // `keep` on the server, so the next sweep leaves it alone.
@@ -107,10 +120,12 @@ export const isEditable = (bucket) => bucket === 'in_queue' || bucket === 'fille
  * `rail: 'left' | 'right'` pulls the column out of the grid entirely and parks it as a
  * collapsible rail down that edge. `manual` gets the left one: those roles are not IN the
  * automated flow — nothing fills them, nothing sends them, Parth applies in the tab himself
- * — so they want to be a reachable list, not a full column of board width. `expired` gets
+ * — so they want to be a reachable list, not a full column of board width. `referral` sits
+ * beside it: parked roles wait on someone else, and the bridge moves them on. `expired` gets
  * the right one for the same reason: a pile he only visits to bring a role back.
  */
 export const COLUMNS = [
+  { id: 'referral', label: 'Awaiting referral', droppable: true, rail: 'left' },
   { id: 'manual', label: 'By hand', droppable: false, hideWhenEmpty: true, rail: 'left' },
   { id: 'discovered', label: 'Discovered', droppable: false, hideWhenEmpty: true },
   { id: 'in_queue', label: 'In queue', droppable: true },

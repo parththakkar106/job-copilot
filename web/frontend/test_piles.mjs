@@ -69,8 +69,10 @@ for (const from of COLUMNS.map((c) => c.id)) {
 }
 
 // ── Column shape ─────────────────────────────────────────────────────────────────────
-ok(COLUMNS.length === 8, "eight columns");
-ok(COLUMNS.filter((c) => c.droppable).length === 4, "four of them accept drops");
+ok(COLUMNS.length === 9, "nine columns");
+ok(COLUMNS.filter((c) => c.droppable).length === 5, "five of them accept drops");
+ok(["discovered", "in_queue", "filled", "manual"].every((b) => canDrop(b, "referral")),
+   "every to-apply pile except Dream can park in Awaiting referral");
 ok(COLUMNS.every((c) => c.droppable || c.hideWhenEmpty),
    "the non-droppable columns are exactly the ones hidden when empty");
 ok(!isEditable("submitted") && isEditable("in_queue") && isEditable("filled"),
@@ -80,10 +82,12 @@ ok(!isEditable("submitted") && isEditable("in_queue") && isEditable("filled"),
 // Rails are laid out beside the column grid rather than inside it, one per edge. Two on the
 // same edge would stack in the same 232px strip, so each side has exactly one.
 const rails = COLUMNS.filter((c) => c.rail);
-ok(rails.length === 2, "two rail columns");
-ok(COLUMNS.find((c) => c.rail === "left")?.id === "manual", "By hand is the left rail");
+ok(rails.length === 3, "three rail columns");
+ok(COLUMNS.filter((c) => c.rail === "left").map((c) => c.id).join() === "referral,manual",
+   "Awaiting referral and By hand are the left rails");
 ok(COLUMNS.find((c) => c.rail === "right")?.id === "expired", "Expired is the right rail");
-ok(rails.every((c) => !c.droppable), "rails stay drag sources only — nothing drops into them");
+ok(rails.filter((c) => c.droppable).map((c) => c.id).join() === "referral",
+   "only Awaiting referral takes drops among the rails");
 
 // A primary move must be a REAL move for that bucket, or the button would post a transition
 // the server rejects.

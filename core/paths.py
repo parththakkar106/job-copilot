@@ -161,6 +161,8 @@ APPLIED = STATE / "applied.json"
 # search results. Everything else under HOME is Parth's own data; this is the one file that
 # is somebody else's, which makes it the most important one to keep out of the checkout.
 OUTREACH = STATE / "outreach.json"
+# Roles parked while Parth waits on a referral, with when each was parked and asked about.
+REFERRAL_WAIT = STATE / "referral_wait.json"
 RESUMES = STATE / "resumes"
 # Under HOME these sit together at the top level; without it they keep the exact places
 # they have always occupied under bridge/, so an existing checkout finds its own files.

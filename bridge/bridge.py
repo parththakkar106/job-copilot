@@ -1630,6 +1630,76 @@ async def send_referral_message(waiting: tuple, name: str) -> None:
         template, name, role.get("company") or "", title or ""))
 
 
+# How often the Awaiting referral sweep looks. `due_referrals` measures in days.
+REFERRAL_SWEEP_SECS = int(os.environ.get("REFERRAL_SWEEP_SECS", "3600") or 3600)
+
+
+async def referral_wait_watcher() -> None:
+    while True:
+        await asyncio.sleep(REFERRAL_SWEEP_SECS)
+        try:
+            await referral_wait_sweep()
+        except Exception as e:
+            print(f"[referral-wait] sweep error: {redact(e)}", file=sys.stderr)
+
+
+CB_RW = "rw"   # Awaiting referral answer -> b:rw:<dedup_key>:y|n
+
+
+async def referral_wait_sweep() -> None:
+    """Ask about each role parked REFERRAL_DAYS ago, and apply the ones never answered."""
+    waits = await asyncio.to_thread(pending_mod.referral_waits)
+    for key, kind in await asyncio.to_thread(pending_mod.due_referrals):
+        if kind == "timeout":
+            await asyncio.to_thread(tg_send, await resolve_referral(key, got=False))
+            continue
+        w = waits[key]
+        await asyncio.to_thread(tg_send,
+            f"🤝 Did you get a referral for <b>{html.escape(str(w.get('company') or '?'))}</b>"
+            f" · {html.escape(str(w.get('title') or ''))}?\n<i>No answer in "
+            f"{pending_mod.REFERRAL_DAYS} days counts as No, and it gets applied.</i>",
+            [[{"text": "Yes, mark sent", "callback_data": f"{CB}:{CB_RW}:{key}:y"},
+              {"text": "No, apply", "callback_data": f"{CB}:{CB_RW}:{key}:n"}]])
+        await asyncio.to_thread(pending_mod.mark_referral_asked, key)
+
+
+def _resolve_referral(key: str, got: bool) -> str:
+    """Take a role off the wait list and say what happened, as one Telegram line.
+
+    Yes logs it as Sent with a `referred` tag. No approves a fully answered record so the
+    next flush sends it. Anything that cannot send yet goes back to its pile instead.
+    """
+    entry = pending_mod.unpark_referral(key)
+    if entry is None:
+        return "That one is no longer waiting."
+    rec = pending_mod.load(key)
+    name = f"<b>{html.escape(str(entry.get('company') or '?'))}</b> · " \
+           f"{html.escape(str(entry.get('title') or ''))}"
+    if got:
+        triage_mod.append_applied({**entry, **(rec or {}), "dedup_key": key,
+                                   "status": "applied", "referred": True},
+                                  triage_mod.APPLIED_PATH)
+        if rec:
+            pending_mod.archive(key)
+        return f"✅ {name} marked Sent (referred)."
+    if rec is None:
+        pile = "By hand. Apply in the tab yourself" if entry.get("from") == "manual" \
+            else "Discovered. The next collect run fills it"
+        return f"↩ No referral for {name}. It is back in {pile}."
+    if rec.get("status") != pending_mod.REFERRAL:
+        return f"{name} already moved on, so nothing changed."
+    pending_mod.reopen(key)
+    if pending_mod.approve(key):
+        return f"📤 No referral for {name}. Approved, so it goes out on the next send."
+    n = len(pending_mod.unanswered(rec))
+    return (f"↩ No referral for {name}. It is back in the queue with {n} open "
+            f"question{'' if n == 1 else 's'}. Answer them to send it.")
+
+
+async def resolve_referral(key: str, got: bool) -> str:
+    return await asyncio.to_thread(_resolve_referral, key, got)
+
+
 COMMANDS = [
     ("run", "Start a collection pass over today's queue"),
     ("apply", "Fill a job link and collect its questions"),
@@ -1972,6 +2042,12 @@ async def batch_callback(data: str, cb_id: str) -> None:
         await serve_next()
         return
 
+    if kind == CB_RW and len(parts) == 4:          # Awaiting referral -> b:rw:<key>:y|n
+        msg = await resolve_referral(parts[2], got=parts[3] == "y")
+        await asyncio.to_thread(tg_answer_callback, cb_id, "Saved")
+        await asyncio.to_thread(tg_send, msg)
+        return
+
     if kind == CB_REF and len(parts) >= 3:      # b:x:<token>:<action>[:<arg>]
         await referral_callback(parts[2], parts[3:], cb_id)
         return
@@ -2289,6 +2365,9 @@ async def handle_queue(msg, ws):
         # re-collecting them is a no-op that still burns a daily slot and a tab visit.
         pend_keys = {r.get("dedup_key")
                      for r in await asyncio.to_thread(pending_mod.all_jobs)}
+        # A parked Discovered role has no record yet. Collecting it could auto-approve and
+        # send it before the referral arrives.
+        pend_keys |= set(await asyncio.to_thread(pending_mod.referral_waits))
         res = await asyncio.to_thread(
             triage_mod.triage, triage_mod.QUEUE_PATH, triage_mod.APPLIED_PATH,
             msg.get("max_per_day"), msg.get("max_per_company"), pend_keys)
@@ -2520,14 +2599,44 @@ async def handle_ai_pass(msg, ws):
     out = {"enabled": aipass_mod.available(), "decisions": []}
     if out["enabled"] and fields:
         try:
-            fields = await asyncio.to_thread(_seed_bank_values, fields, ctx.get("company"))
-            if not ctx.get("description"):
-                ctx["description"] = await asyncio.to_thread(_posting_text, ctx.get("url") or "")
-            out["decisions"] = await asyncio.to_thread(aipass_mod.run, fields, ctx)
+            reused = await asyncio.to_thread(_reusable_ai_decisions, ctx.get("url") or "")
+            if reused:
+                out = {"enabled": True, "decisions": reused, "reused": True}
+            else:
+                fields = await asyncio.to_thread(_seed_bank_values, fields, ctx.get("company"))
+                if not ctx.get("description"):
+                    ctx["description"] = await asyncio.to_thread(_posting_text, ctx.get("url") or "")
+                out["decisions"] = await asyncio.to_thread(aipass_mod.run, fields, ctx)
+                token = _url_token(ctx.get("url") or "")
+                if token and out["decisions"]:
+                    _AI_CACHE[token] = out["decisions"]
         except Exception as e:
             print(f"[aipass] failed: {redact(e)}", file=sys.stderr)
             out = {"enabled": True, "decisions": [], "error": str(e)}
     await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
+
+
+# shortcut: in-memory, so a bridge restart forgets ad-hoc fills. Queue jobs survive it
+# because their decisions live on the pending record. Persist to disk if that matters.
+_AI_CACHE: dict = {}
+
+
+def _reusable_ai_decisions(url: str) -> list:
+    """The AI decisions already made for this job, or [] when there are none.
+
+    Clicking Fill again on a form the AI already answered must not pay for a second
+    call, and a second call can answer differently. The pending record comes first,
+    because it also holds Parth's console edits, and those win over the AI. Field ids
+    are label-derived, so the stored decisions still match the controls on a refill.
+    """
+    rec = _pending_by_url(url)
+    if rec and rec.get("ai_decisions"):
+        decisions = [*rec["ai_decisions"],
+                     *({**e, "action": "replace", "by": "you"} for e in rec.get("edits") or [])]
+    else:
+        decisions = _AI_CACHE.get(_url_token(url)) or []
+    # Drop the outcome of the last write. The extension sets it again for this one.
+    return [{k: v for k, v in d.items() if k not in ("applied", "why_not")} for d in decisions]
 
 
 def _posting_text(url: str) -> str:
@@ -3085,6 +3194,7 @@ async def main():
         flush_trigger = asyncio.create_task(flush_trigger_watcher())
         links = asyncio.create_task(link_queue_watcher())
         activity = asyncio.create_task(activity_watcher())
+        referral_wait = asyncio.create_task(referral_wait_watcher())
         try:
             await telegram_poller(offset)
         finally:
@@ -3093,6 +3203,7 @@ async def main():
             flush_trigger.cancel()
             links.cancel()
             activity.cancel()
+            referral_wait.cancel()
 
 
 if __name__ == "__main__":

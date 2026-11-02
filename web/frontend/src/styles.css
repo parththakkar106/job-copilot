@@ -441,16 +441,11 @@ kbd {
 
 /* ── Kanban board ──────────────────────────────────────────────────────────────────── */
 /* The board wants more width than a reading column, so it opts out of the 1180px cap.
-   It also claims the remaining page height by flexing rather than by subtracting a magic
-   number from 100vh — the strip and toolbar above it wrap at narrow widths, and a hardcoded
-   offset would leave the last row of cards hanging below the fold exactly when it wrapped. */
-/* The board view is capped at the window height, so each column and rail scrolls inside
-   itself. Uncapped, the page grew to the tallest pile: 457 expired cards made it 52,000px. */
-.app:has(.kanban) { height: 100vh; }
-.content:has(.kanban) { max-width: 1560px; display: flex; flex-direction: column; min-height: 0; }
-.content:has(.kanban) .dashboard { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+   The page scrolls, not each column: columns grow to fit their cards. The side rails are
+   the exception (see .kb-rail), because the Expired pile holds hundreds of cards. */
+.content:has(.kanban) { max-width: 1560px; }
 
-.kanban { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.kanban { display: flex; flex-direction: column; }
 .kb-toolbar { justify-content: space-between; flex-shrink: 0; }
 .kb-hint { color: var(--dim); font-size: 12.5px; }
 .kb-key {
@@ -461,11 +456,11 @@ kbd {
 /* The board is the rail + the column grid, side by side. The grid keeps the equal-width
    `repeat()` it always had; the rail is outside it so it can collapse to a 34px strip,
    which a `1fr` track cannot. */
-.kb-board { display: flex; gap: 10px; flex: 1; min-height: 360px; }
+.kb-board { display: flex; gap: 10px; min-height: 360px; }
 .kb-cols {
   display: grid; grid-template-columns: repeat(var(--kb-cols, 4), minmax(210px, 1fr)); gap: 10px;
-  /* Columns scroll inside themselves rather than the page growing to the tallest one —
-     with ~29 roles in To apply, a page-height board would bury the other columns. */
+  /* `start` keeps a short column at its own height instead of stretching to the tallest. */
+  align-items: start;
   flex: 1; min-width: 0;
   /* Too narrow for every column at 210px, the grid scrolls sideways inside its own box
      instead of spilling under the right-hand rail. */
@@ -473,16 +468,21 @@ kbd {
 }
 
 /* ── By-hand rail ──────────────────────────────────────────────────────────────────── */
+/* A rail stays one window tall and scrolls inside itself. Grown to fit, the 457-card
+   Expired pile made the page 52,000px. Sticky keeps it in view while the page scrolls;
+   the 70px offset clears the 58px sticky topbar. */
 .kb-rail {
   display: flex; flex-direction: column; min-height: 0; flex-shrink: 0;
+  position: sticky; top: 70px; align-self: flex-start;
+  height: calc(100vh - 82px);
   background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
   transition: width .18s var(--ease), background .16s, border-color .16s;
 }
 .kb-rail-open { width: 232px; }
 .kb-rail-shut { width: 36px; }
-/* Nothing drops into By hand, so while a card is in flight the rail recedes with the other
-   non-target columns rather than sitting at full strength beside the live ones. */
-.kanban-dragging .kb-rail { opacity: .42; }
+/* While a card is in flight, a rail it cannot drop on recedes with the other non-target
+   columns. Awaiting referral takes drops, so it stays lit for a card that can go there. */
+.kanban-dragging .kb-rail.kb-col-cold { opacity: .42; }
 
 .kb-rail-toggle {
   display: flex; align-items: center; gap: 8px; flex-shrink: 0;
@@ -508,7 +508,7 @@ kbd {
   text-transform: uppercase; font-size: 10.5px; letter-spacing: .8px; color: var(--muted);
 }
 .kb-rail-shut .kb-count { margin-left: 0; padding: 1px 6px; font-size: 10px; }
-.kb-rail-body { padding: 9px; }
+.kb-rail-body { padding: 9px; overflow-y: auto; }
 .kb-col {
   display: flex; flex-direction: column; min-height: 0;
   background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
@@ -542,11 +542,12 @@ kbd {
 .kb-dot-filled     { background: var(--blue); }
 .kb-dot-dream      { background: var(--violet); }
 .kb-dot-manual     { background: var(--teal); }
+.kb-dot-referral   { background: var(--amber); }
 .kb-dot-submitted  { background: var(--green); }
 .kb-dot-blocked    { background: var(--red); }
 
 .kb-body {
-  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  flex: 1; min-height: 0; overflow-x: hidden;
   padding: 9px; display: flex; flex-direction: column; gap: 8px;
 }
 .kb-empty { color: var(--dim); font-size: 12px; text-align: center; padding: 18px 0; }

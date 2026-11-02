@@ -67,6 +67,12 @@ SKIPPED = "skipped"
 # out of the to-apply piles. The record and its answers stay; reopen() brings it back.
 EXPIRED = "expired"
 EXPIRE_DAYS = 7
+# Parked while Parth waits on a referral. Like SKIPPED, it is out of the flush, /next and
+# the collect queue. The timing lives in REFERRAL_WAIT_PATH, not here, because roles with
+# no record yet (Discovered, By hand) can be parked too.
+REFERRAL = "referral"
+REFERRAL_DAYS = 2
+REFERRAL_WAIT_PATH = paths.REFERRAL_WAIT
 
 
 def _now() -> str:
@@ -176,6 +182,11 @@ def load_archived(dedup_key: str, base: Path | str | None = None) -> dict | None
         return json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def archived_keys(base: Path | str | None = None) -> set[str]:
+    """Every dedup_key with a kept record. Reads names only, so the dashboard can ask on each load."""
+    return {p.stem for p in (Path(base or PENDING_DIR) / ARCHIVE_SUBDIR).glob("*.json")}
 
 
 def put(job: dict, questions: list[dict], filled: list[dict],
@@ -670,12 +681,82 @@ def expire_stale(days: int = EXPIRE_DAYS, base: Path | str | None = None,
     out = []
     for rec in all_jobs(None, base):
         when = job_date(rec)
-        if (rec.get("status") in (AWAITING, SKIPPED, HELD) and not rec.get("keep")
+        if (rec.get("status") in (AWAITING, SKIPPED, HELD, REFERRAL) and not rec.get("keep")
                 and when and when < cutoff):
+            if rec.get("status") == REFERRAL:
+                unpark_referral(rec.get("dedup_key"))
             rec["status"] = EXPIRED
             rec.pop("focus_at", None)
             save(rec, base)
             out.append(rec)
+    return out
+
+
+# ── Awaiting referral ────────────────────────────────────────────────────────────────
+
+def referral_waits(path: Path | str | None = None) -> dict:
+    """{dedup_key: {company, title, url, from, parked, asked?}} for every parked role."""
+    p = Path(path or REFERRAL_WAIT_PATH)
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_waits(waits: dict, path: Path | str | None = None) -> None:
+    p = Path(path or REFERRAL_WAIT_PATH)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(waits, indent=2), encoding="utf-8")
+
+
+def park_referral(dedup_key: str, row: dict, base: Path | str | None = None,
+                  path: Path | str | None = None) -> None:
+    """Park a role to wait for a referral. `row["bucket"]` is the pile it came from."""
+    waits = referral_waits(path)
+    waits[dedup_key] = {"company": row.get("company", ""), "title": row.get("title", ""),
+                        "url": row.get("url", ""), "from": row.get("bucket") or "",
+                        "parked": _now()}
+    _save_waits(waits, path)
+    rec = load(dedup_key, base)
+    if rec is not None:
+        rec["status"] = REFERRAL
+        rec.pop("focus_at", None)
+        save(rec, base)
+
+
+def unpark_referral(dedup_key: str, path: Path | str | None = None) -> dict | None:
+    """Drop a role from the wait list. Returns its entry, or None if it was not parked.
+    The caller decides the record's next status."""
+    waits = referral_waits(path)
+    entry = waits.pop(dedup_key, None)
+    if entry is not None:
+        _save_waits(waits, path)
+    return entry
+
+
+def mark_referral_asked(dedup_key: str, path: Path | str | None = None) -> None:
+    waits = referral_waits(path)
+    if dedup_key in waits:
+        waits[dedup_key]["asked"] = _now()
+        _save_waits(waits, path)
+
+
+def due_referrals(now: datetime | None = None,
+                  path: Path | str | None = None) -> list[tuple[str, str]]:
+    """(dedup_key, "ask" | "timeout") for every parked role whose wait is over.
+
+    "ask" comes REFERRAL_DAYS after parking. "timeout" comes REFERRAL_DAYS after the
+    question went unanswered, and counts as a No.
+    """
+    now = now or datetime.now(timezone.utc)
+    wait = timedelta(days=REFERRAL_DAYS)
+    out = []
+    for key, w in referral_waits(path).items():
+        if w.get("asked"):
+            if now - datetime.fromisoformat(w["asked"]) >= wait:
+                out.append((key, "timeout"))
+        elif now - datetime.fromisoformat(w["parked"]) >= wait:
+            out.append((key, "ask"))
     return out
 
 

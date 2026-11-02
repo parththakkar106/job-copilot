@@ -22,7 +22,7 @@ function FilledValue({ row, onSave }) {
       <div className="filled-row">
         <div className="qa-value">{row.value === '' ? <span className="hint">— blank —</span> : String(row.value)}</div>
         {/* The resume is a file attached by track; change it with the picker above. */}
-        {labelKey(row.label) !== 'resume' && (
+        {onSave && labelKey(row.label) !== 'resume' && (
           <button className="btn btn-sm btn-ghost" onClick={() => { setDraft(String(row.value ?? '')); setEditing(true) }}>Edit</button>
         )}
       </div>
@@ -174,6 +174,7 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
   }
 
   const complete = rec._complete
+  const readOnly = rec._read_only
   const pinned = rec.resume_override
   const aiDecisions = rec.ai_decisions || []
   // `filled` is phase 1's read-back of the whole form, so it also holds every value the AI
@@ -222,7 +223,7 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
         <div className="drawer-section">
           <div className="section-label">Resume track</div>
           <div className="resume-picker">
-            {tags.map((t) => (
+            {!readOnly && tags.map((t) => (
               <button key={t} className={`chip ${pinned === t ? 'chip-active' : ''}`} onClick={() => setResume(t)}>{t}</button>
             ))}
             <span className="hint">{pinned ? `pinned: ${pinned}` : `auto: ${rec.resume || 'best match'}`}</span>
@@ -232,8 +233,15 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
         <div className="drawer-section">
           <div className="section-label">Questions ({(rec.questions || []).length})</div>
           {(rec.questions || []).length === 0 && <div className="hint">No open questions — deterministic fill covered everything.</div>}
-          <QuestionList questions={rec.questions || []} answers={answers} setAns={setAns}
-            setAll={(a) => { setAnswers(a); setDirty(true) }} />
+          {readOnly
+            ? (rec.questions || []).map((q) => (
+                <div key={q.id} className="qa qa-filled">
+                  <div className="qa-label">{q.label}</div>
+                  <div className="qa-value">{q.answer ? String(q.answer) : <span className="hint">— blank —</span>}</div>
+                </div>
+              ))
+            : <QuestionList questions={rec.questions || []} answers={answers} setAns={setAns}
+                setAll={(a) => { setAnswers(a); setDirty(true) }} />}
         </div>
 
         {aiDecisions.length > 0 && (
@@ -258,7 +266,7 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
                     {d.hot && <span className="ai-badge ai-hot">check this</span>}
                   </div>
                   {written && filledByKey.has(labelKey(d.label))
-                    ? <FilledValue row={filledByKey.get(labelKey(d.label))} onSave={editFilled} />
+                    ? <FilledValue row={filledByKey.get(labelKey(d.label))} onSave={readOnly ? null : editFilled} />
                     : <div className="qa-value">{d.value === '' ? <span className="hint">— blank —</span> : String(d.value)}</div>}
                   {d.was && (d.action === 'replace' || d.action === 'flag') && (
                     <div className="hint ai-note">
@@ -287,13 +295,13 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
                   {f.label}
                   {f.edited && <span className="ai-badge ai-wrote">your edit</span>}
                 </div>
-                <FilledValue row={f} onSave={editFilled} />
+                <FilledValue row={f} onSave={readOnly ? null : editFilled} />
               </div>
             ))}
           </div>
         )}
 
-        <div className="drawer-actions">
+        {!readOnly && <div className="drawer-actions">
           <button className="btn btn-primary" disabled={!dirty || saving} onClick={save}>
             {saving ? 'Saving…' : 'Save answers'}
           </button>
@@ -312,7 +320,7 @@ export default function JobDrawer({ dedupKey, onClose, onChanged, bridgeAlive })
           <div className="spacer" />
           <button className="btn btn-ghost btn-danger"
             onClick={() => act(() => api.setState(dedupKey, 'blocked'))}>Not interested</button>
-        </div>
+        </div>}
       </div>
     </div>
   )

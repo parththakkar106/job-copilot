@@ -69,6 +69,7 @@ def _isolate(tmp: Path) -> None:
     drafter_mod._ENABLED = None                  # production path: read from prefs
     pending_mod.PENDING_DIR = tmp / "pending"
     triage_mod.APPLIED_PATH = tmp / "applied.json"
+    pending_mod.REFERRAL_WAIT_PATH = tmp / "referral_wait.json"
     triage_mod.QUEUE_PATH = tmp / "out" / "queue.json"
     bank_mod.BANK = tmp / "answer_bank.yaml"
     bank_mod.BANK_WRITE = tmp / "answer_bank.yaml"
@@ -117,6 +118,21 @@ def main() -> None:
         # 2. Company tier is attached to a pending row.
         pk = next(row for row in r["rows"] if row["dedup_key"] == "pk1")
         assert pk["tier"] in ("pipeline", "dream"), pk; checks += 1
+
+        # 2a. A sent role opens read-only from its archive. One with no kept record stays closed.
+        by_key = {row["dedup_key"]: row for row in r["rows"]}
+        assert by_key["pk1"]["has_record"] and not by_key["appl1"]["has_record"], by_key; checks += 1
+        assert c.get("/api/jobs/appl1").status_code == 404; checks += 1
+        assert c.get("/api/jobs/pk1").json()["_read_only"] is False; checks += 1
+        arch = tmp / "pending" / pending_mod.ARCHIVE_SUBDIR
+        arch.mkdir(exist_ok=True)
+        (arch / "appl1.json").write_text(json.dumps(
+            {"dedup_key": "appl1", "company": "Neon", "status": "approved",
+             "questions": [{"id": "q1", "label": "Why?", "answer": "because"}]}), encoding="utf-8")
+        rows2a = c.get("/api/dashboard").json()["rows"]
+        assert next(x for x in rows2a if x["dedup_key"] == "appl1")["has_record"]; checks += 1
+        assert c.get("/api/jobs/appl1").json()["_read_only"] is True; checks += 1
+        (arch / "appl1.json").unlink()
 
         # 2b. Discovered dream roles surface as a manual-only 'dream' pile, tier=dream.
         dk = next((row for row in r["rows"] if row["dedup_key"] == "dk1"), None)
