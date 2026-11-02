@@ -24,6 +24,33 @@ const today = () => {
   return d.toISOString().slice(0, 10)
 }
 
+// A panel under one table row: a name box and one copy button per written template.
+function ReferPanel({ role, refer, notify }) {
+  const [name, setName] = useState('')
+  const templates = refer.templates[role.kind] || {}
+  const levels = Object.keys(templates)
+  const copy = async (level) => {
+    const text = templates[level].replaceAll('{name}', name.trim())
+      .replaceAll('{company}', role.company).replaceAll('{role}', role.title)
+    try {
+      await navigator.clipboard.writeText(text)
+      notify(`Copied the ${refer.levels[level]} message`, 'success')
+    } catch { notify('Your browser blocked the clipboard', 'error', 6000) }
+  }
+  if (!levels.length) return <span className="muted">No {refer.kinds[role.kind]} templates yet.</span>
+  return (
+    <div className="ap-refer">
+      <input placeholder="Their name" aria-label={`Contact's name for ${role.title}`} value={name}
+        onChange={(e) => setName(e.target.value)} />
+      {levels.map((l) => (
+        <button key={l} className="btn btn-sm" disabled={!name.trim()} onClick={() => copy(l)}>
+          Copy: {refer.levels[l]}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function Field({ label, children }) {
   return <label className="ap-field"><span>{label}</span>{children}</label>
 }
@@ -38,6 +65,8 @@ export default function Applied({ bridgeAlive }) {
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState('')
   const [draft, setDraft] = useState(null)   // the editable preview of a pasted link
+  const [refer, setRefer] = useState(null)   // the message templates
+  const [openRole, setOpenRole] = useState(null)   // the row showing its copy buttons
 
   const loadRows = async () => {
     try { setRows((await api.applied()).rows) }
@@ -49,6 +78,7 @@ export default function Applied({ bridgeAlive }) {
   useEffect(() => {
     loadRows()
     loadLinks()
+    api.referTemplates().then(setRefer).catch((e) => notify(e.message, 'error'))
     // The bridge updates queued links in its own process, so only a poll can see them.
     const t = setInterval(loadLinks, 4000)
     return () => clearInterval(t)
@@ -184,16 +214,28 @@ export default function Applied({ bridgeAlive }) {
           <table className="ap-table">
             <thead>
               <tr><th scope="col">Applied</th><th scope="col">Company</th><th scope="col">Role</th>
-                <th scope="col" className="ap-loc">Location</th></tr>
+                <th scope="col" className="ap-loc">Location</th>
+                <th scope="col" aria-label="Message"></th></tr>
             </thead>
             <tbody>
               {list.map((r) => (
-                <tr key={r.dedup_key}>
-                  <td className="mono">{r.applied}</td>
-                  <td>{r.company}</td>
-                  <td>{r.url ? <a href={r.url} target="_blank" rel="noreferrer">{r.title}</a> : r.title}</td>
-                  <td className="ap-loc">{r.location}</td>
-                </tr>
+                <React.Fragment key={r.dedup_key}>
+                  <tr>
+                    <td className="mono">{r.applied}</td>
+                    <td>{r.company}</td>
+                    <td>{r.url ? <a href={r.url} target="_blank" rel="noreferrer">{r.title}</a> : r.title}</td>
+                    <td className="ap-loc">{r.location}</td>
+                    <td>
+                      <button className="btn btn-sm" disabled={!refer} aria-expanded={openRole === r.dedup_key}
+                        onClick={() => setOpenRole(openRole === r.dedup_key ? null : r.dedup_key)}>
+                        Message
+                      </button>
+                    </td>
+                  </tr>
+                  {openRole === r.dedup_key && (
+                    <tr><td colSpan={5}><ReferPanel role={r} refer={refer} notify={notify} /></td></tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>

@@ -910,6 +910,8 @@ select { cursor: pointer; }
 .ap-field { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
 .ap-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
 .ap-sub { margin: 0 0 8px; font-size: 14px; }
+.ap-refer { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ap-refer input { flex: 1 1 160px; max-width: 240px; }
 .ap-link { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 4px 0; font-size: 13px; }
 .ap-link a { min-width: 0; overflow-wrap: anywhere; color: var(--blue); }
 .ap-link .muted { color: var(--muted); }

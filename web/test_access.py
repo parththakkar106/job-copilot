@@ -208,6 +208,24 @@ def test_links():
     ok(status("4-dddddd") == {})
 
 
+def test_refer(tmp):
+    from core import refer_messages
+    refer_messages.paths.REFERRAL_TEMPLATES = tmp / "templates.yaml"
+    refer_messages.paths.REFERRAL_TEMPLATES.write_text("ai:\n  hm: 'Hey {name}'\n  employee: ''\n")
+    c = client()
+    got = c.get("/api/refer-templates").json()
+    ok(got["templates"] == {"ai": {"hm": "Hey {name}"}}, got)
+    triage_mod.append_applied({"dedup_key": "ref1", "company": "Acme", "title": "AI Engineer",
+                               "applied": date.today().isoformat()}, triage_mod.APPLIED_PATH)
+    row = next(r for r in c.get("/api/applied").json()["rows"] if r["dedup_key"] == "ref1")
+    ok(row["kind"] == "ai", row)
+
+    # The templates hold your own words, so they stay behind the login.
+    auth.write_password(PASSWORD, auth.AUTH_PATH)
+    ok(client().get("/api/refer-templates").status_code == 401)
+    auth.AUTH_PATH.unlink()
+
+
 def main():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
@@ -216,6 +234,7 @@ def main():
         test_gate()
         test_applied()
         test_links()
+        test_refer(tmp)
     print(f"access: {checks}/{checks} checks passed")
 
 

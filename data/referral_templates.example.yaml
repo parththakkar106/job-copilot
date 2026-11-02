@@ -1,0 +1,31 @@
+# Referral messages, one per role type and contact level. Copy this file to
+# referral_templates.yaml and write your own. The bot and the Applied page skip a blank
+# template, so you can fill these in over time.
+#
+# {name}, {company}, and {role} become the person's name, the company, and the job title.
+# Role types: ai, ds, tech, quant. Levels: hm, recruiter, employee, bitsian.
+ai:
+  hm: |
+    Hey {name},
+
+    I recently applied to the {role} role at {company} and would love to have a chat.
+
+    Thanks.
+  recruiter: ""
+  employee: ""
+  bitsian: ""
+ds:
+  hm: ""
+  recruiter: ""
+  employee: ""
+  bitsian: ""
+tech:
+  hm: ""
+  recruiter: ""
+  employee: ""
+  bitsian: ""
+quant:
+  hm: ""
+  recruiter: ""
+  employee: ""
+  bitsian: ""

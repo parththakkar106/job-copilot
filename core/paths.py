@@ -120,6 +120,7 @@ TAXONOMY = _tuning("taxonomy.yaml")
 COMPANIES = _config("companies.yaml", "companies.example.yaml")
 FILTERS = _tuning("filters.yaml")
 ANSWER_BANK = _config("answer_bank.yaml", "answer_bank.example.yaml")
+REFERRAL_TEMPLATES = _config("referral_templates.yaml", "referral_templates.example.yaml")
 
 # WRITE paths: ALWAYS the real filename, never the template — the read paths above may
 # point at a .example on a fresh install, and saving through one would (a) overwrite the

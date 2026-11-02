@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 
+from core import refer_messages
 from core.joblink import form_url, url_token
 from core.joblink import read as joblink_read
 from core.scraper import dedup_key
@@ -412,14 +413,17 @@ def apply_transition(key: str, target: str, reason: str | None = None,
 # ── Applied list and pasted links ────────────────────────────────────────────────────
 
 def applied_rows() -> list[dict]:
-    """Every role Parth applied to, newest first. `rejected` rows are roles he passed on."""
-    rows = [{"dedup_key": r.get("dedup_key"), "company": r.get("company", ""),
+    """Every role Parth applied to, newest first."""
+    return [{"dedup_key": r.get("dedup_key"), "company": r.get("company", ""),
              "title": r.get("title", ""), "location": r.get("location", ""),
-             "url": r.get("url", ""), "applied": (r.get("applied") or "")[:10]}
-            for r in triage_mod.load_applied(triage_mod.APPLIED_PATH)
-            if r.get("status") != "rejected"]
-    # The file is oldest first, so reversing it puts the latest row first within a day.
-    return sorted(reversed(rows), key=lambda r: r["applied"], reverse=True)
+             "url": r.get("url", ""), "applied": (r.get("applied") or "")[:10],
+             "kind": refer_messages.role_kind(r.get("title"))}
+            for r in refer_messages.recent_roles(triage_mod.load_applied(triage_mod.APPLIED_PATH))]
+
+
+def refer_templates() -> dict:
+    return {"levels": refer_messages.LEVELS, "kinds": refer_messages.KIND_NAMES,
+            "templates": refer_messages.load_templates()}
 
 
 def _known_role(url: str) -> dict | None:

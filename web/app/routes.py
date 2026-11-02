@@ -188,6 +188,11 @@ def get_applied():
     return {"rows": svc.applied_rows()}
 
 
+@router.get("/refer-templates")
+def get_refer_templates():
+    return svc.refer_templates()
+
+
 @router.post("/applied/read")
 def read_applied_link(body: JobLink):
     return svc.read_link(_web_url(body.url))

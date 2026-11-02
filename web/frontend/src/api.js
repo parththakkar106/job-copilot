@@ -44,6 +44,7 @@ export const api = {
   queue: () => req('GET', '/queue'),
 
   applied: () => req('GET', '/applied'),
+  referTemplates: () => req('GET', '/refer-templates'),
   readLink: (url) => req('POST', '/applied/read', { url }),
   addApplied: (role) => req('POST', '/applied', role),
   links: () => req('GET', '/links'),
