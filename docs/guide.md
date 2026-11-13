@@ -23,8 +23,10 @@ trusted clicks. That is not a packaging gap that a Docker image would fix; it is
 Practical consequences:
 
 - Setup is not `pip install`. You load an unpacked extension in Chrome and keep it loaded.
-- It never submits by itself. Submission is always an explicit tap by you — these companies
-  track duplicate applications and there is no undo.
+- It submits by itself only when the AI fill pass is on and clears every answer on the form.
+  Any open question, flagged field, or AI-written essay holds the form for you. These
+  companies track duplicate applications and there is no undo, so set
+  `"auto_submit": false` in `prefs.json` if you want to click every Submit yourself.
 - It is not headless and not a bulk-apply tool. It is built for 5-8 considered applications a
   day, not hundreds.
 - The extension is the product. Everything else — the console, the Telegram control plane,
@@ -76,6 +78,13 @@ credential. Each has an "I did this, re-check" button.
 
 If you apply on Workday boards, also save a Workday password in the extension popup. The
 console checklist does not track it. See [Workday](#workday).
+
+The console checklist does not track these optional extras either:
+
+| Extra | What it adds | How to set it up |
+|---|---|---|
+| **Referral messages** | The Applied page and the bot's `/refer <company>` fill your template with a contact's name, the company, and the role. No model writes any part of it | Copy `data/referral_templates.example.yaml` to `data/referral_templates.yaml` and write your messages. Blank templates are skipped |
+| **Your own website** | The console at an address such as `https://jobs.example.com`, behind a password, so you can use it from your phone | Follow [Publish the console on your own domain](remote_access.md). Needs a domain on Cloudflare |
 
 The extras read `bridge/.env` as well as your environment, since that file is where the
 setup instructions put those values — a checklist that called the documented setup "not
@@ -401,5 +410,5 @@ That is how `core/bank.py`'s save-through-a-READ-path bug was caught.
 
 - Job-board APIs need network; some sandboxes can't reach them — run locally or in Actions.
 - Respect ATS bot-detection: cap ~10–20/day per platform, vary timing.
-- Never commit secrets. The console binds 127.0.0.1 only and has **no auth** — the state
-  files hold PII, so front it with an authed tunnel before exposing it.
+- Never commit secrets. The console binds 127.0.0.1 only. The state files hold PII, so
+  expose it only through the password-guarded tunnel in [remote_access.md](remote_access.md).

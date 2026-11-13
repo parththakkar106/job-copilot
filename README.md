@@ -12,7 +12,9 @@ most of each application form for you, and leaves the final Submit click to you.
    contact details, work authorization, resume, and any answers you saved before.
 3. **Asks you when it is unsure.** If a question has no saved answer, the extension leaves
    it for you instead of guessing.
-4. **Never submits for you.** You review each form and click Submit yourself.
+4. **Submits only what it is sure of.** Without the AI fill pass, you review each form and
+   click Submit yourself. With it, the tool also submits a form when every answer passed
+   its checks. It holds any form with an open question or an AI-written essay for you.
 
 It is built for 5 to 8 careful applications a day, not for mass applying.
 
@@ -58,17 +60,20 @@ The tool works without any of these.
 | **Workday password** | Signs in to, or creates, your account on each Workday job board |
 | **AI fill pass** | Drafts answers for free-text questions and checks the filled form |
 | **Daily scheduled run** | Finds new jobs and prepares applications every morning |
+| **Referral messages** | Fills your own message templates with a contact's name, the company, and the role |
+| **Your own website** | Publishes the console on your domain, behind a password, so you can use it from your phone |
 
 The [full guide](docs/guide.md) explains how to set up each one.
 
 ## Your data stays private
 
 Your details, answers, and resumes stay on your computer. Your config files are ignored by
-git, so you cannot commit them by accident. The console has no login, so keep it on your
-own machine.
+git, so you cannot commit them by accident. The console listens only on your own machine.
+If you publish it on your own domain, a password page guards it.
 
 ## Learn more
 
 - [Full guide](docs/guide.md): every command, config file, and option.
 - [Bridge setup](bridge/README.md): Telegram, email codes, and the AI pass.
 - [Daily scheduled run](docs/autonomous_run.md): the unattended morning run.
+- [Your own website](docs/remote_access.md): publish the console on your domain.
