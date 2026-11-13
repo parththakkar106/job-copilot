@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -62,7 +63,6 @@ VENV_PY = REPO_ROOT / ".venv" / ("Scripts/python.exe" if IS_WIN else "bin/python
 
 # The Cloudflare Tunnel that publishes the console. See docs/remote_access.md.
 TUNNEL_NAME = "job-console"
-TUNNEL_HOST = "jobs.parth.party"
 TUNNEL_PORT = 20241
 TUNNEL_CONFIG = Path.home() / ".cloudflared" / f"{TUNNEL_NAME}.yml"
 TUNNEL_EXE = r"C:\Program Files (x86)\cloudflared\cloudflared.exe"   # winget's install path
@@ -176,6 +176,15 @@ def _tunnel_command() -> list[str] | None:
             "tunnel", "run", TUNNEL_NAME]
 
 
+def _tunnel_url() -> str:
+    """The public address from the tunnel config's first `hostname:` line.
+
+    A regex reads it because start.py can run before PyYAML is installed."""
+    text = TUNNEL_CONFIG.read_text(encoding="utf-8")
+    m = re.search(r"^\s*-?\s*hostname:\s*['\"]?([^\s'\"#]+)", text, re.MULTILINE)
+    return f"https://{m.group(1)}" if m else f"tunnel {TUNNEL_NAME}"
+
+
 def _services(dev: bool, want_bridge: bool) -> list[dict]:
     """The processes to run. `core` services tear the rest down when they exit; the
     bridge doesn't - losing it costs the run controls, not the console."""
@@ -196,7 +205,7 @@ def _services(dev: bool, want_bridge: bool) -> list[dict]:
         if tunnel:
             svc.append({"tag": "tun", "log": "tunnel", "port": TUNNEL_PORT, "core": False,
                         "cwd": REPO_ROOT, "args": tunnel, "shell": None,
-                        "url": f"https://{TUNNEL_HOST}", "open": False})
+                        "url": _tunnel_url(), "open": False})
     if want_bridge and _bridge_creds_present():
         svc.append({"tag": "brg", "log": "bridge", "port": 8765, "core": False,
                     "cwd": REPO_ROOT, "args": [PY, str(BRIDGE)], "shell": None,

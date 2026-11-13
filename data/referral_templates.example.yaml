@@ -3,7 +3,7 @@
 # template, so you can fill these in over time.
 #
 # {name}, {company}, and {role} become the person's name, the company, and the job title.
-# Role types: ai, ds, tech, quant. Levels: hm, recruiter, employee, bitsian.
+# Role types: ai, ds, tech, quant. Levels: hm, recruiter, employee, alum.
 ai:
   hm: |
     Hey {name},
@@ -13,19 +13,19 @@ ai:
     Thanks.
   recruiter: ""
   employee: ""
-  bitsian: ""
+  alum: ""
 ds:
   hm: ""
   recruiter: ""
   employee: ""
-  bitsian: ""
+  alum: ""
 tech:
   hm: ""
   recruiter: ""
   employee: ""
-  bitsian: ""
+  alum: ""
 quant:
   hm: ""
   recruiter: ""
   employee: ""
-  bitsian: ""
+  alum: ""

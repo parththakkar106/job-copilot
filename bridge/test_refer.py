@@ -41,7 +41,7 @@ async def run():
 
     # A role shows only the levels that have a template.
     await B.referral_callback("k2", [], "cb")
-    ok(callbacks(SENT[-1][1]) == ["b:x:k2:hm", "b:x:k2:bitsian"], SENT[-1])
+    ok(callbacks(SENT[-1][1]) == ["b:x:k2:hm", "b:x:k2:alum"], SENT[-1])
 
     # A role type with no templates says so.
     await B.referral_callback("k1", [], "cb")
@@ -81,7 +81,7 @@ def main():
              "applied": "2026-04-01"}]), encoding="utf-8")
         B.refer_mod.paths.REFERRAL_TEMPLATES = tmp / "templates.yaml"
         B.refer_mod.paths.REFERRAL_TEMPLATES.write_text(
-            "ai:\n  hm: 'Hey {name}, {role} at {company}'\n  bitsian: 'Hi {name}'\n"
+            "ai:\n  hm: 'Hey {name}, {role} at {company}'\n  alum: 'Hi {name}'\n"
             "  recruiter: ''\n", encoding="utf-8")
         B.LAST_ACTIVITY = 1.0
         B.tg_send = lambda text, buttons=None: SENT.append((text, buttons)) or 1

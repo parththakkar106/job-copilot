@@ -72,8 +72,8 @@ def test_gate():
     ok("private" in c.get("/api/status").headers["cache-control"])
 
     # A write that another site started is refused even with a valid session.
-    r = c.post("/api/run/flush", headers={"host": "jobs.parth.party",
-                                          "origin": "https://dnd.parth.party"})
+    r = c.post("/api/run/flush", headers={"host": "jobs.example.com",
+                                          "origin": "https://other.example.com"})
     ok(r.status_code == 403, r.text)
 
     # A new password ends existing sessions.

@@ -22,7 +22,7 @@ from core import paths, search  # noqa: E402
 from core.scraper import classify_field  # noqa: E402
 
 LEVELS = {"hm": "Hiring manager", "recruiter": "Recruiter", "employee": "Employee",
-          "bitsian": "BITS alum"}
+          "alum": "Alum"}
 KIND_NAMES = {"ai": "AI", "ds": "DS", "tech": "Tech", "quant": "Quant"}
 # The scraper's career paths that have their own templates. Every other path is Tech.
 _PATH_KIND = {"ai": "ai", "ds": "ds", "analytics": "ds", "quant": "quant"}

@@ -126,7 +126,7 @@ def _cross_site(request: Request) -> bool:
     """True for a write that another site started.
 
     SameSite=Lax treats sibling subdomains as the same site, so it does not stop a page on
-    another *.parth.party host. The Origin check does."""
+    another *.example.com host. The Origin check does."""
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return False
     origin = request.headers.get("origin")
