@@ -2272,6 +2272,9 @@ async def handle_collect(msg, ws):
         if link_id:
             await asyncio.to_thread(_bind_link, link_id, job["dedup_key"])
         if rec and link_id:
+            # Parth asked for this role by hand, so the 7-day sweep must not expire it.
+            rec["keep"] = True
+            await asyncio.to_thread(pending_mod.save, rec)
             await _auto_approve(rec, pending_mod.LINK_MIN_CONF)
         elif rec and not pasted:
             await _auto_approve(rec)

@@ -113,8 +113,10 @@ export default function Applied({ bridgeAlive }) {
   }
 
   const queue = () => act('queue', async () => {
-    await api.queueLink(url.trim())
-    notify('Queued. Watch its status below.', 'success')
+    const res = await api.queueLink(url.trim())
+    if (res.revived === 'sending') notify('Moved back from Expired. Every answer was saved, so it is sending now.', 'success')
+    else if (res.revived === 'queued') notify(`Moved back from Expired to the queue on your Dashboard${res.note ? `: ${res.note}` : ''}.`, 'success')
+    else notify('Queued. Watch its status below.', 'success')
     setUrl('')
     await loadLinks()
   })

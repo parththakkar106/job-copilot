@@ -207,6 +207,33 @@ def test_links():
     link("4-dddddd", "lk4")
     ok(status("4-dddddd") == {})
 
+    # An expired role comes back by link: sent, re-queued, or refilled by how much is answered.
+    def expired(key, uid, answers):
+        url = f"https://jobs.ashbyhq.com/acme/{uid * 8}-{uid * 4}-{uid * 4}-{uid * 4}-{uid * 12}"
+        pending_mod.put({"dedup_key": key, "company": "Acme", "url": url},
+                        [{"id": f"q{i}", "label": f"Q{i}", "answer": a}
+                         for i, a in enumerate(answers)], [])
+        rec = pending_mod.load(key)
+        rec["status"] = pending_mod.EXPIRED
+        pending_mod.save(rec)
+        return c.post("/api/links", json={"url": url})
+
+    svc.FLUSH_TRIGGER.unlink(missing_ok=True)
+    r = expired("ex1", "a", ["yes"])
+    ok(r.json().get("revived") == "queued", r.text)   # no AI pass, so not sent unattended
+    ok(pending_mod.load("ex1")["status"] == pending_mod.AWAITING and pending_mod.load("ex1")["keep"])
+    rec = pending_mod.load("ex1")
+    rec.update(status=pending_mod.EXPIRED, ai_decisions=[{"id": "q0", "action": "fill",
+                                                          "value": "yes", "confidence": 0.95}])
+    pending_mod.save(rec)
+    r = c.post("/api/links", json={"url": rec["url"]})
+    ok(r.json().get("revived") == "sending" and svc.FLUSH_TRIGGER.exists(), r.text)
+    ok(pending_mod.load("ex1")["status"] == pending_mod.APPROVED)
+    r = expired("ex2", "b", ["yes", None])
+    ok(r.json().get("revived") == "queued" and pending_mod.load("ex2")["questions"][0]["answer"] == "yes")
+    r = expired("ex3", "c", [None, None])
+    ok("link" in r.json() and pending_mod.load("ex3") is None, r.text)
+
 
 def test_refer(tmp):
     from core import refer_messages

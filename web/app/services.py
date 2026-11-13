@@ -530,6 +530,25 @@ def queued_links() -> list[dict]:
     return rows
 
 
+def _revive_expired(rec: dict) -> dict | None:
+    """Bring an expired role back for a link. None means: refill it from the link.
+
+    A fully answered record needs no refill, so it is sent when it clears the link bar.
+    A record with some answers goes back to the queue, because a refill would lose them.
+    A record with no answers is deleted, so the fresh fill can save a new one."""
+    key = rec["dedup_key"]
+    questions = rec.get("questions") or []
+    if questions and all(q.get("answer") is None for q in questions):
+        pending_mod.delete(key)
+        return None
+    pending_mod.reopen(key)
+    reason = pending_mod.auto_block(rec, pending_mod.LINK_MIN_CONF)
+    if reason is None and pending_mod.approve(key):
+        drop_flush_trigger()
+        return {"ok": True, "revived": "sending"}
+    return {"ok": True, "revived": "queued", "note": reason or ""}
+
+
 def queue_link(url: str) -> dict:
     """Queue a link for the bridge to hand to the extension when Chrome is connected."""
     known = _known_role(url)
@@ -537,7 +556,12 @@ def queue_link(url: str) -> dict:
         key = known.get("dedup_key")
         if key in triage_mod.applied_keys(triage_mod.APPLIED_PATH):
             return {"ok": False, "error": "that role is already in your applied list"}
-        if pending_mod.load(key):
+        rec = pending_mod.load(key)
+        if rec and rec.get("status") == pending_mod.EXPIRED:
+            revived = _revive_expired(rec)
+            if revived:
+                return revived
+        elif rec:
             return {"ok": False, "error": "that role is already filled, on your Dashboard"}
     token = url_token(url)
     if any(url_token(r.get("url")) == token for r in queued_links()):
