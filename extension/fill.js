@@ -3650,11 +3650,17 @@ function mountPanel() {
   // queue fill of the same role land on one key. Location is the bridge's problem too — the
   // page doesn't carry the scraper's version of it.
   async function logApplied(opts = {}) {
+    const res = await rpc({ type: "LOG_APPLIED", record: appliedRecord(opts) });
+    if (res && res.ok && !res.queued) log("📌 Logged as applied — the queue won't offer this again.", "ok");
+    else if (res && res.queued) log("📌 Bridge is off — the record is parked and will log itself when it's back.", "ok");
+    else log("Couldn't log it (bridge off?) — run apply_log.py so it isn't applied to twice.", "warn");
+  }
+  function appliedRecord(opts = {}) {
     const r = PANEL_REPORT || {};
     // Fall back to the page when there's no report: the by-hand path can run on a form the
     // panel never filled, and the bridge still needs a company/title to mint a key with if
     // the URL isn't in today's queue.
-    const res = await rpc({ type: "LOG_APPLIED", record: {
+    return {
       company: r.company || pageCompany(), title: r.role || pageRole(), location: "",
       url: location.href,
       // WHICH CV went out. Never recorded before, across every application — which is what
@@ -3662,10 +3668,7 @@ function mountPanel() {
       // the previous submission used and nothing could answer. Omitted rather than sent
       // empty on the by-hand path, where no fill ran and there is genuinely no answer.
       ...((r.resumeChoice || {}).tag ? { resume_track: r.resumeChoice.tag } : {}),
-      ...(opts.byHand ? { by_hand: true } : {}) } });
-    if (res && res.ok && !res.queued) log("📌 Logged as applied — the queue won't offer this again.", "ok");
-    else if (res && res.queued) log("📌 Bridge is off — the record is parked and will log itself when it's back.", "ok");
-    else log("Couldn't log it (bridge off?) — run apply_log.py so it isn't applied to twice.", "warn");
+      ...(opts.byHand ? { by_hand: true } : {}) };
   }
 
   // The explicit half of Parth's rule: a tap IS the human action, so this fetches even
@@ -3687,7 +3690,11 @@ function mountPanel() {
   $("#submit").onclick = async () => {
     setBusy(true); PANEL_STOP = false;
     try {
-      const outcome = await submitWithRetry(log);
+      // A submit that loads a new page ends this script before it can log, so the
+      // background logs it instead if the new page confirms. Disarm once the loop returns,
+      // because then this script decides.
+      await rpc({ type: "ARM_PANEL_SUBMIT", record: appliedRecord(), urlBefore: location.href });
+      const outcome = await submitWithRetry(log).finally(() => rpc({ type: "DISARM_PANEL_SUBMIT" }));
       logTrace("submit finished", { outcome });
       if (outcome === "confirmed") await logApplied();
       else if (outcome === "needs_verification") {

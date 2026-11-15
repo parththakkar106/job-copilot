@@ -348,6 +348,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
   }
+  // The panel arms this before its Submit click and disarms it when its loop returns. See
+  // `confirmPanelSubmit` for the case the arm exists for.
+  if ((msg.type === "ARM_PANEL_SUBMIT" || msg.type === "DISARM_PANEL_SUBMIT") && sender.tab) {
+    const key = panelArmKey(sender.tab.id);
+    const done = msg.type === "ARM_PANEL_SUBMIT"
+      ? chrome.storage.session.set({ [key]: { record: msg.record, urlBefore: msg.urlBefore, at: Date.now() } })
+      : chrome.storage.session.remove(key);
+    done.then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false }));
+    return true; // async sendResponse
+  }
   if (msg.type === "REVIEW_USER") {
     (async () => {
       try { sendResponse({ ok: true, answers: await reviewUser(msg.summary, msg.warnings, msg.context, msg.ai) }); }
@@ -700,6 +710,31 @@ async function confirmFromTab(tabId, urlBefore, channelError) {
     return parked;
   }
 }
+
+// A panel submit that navigates ends the panel's own script before it can log the role, so
+// a confirmed Greenhouse application stayed queued (FanDuel, 2026-11-14). The panel stores
+// its record here before clicking. If the tab then loads a new page, read that page with
+// the same check the flush uses. The arm lives in `storage.session` because an evicted
+// worker loses its memory, and it expires so a later, unrelated page load is not read as
+// a submit.
+const PANEL_ARM_MS = 5 * 60 * 1000;
+const panelArmKey = tabId => `panelSubmit:${tabId}`;
+
+async function confirmPanelSubmit(tabId) {
+  const key = panelArmKey(tabId);
+  const arm = (await chrome.storage.session.get(key))[key];
+  if (!arm) return null;
+  await chrome.storage.session.remove(key);
+  if (Date.now() - arm.at > PANEL_ARM_MS) return null;
+  const sub = await confirmFromTab(tabId, arm.urlBefore, "the page changed without a confirmation");
+  if (sub.outcome === "confirmed") await sendAppliedDurable(arm.record);
+  return sub;
+}
+
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status === "complete") confirmPanelSubmit(tabId).catch(() => {});
+});
+chrome.tabs.onRemoved.addListener(tabId => { chrome.storage.session.remove(panelArmKey(tabId)); });
 
 // Submit the approved form by driving the content script's submitWithRetry — the SAME
 // hardened loop the on-page panel's Submit button uses: multi-pass, reassertChoices for

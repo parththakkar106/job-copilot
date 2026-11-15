@@ -146,5 +146,61 @@ const APPLY = "https://job-boards.greenhouse.io/embed/job_app?for=cloudflare&tok
   ok(r.outcome === "error", "a closed tab parks instead of throwing");
 }
 
+// `confirmPanelSubmit` logs a panel submit whose page load ended the panel's script. It
+// must log only an armed, fresh submit that the landing page confirms, and it must use up
+// the arm, so a second page load in the same tab logs nothing.
+function panelHarness({ arm, url, text }) {
+  const store = arm ? { "panelSubmit:1": arm } : {};
+  const logged = [];
+  const chrome = {
+    ...stubChrome({ url, text }),
+    storage: { session: {
+      get: async k => (k in store ? { [k]: store[k] } : {}),
+      remove: async k => { delete store[k]; },
+    } },
+  };
+  const confirmPanelSubmit = new Function(
+    "chrome", "sleepBg", "waitForComplete", "console", "sendAppliedDurable",
+    `${extractConst("CONFIRM_TEXT")}
+     ${extractConst("REJECT_TEXT")}
+     ${extractConst("PANEL_ARM_MS")}
+     ${extractConst("panelArmKey")}
+     ${extract("confirmFromTab")}
+     ${extract("confirmPanelSubmit")}
+     return confirmPanelSubmit;`
+  )(chrome, async () => {}, async () => true, { warn() {} }, async r => { logged.push(r); });
+  return { run: () => confirmPanelSubmit(1), logged, store };
+}
+
+{
+  const rec = { company: "FanDuel", url: APPLY };
+  const h = panelHarness({ arm: { record: rec, urlBefore: APPLY, at: Date.now() },
+    url: APPLY + "/confirmation", text: "Thank you for applying" });
+  await h.run();
+  ok(h.logged.length === 1 && h.logged[0] === rec, "an armed panel submit that confirms is logged");
+  ok(!("panelSubmit:1" in h.store), "the arm is used up after one page load");
+  await h.run();
+  ok(h.logged.length === 1, "a second page load in the same tab logs nothing");
+}
+
+{
+  const h = panelHarness({ arm: { record: {}, urlBefore: APPLY, at: Date.now() - 6 * 60 * 1000 },
+    url: "https://example.com/elsewhere", text: "" });
+  await h.run();
+  ok(h.logged.length === 0, "an expired arm does not log a later navigation");
+}
+
+{
+  const h = panelHarness({ arm: { record: {}, urlBefore: APPLY, at: Date.now() },
+    url: APPLY, text: "First name Submit" });
+  await h.run();
+  ok(h.logged.length === 0, "a reload with no confirmation does not log");
+}
+
+{
+  const h = panelHarness({ arm: null, url: APPLY + "/confirmation", text: "Thank you for applying" });
+  ok((await h.run()) === null && h.logged.length === 0, "an unarmed tab logs nothing");
+}
+
 console.log(`submit confirm: ${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);
