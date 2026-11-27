@@ -56,6 +56,42 @@ def _env_dir(name: str) -> Path | None:
 HOME = _env_dir("JOBCOPILOT_HOME")
 _legacy_data = _env_dir("JOBCOPILOT_DATA")
 
+# PROFILES: several people, one folder each. The folder JOBCOPILOT_HOME names is BASE and
+# holds the first person's files where they always were. Every other person gets
+# BASE/profiles/<slug>/ with the same layout. ACTIVE_FILE names the selected slug, and an
+# empty slug means BASE. HOME then points at the selected folder, so every path below
+# follows the selected person.
+#
+# Profiles need JOBCOPILOT_HOME. If JOBCOPILOT_DATA is set (a test or a throwaway console),
+# or if the checkout sits inside HOME, profiles are off and HOME means what it always did.
+BASE = HOME
+PROFILES_DIR = ACTIVE_FILE = None
+if BASE and not _legacy_data and not REPO_ROOT.is_relative_to(BASE):
+    PROFILES_DIR = BASE / "profiles"
+    ACTIVE_FILE = BASE / "active_profile"
+_SLUG_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+def read_active() -> str:
+    """The selected profile's slug from ACTIVE_FILE, or "" for BASE.
+
+    If the file names a slug whose folder is gone, this returns "" so nothing is written
+    into a folder that nobody set up.
+    """
+    if ACTIVE_FILE is None or not ACTIVE_FILE.exists():
+        return ""
+    slug = ACTIVE_FILE.read_text(encoding="utf-8").strip()
+    if slug and (set(slug) - _SLUG_CHARS or not (PROFILES_DIR / slug).is_dir()):
+        print(f"[paths] active profile {slug!r} has no folder, using the main one",
+              file=sys.stderr)
+        return ""
+    return slug
+
+
+ACTIVE = read_active()
+if ACTIVE:
+    HOME = PROFILES_DIR / ACTIVE
+
 # Hand-edited config. Under HOME the files sit directly in it (the whole directory is the
 # private one, so a data/ subdirectory would only add a level); without either variable
 # they stay in the repo's data/ where they have always been.
@@ -111,6 +147,9 @@ def _tuning(name: str) -> Path:
     mine = DATA / name
     if mine.exists():
         return mine
+    # Every profile shares the main profile's tuning, so check BASE before the default.
+    if BASE and (BASE / name).exists():
+        return BASE / name
     return REPO_ROOT / "data" / name
 
 
@@ -185,3 +224,126 @@ ACTIVITY_PING = REPO_ROOT / "bridge" / ".activity"
 # One JSON file per link the console queued. One file per link means the console and the
 # bridge never rewrite the same file, so neither can drop the other's change.
 LINK_QUEUE = REPO_ROOT / "bridge" / ".link_queue"
+# The bridge writes the slug it serves here, so the console can show when the bridge has
+# not caught up with a switch yet.
+BRIDGE_PROFILE = REPO_ROOT / "bridge" / ".bridge_profile"
+
+
+# ── Profiles ──────────────────────────────────────────────────────────────────────────
+#
+# Switching re-runs this module for the new folder, then re-points every Path that other
+# loaded modules copied from it, such as `pending.PENDING_DIR` or a `path=PROFILE` default.
+# That keeps the ~20 modules that copy paths at import unchanged, and keeps tests that
+# rebind those copies working.
+
+# Paths that do not depend on the selected profile. They are never re-pointed.
+_FIXED = {"REPO_ROOT", "BASE", "PROFILES_DIR", "ACTIVE_FILE", "BRIDGE_PROFILE"}
+
+
+def profile_dir(slug: str) -> Path:
+    return BASE if not slug else PROFILES_DIR / slug
+
+
+def list_profiles() -> list[str]:
+    """Every profile's slug, the main one ("") first. Only [""] when profiles are off."""
+    if PROFILES_DIR is None or not PROFILES_DIR.is_dir():
+        return [""]
+    return ["", *sorted(p.name for p in PROFILES_DIR.iterdir()
+                        if p.is_dir() and not set(p.name) - _SLUG_CHARS)]
+
+
+def create_profile(slug: str) -> Path:
+    """Make an empty folder for a new person. Setup then walks them through filling it."""
+    if PROFILES_DIR is None:
+        raise ValueError("profiles need JOBCOPILOT_HOME")
+    if not slug or len(slug) > 30 or set(slug) - _SLUG_CHARS or slug.startswith("-"):
+        raise ValueError("use 1 to 30 lowercase letters, digits, or dashes")
+    d = PROFILES_DIR / slug
+    if d.exists():
+        raise ValueError(f"a profile named {slug!r} already exists")
+    d.mkdir(parents=True)
+    return d
+
+
+def set_active(slug: str) -> None:
+    """Select a profile for every process. Each process applies it on its next sync()."""
+    if ACTIVE_FILE is None:
+        raise ValueError("profiles need JOBCOPILOT_HOME")
+    if slug not in list_profiles():
+        raise ValueError(f"no profile named {slug!r}")
+    tmp = ACTIVE_FILE.with_suffix(".tmp")
+    tmp.write_text(slug, encoding="utf-8")
+    os.replace(tmp, ACTIVE_FILE)
+
+
+def pending_switch() -> bool:
+    """True if another process selected a profile this process does not serve yet."""
+    return ACTIVE_FILE is not None and read_active() != ACTIVE
+
+
+def sync() -> bool:
+    """Apply the selected profile if it changed. Returns True if this process switched.
+
+    shortcut: no lock, so a request already running during a switch can finish on the old
+    paths. Add a read/write lock around requests if two people ever use one console at once.
+    """
+    if not pending_switch():
+        return False
+    _switch()
+    return True
+
+
+def _switch() -> None:
+    import importlib
+    from types import FunctionType
+
+    me = sys.modules[__name__]
+    old = {k: v for k, v in vars(me).items()
+           if k.isupper() and isinstance(v, Path) and k not in _FIXED}
+    old_home = HOME
+    importlib.reload(me)          # re-runs this file, so every name now follows the new HOME
+
+    # Old value -> {name: new value}. Two names share an old value when the old profile had
+    # its own file for both a READ and a WRITE name, such as PROFILE and PROFILE_WRITE. If the
+    # new profile has no such file yet, the two new values differ, so the copy's own name
+    # decides: a name containing WRITE gets the WRITE path.
+    by_old: dict[Path, dict[str, Path]] = {}
+    for k, v in old.items():
+        by_old.setdefault(v, {})[k] = globals()[k]
+
+    def new_for(v: Path, name: str = "") -> Path | None:
+        cands = by_old.get(v)
+        if cands:
+            if len(set(cands.values())) == 1:
+                return next(iter(cands.values()))
+            want_write = "WRITE" in name
+            return next((nv for k, nv in cands.items() if ("WRITE" in k) == want_write),
+                        next(iter(cands.values())))
+        # A path built from a profile path, such as LOGS / "bridge.log".
+        if (old_home and v.is_relative_to(old_home)
+                and not (PROFILES_DIR and v.is_relative_to(PROFILES_DIR) and old_home == BASE)):
+            return HOME / v.relative_to(old_home)
+        return None
+
+    for mod in list(sys.modules.values()):
+        f = getattr(mod, "__file__", None)
+        if mod is me or not f:
+            continue
+        fp = Path(f).resolve()
+        if not fp.is_relative_to(REPO_ROOT) or {".venv", "node_modules"} & set(fp.parts):
+            continue
+        g = vars(mod)
+        for name, val in list(g.items()):
+            if isinstance(val, Path):
+                nv = new_for(val, name)
+                if nv is not None:
+                    g[name] = nv
+            elif (isinstance(val, FunctionType) and val.__module__ == mod.__name__
+                  and val.__defaults__):
+                val.__defaults__ = tuple(
+                    (new_for(d) or d) if isinstance(d, Path) else d for d in val.__defaults__)
+        # A module that loaded profile data at import reloads it here.
+        hook = g.get("_on_profile_switch")
+        if callable(hook):
+            hook()
+    print(f"[paths] switched to profile {ACTIVE or '(main)'} at {HOME}", file=sys.stderr)

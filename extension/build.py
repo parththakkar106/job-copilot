@@ -62,6 +62,9 @@ def main() -> int:
     src_resumes = paths.RESUMES
     dst_resumes = EXT / "resumes"
     dst_resumes.mkdir(exist_ok=True)
+    # Remove the previous build's PDFs, which may belong to another profile.
+    for old in dst_resumes.glob("*.pdf"):
+        old.unlink()
     copied = 0
     for track in profile.get("resume_tracks", []):
         name = Path(track["local_path"]).name

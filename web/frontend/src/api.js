@@ -28,6 +28,9 @@ export const api = {
   dashboard: (sinceDays) =>
     req('GET', `/dashboard${sinceDays == null ? '' : `?since_days=${sinceDays}`}`),
   status: () => req('GET', '/status'),
+  profiles: () => req('GET', '/profiles'),
+  setProfile: (slug) => req('POST', '/profiles/active', { slug }),
+  addProfile: (name) => req('POST', '/profiles', { name }),
   job: (key) => req('GET', `/jobs/${key}`),
   saveAnswers: (key, answers) => req('PUT', `/jobs/${key}/answers`, { answers }),
   editFilled: (key, label, value) => req('PUT', `/jobs/${key}/filled`, { label, value }),

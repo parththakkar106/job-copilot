@@ -306,6 +306,9 @@ def dlog(msg: str) -> None:
 # --- Telegram (blocking HTTP; always called via asyncio.to_thread) ------------------
 
 def tg_send(text: str, buttons=None) -> int:
+    # Every profile shares one chat, so a message for another person starts with their name.
+    if paths_mod.ACTIVE:
+        text = f"<b>[{html.escape(paths_mod.ACTIVE)}]</b> {text}"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML",
                "disable_web_page_preview": True}
     if buttons:
@@ -1070,6 +1073,10 @@ async def fire_run_queue(source: str) -> None:
     and dial in — then pushes run_queue. If Chrome never shows up, say so instead of
     failing silently; a missed daily run must not look like a completed one."""
     global _LAST_RUN_KICK
+    if paths_mod.pending_switch():
+        await asyncio.to_thread(tg_send, "🔀 Switching profiles after the current form. "
+                                "Send /run again in a minute.")
+        return
     now = time.monotonic()
     if now - _LAST_RUN_KICK < RUN_KICK_COOLDOWN_SECS:
         dlog(f"[run] ignoring {source} kick - one fired {now - _LAST_RUN_KICK:.0f}s ago")
@@ -1110,7 +1117,7 @@ async def trigger_watcher() -> None:
     while True:
         await asyncio.sleep(TRIGGER_POLL_SECS)
         try:
-            if TRIGGER_FILE.exists():
+            if TRIGGER_FILE.exists() and not paths_mod.pending_switch():
                 TRIGGER_FILE.unlink(missing_ok=True)
                 dlog("[run] sentinel seen - starting the daily collection run")
                 await fire_run_queue("scheduled")
@@ -1203,6 +1210,8 @@ async def serve_link() -> None:
 async def link_queue_watcher() -> None:
     while True:
         await asyncio.sleep(TRIGGER_POLL_SECS)
+        if paths_mod.pending_switch():
+            continue
         try:
             await serve_link()
         except Exception as e:
@@ -1271,7 +1280,7 @@ async def flush_trigger_watcher() -> None:
     while True:
         await asyncio.sleep(TRIGGER_POLL_SECS)
         try:
-            if FLUSH_TRIGGER_FILE.exists():
+            if FLUSH_TRIGGER_FILE.exists() and not paths_mod.pending_switch():
                 FLUSH_TRIGGER_FILE.unlink(missing_ok=True)
                 dlog("[flush] sentinel seen - sending the approved pile")
                 await fire_flush("web")
@@ -1299,6 +1308,56 @@ async def activity_watcher() -> None:
                 dlog("[idle] web activity - idle countdown restarted")
         except Exception as e:
             print(f"[idle] activity watcher error: {redact(e)}", file=sys.stderr)
+
+
+# --- profile switches -------------------------------------------------------------------
+#
+# The console selects a profile by writing paths.ACTIVE_FILE. The bridge applies it only
+# when no form has talked to it for PROFILE_IDLE_SECS, so one form never gets two people's
+# answers. Until then the run, flush, and link watchers leave their files in place.
+PROFILE_IDLE_SECS = 60
+LAST_EXT_MSG = 0.0               # monotonic time of the extension's last real message
+
+
+def _bridge_idle() -> bool:
+    return ((ACTIVE_HANDLER is None or ACTIVE_HANDLER.done())
+            and not (LOCK and LOCK.locked())
+            and time.monotonic() - LAST_EXT_MSG > PROFILE_IDLE_SECS)
+
+
+def _stage_profile() -> None:
+    """Record the served profile and restage the extension's profile.json and resumes.
+
+    fill.js reads profile.json from the extension folder at the start of every form, so
+    the restaged copy takes effect without reloading the extension.
+    """
+    import subprocess
+    paths_mod.BRIDGE_PROFILE.write_text(paths_mod.ACTIVE, encoding="utf-8")
+    build = paths_mod.REPO_ROOT / "extension" / "build.py"
+    r = subprocess.run([sys.executable, str(build)], cwd=str(build.parent),
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        print(f"[profile] extension build failed: {r.stdout[-400:]}{r.stderr[-400:]}",
+              file=sys.stderr)
+
+
+async def profile_watcher() -> None:
+    try:
+        await asyncio.to_thread(_stage_profile)
+    except Exception as e:
+        print(f"[profile] staging at startup failed: {redact(e)}", file=sys.stderr)
+    while True:
+        await asyncio.sleep(TRIGGER_POLL_SECS)
+        try:
+            if not paths_mod.pending_switch() or not _bridge_idle():
+                continue
+            paths_mod.sync()
+            _AI_CACHE.clear()
+            await asyncio.to_thread(_stage_profile)
+            await asyncio.to_thread(sync_resumes, "profile switch")
+            await asyncio.to_thread(tg_send, "🔀 Now applying for this profile.")
+        except Exception as e:
+            print(f"[profile] watcher error: {redact(e)}", file=sys.stderr)
 
 
 async def idle_watcher() -> None:
@@ -2841,6 +2900,11 @@ async def handle_verify_code(msg, ws):
     """
     req_id = msg.get("reqId")
     out = {"ok": False, "code": None, "why": "no code found"}
+    if paths_mod.ACTIVE:
+        # The reader's credential is the main profile's inbox, never another person's.
+        out["why"] = "the code reader only reads the main profile's inbox"
+        await ws.send(json.dumps({"type": "answers", "reqId": req_id, "answers": out}))
+        return
     try:
         since = msg.get("since")
         since_dt = (datetime.fromtimestamp(float(since), timezone.utc)
@@ -3070,7 +3134,7 @@ async def handle_set_state(msg, ws):
 
 
 async def ws_handler(ws):
-    global ACTIVE_HANDLER
+    global ACTIVE_HANDLER, LAST_EXT_MSG
     print(f"[ws] extension connected from {ws.remote_address}")
     # A fresh connection SUPERSEDES the old session (e.g. Parth reloaded the extension while
     # a question was pending). Cancel any handler still blocked awaiting a Telegram reply on
@@ -3118,6 +3182,7 @@ async def ws_handler(ws):
             if t == "ping":
                 await ws.send(json.dumps({"type": "pong"}))
                 continue
+            LAST_EXT_MSG = time.monotonic()
             fn = dispatch.get(t)
             if not fn:
                 await ws.send(json.dumps({"type": "error", "error": f"unknown type: {t}"}))
@@ -3131,6 +3196,7 @@ async def ws_handler(ws):
             dlog(f"[ws] handling '{t}' (reqId={msg.get('reqId')})")
             ACTIVE_HANDLER = asyncio.create_task(fn(msg, ws))
             await ACTIVE_HANDLER
+            LAST_EXT_MSG = time.monotonic()
             dlog(f"[ws] done '{t}' in {time.monotonic() - t0:.2f}s")
     except websockets.ConnectionClosed:
         pass
@@ -3198,6 +3264,7 @@ async def main():
         links = asyncio.create_task(link_queue_watcher())
         activity = asyncio.create_task(activity_watcher())
         referral_wait = asyncio.create_task(referral_wait_watcher())
+        profile = asyncio.create_task(profile_watcher())
         try:
             await telegram_poller(offset)
         finally:
@@ -3207,6 +3274,7 @@ async def main():
             links.cancel()
             activity.cancel()
             referral_wait.cancel()
+            profile.cancel()
 
 
 if __name__ == "__main__":

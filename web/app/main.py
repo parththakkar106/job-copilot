@@ -18,11 +18,19 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import auth
+from .paths import core_paths
 from .routes import router
 
 app = FastAPI(title="Job Pipeline Console", version="1.0")
 
 app.middleware("http")(auth.gate)
+
+
+@app.middleware("http")
+async def follow_profile(request, call_next):
+    """Serve the selected profile, which another process may have changed."""
+    core_paths.sync()
+    return await call_next(request)
 
 # Local dev: the Vite dev server (5173) calls the API on 8000. Loopback only.
 app.add_middleware(

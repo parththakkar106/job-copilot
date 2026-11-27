@@ -10,7 +10,10 @@ import asyncio
 import sys
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Request
+import json
+import re
+
+from fastapi import APIRouter, Body, HTTPException, Request
 
 from core.joblink import is_web_url
 
@@ -28,7 +31,7 @@ from .models import (
     SearchPicks,
     StateChange,
 )
-from .paths import (EXTENSION_BUILD, REPO_ROOT, SCRAPER_MODULE, aipass_mod,
+from .paths import (EXTENSION_BUILD, REPO_ROOT, SCRAPER_MODULE, aipass_mod, core_paths,
                     drafter_mod, pending_mod)
 
 router = APIRouter()
@@ -46,6 +49,61 @@ def get_dashboard(since_days: int | None = 60):
 @router.get("/status")
 def get_status():
     return {"bridge_alive": svc.bridge_alive(), "counts": svc.counts()}
+
+
+# ── Profiles ─────────────────────────────────────────────────────────────────────────
+
+def _profile_name(slug: str) -> str:
+    """The person's first name from their profile.json, else the folder name."""
+    try:
+        prof = json.loads((core_paths.profile_dir(slug) / "profile.json")
+                          .read_text(encoding="utf-8"))
+        first = (prof.get("identity") or {}).get("first_name")
+        if first and first != "FILL_ME":
+            return first
+    except (OSError, ValueError):
+        pass
+    return slug.title() if slug else "Main"
+
+
+@router.get("/profiles")
+def get_profiles():
+    alive = svc.bridge_alive()
+    served = None
+    if alive and core_paths.BRIDGE_PROFILE.exists():
+        served = core_paths.BRIDGE_PROFILE.read_text(encoding="utf-8").strip()
+    return {"enabled": core_paths.ACTIVE_FILE is not None,
+            "active": core_paths.ACTIVE, "bridge_profile": served, "bridge_alive": alive,
+            "profiles": [{"slug": s, "name": _profile_name(s)}
+                         for s in core_paths.list_profiles()]}
+
+
+async def _select(slug: str) -> dict:
+    try:
+        core_paths.set_active(slug)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    core_paths.sync()
+    # A running bridge restages the extension once it is idle. Without a bridge, restage now
+    # so the next form reads the selected person's profile.json.
+    if not svc.bridge_alive():
+        await run_build_extension()
+    return get_profiles()
+
+
+@router.post("/profiles/active")
+async def set_active_profile(slug: str = Body(..., embed=True)):
+    return await _select(slug)
+
+
+@router.post("/profiles")
+async def add_profile(name: str = Body(..., embed=True)):
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")[:30]
+    try:
+        core_paths.create_profile(slug)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return await _select(slug)
 
 
 # ── One job (pending record) ─────────────────────────────────────────────────────────

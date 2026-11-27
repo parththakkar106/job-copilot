@@ -38,6 +38,9 @@ bridge/.flush_trigger
 # web console: transient sentinel that says Parth is still editing (resets the idle clock)
 bridge/.activity
 
+# the profile the running bridge serves, for the console's "switching" notice
+bridge/.bridge_profile
+
 # runtime toggles Parth flips by hand (e.g. Claude-drafting on/off) — local, per-machine
 bridge/prefs.json
 bridge/.prefs.*.tmp

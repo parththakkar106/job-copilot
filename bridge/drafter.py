@@ -253,15 +253,21 @@ def work_block(track: str | None) -> str:
             + "\n".join(lines) + "\n\n")
 
 
-NAME, BIO = _load_identity()
-# Omitted entirely rather than left as a dangling "About: " when the profile is unreadable.
-ABOUT = f"About {NAME}: {BIO}\n\n" if BIO else ""
-FACTS = _load_facts()
-FACTS_BLOCK = (
-    "Facts already stated elsewhere on this same application. An answer that contradicts\n"
-    "any of them is a false statement to a real employer, so never write against one:\n"
-    + "\n".join(f"- {f}" for f in FACTS) + "\n\n"
-) if FACTS else ""
+def _on_profile_switch() -> None:
+    """Load the selected person's identity and facts. core.paths calls this on a switch."""
+    global NAME, BIO, ABOUT, FACTS, FACTS_BLOCK
+    NAME, BIO = _load_identity()
+    # Omitted entirely rather than left as a dangling "About: " when the profile is unreadable.
+    ABOUT = f"About {NAME}: {BIO}\n\n" if BIO else ""
+    FACTS = _load_facts()
+    FACTS_BLOCK = (
+        "Facts already stated elsewhere on this same application. An answer that contradicts\n"
+        "any of them is a false statement to a real employer, so never write against one:\n"
+        + "\n".join(f"- {f}" for f in FACTS) + "\n\n"
+    ) if FACTS else ""
+
+
+_on_profile_switch()
 
 
 # A label whose whole meaning is "expand on the PREVIOUS question" — the model is handed a

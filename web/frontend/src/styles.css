@@ -944,3 +944,11 @@ select { cursor: pointer; }
 .draft-all { margin-bottom: 12px; }
 .row-pick { flex-shrink: 0; width: 16px; height: 16px; cursor: pointer; accent-color: var(--blue, #5b8def); }
 .bulkbar { gap: 8px; }
+
+/* ── Profile switcher ── */
+.profile-pick select {
+  padding: 5px 10px; color: var(--text); font: inherit; font-size: 12px; font-weight: 600;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 999px;
+}
+.profile-pick select:focus-visible { outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(124,108,255,.16); }

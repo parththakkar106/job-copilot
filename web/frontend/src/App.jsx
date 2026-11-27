@@ -62,9 +62,52 @@ function RunControls({ onChanged }) {
   )
 }
 
+// Picks whose job search the console shows. A switch reloads the page, so every tab reads
+// the new person's files and Setup opens for a person who has not filled a profile yet.
+function ProfileSwitcher({ info }) {
+  const notify = useToast()
+  const [busy, setBusy] = useState(false)
+  if (!info?.enabled) return null
+
+  const go = async (fn) => {
+    setBusy(true)
+    try {
+      await fn()
+      window.location.reload()
+    } catch (e) {
+      notify(e.message, 'error', 6000)
+      setBusy(false)
+    }
+  }
+
+  const onChange = (e) => {
+    const slug = e.target.value
+    if (slug !== '__add') return go(() => api.setProfile(slug))
+    e.target.value = info.active
+    const name = prompt('Name of the person to add')
+    if (name && name.trim()) go(() => api.addProfile(name))
+  }
+
+  // The bridge switches only after the current form, so say when it has not caught up.
+  const lagging = info.bridge_alive && info.bridge_profile !== null
+    && info.bridge_profile !== info.active
+  return (
+    <>
+      {lagging && <span className="bridge-pill" title="The bridge switches once no form has talked to it for a minute.">switching after the current form</span>}
+      <label className="profile-pick">
+        <select aria-label="Profile" value={info.active} disabled={busy} onChange={onChange}>
+          {info.profiles.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
+          <option value="__add">+ Add person</option>
+        </select>
+      </label>
+    </>
+  )
+}
+
 function Shell() {
   const [tab, setTab] = useState('dashboard')
   const [status, setStatus] = useState({ bridge_alive: false, counts: {} })
+  const [profiles, setProfiles] = useState(null)
   const [refreshKey, setRefreshKey] = useState(0)
   // Decided once at mount and never revoked during the session. If it flipped off the
   // moment the last required step passed, the tab would vanish from under someone standing
@@ -74,6 +117,7 @@ function Shell() {
 
   const loadStatus = useCallback(async () => {
     try { setStatus(await api.status()) } catch { /* backend down; ignore */ }
+    try { setProfiles(await api.profiles()) } catch { /* backend down; ignore */ }
   }, [])
 
   // Asked once on mount. A fresh install opens ON the checklist rather than on an empty
@@ -118,6 +162,7 @@ function Shell() {
           ))}
         </nav>
         <div className="topbar-right">
+          <ProfileSwitcher info={profiles} />
           <span className={`bridge-pill ${status.bridge_alive ? 'up' : 'down'}`}>
             <span className="dot" /> bridge {status.bridge_alive ? 'up' : 'down'}
           </span>
